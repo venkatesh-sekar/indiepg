@@ -8,8 +8,9 @@ import (
 )
 
 // DataDirectory returns the cluster's data directory (SHOW data_directory),
-// used as pgBackRest's pg1-path. It reads over the read-only pool when connected,
-// otherwise via a one-shot psql query as the postgres OS user.
+// used as pgBackRest's pg1-path. data_directory is a superuser-only GUC, so the
+// panel's non-superuser pool role cannot read it; showSetting falls back to a
+// psql query as the postgres OS user (peer-auth superuser) in that case.
 func (m *Manager) DataDirectory(ctx context.Context) (string, error) {
 	return m.showSetting(ctx, "data_directory")
 }
@@ -28,21 +29,33 @@ func (m *Manager) showSetting(ctx context.Context, name string) (string, error) 
 	}
 
 	const queryFmt = "SHOW "
+
+	// Prefer the read-only pool when connected. But a superuser-only GUC (e.g.
+	// data_directory) is NOT readable by the panel's non-superuser pool role — the
+	// SHOW fails with "must be superuser or have privileges of
+	// pg_read_all_settings". On any pool read error (or an empty value) fall back
+	// to a one-shot psql query as the postgres OS user (peer-auth superuser), which
+	// can read every setting. Without a runner there is no fallback, so the pool
+	// error is returned as-is.
 	if pool := m.ReadPool(); pool != nil {
 		var v string
-		if err := pool.QueryRow(ctx, queryFmt+name).Scan(&v); err != nil {
-			return "", core.InternalError("pg: reading setting %q", name).Wrap(err)
+		err := pool.QueryRow(ctx, queryFmt+name).Scan(&v)
+		if err == nil {
+			if v = strings.TrimSpace(v); v != "" {
+				return v, nil
+			}
 		}
-		v = strings.TrimSpace(v)
-		if v == "" {
+		if m.runner == nil {
+			if err != nil {
+				return "", core.InternalError("pg: reading setting %q", name).Wrap(err)
+			}
 			return "", core.InternalError("pg: empty value for setting %q", name)
 		}
-		return v, nil
-	}
-
-	if m.runner == nil {
+		// Pool could not read it; fall through to the privileged psql path below.
+	} else if m.runner == nil {
 		return "", core.InternalError("pg: reading %q requires a Runner or an open pool", name)
 	}
+
 	out, err := m.runPsql(ctx, defaultConnectDatabase, queryFmt+name)
 	if err != nil {
 		return "", err
