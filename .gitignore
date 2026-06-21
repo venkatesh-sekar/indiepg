@@ -1,0 +1,33 @@
+# Build artifacts
+/pgpanel
+/dist/
+*.test
+*.out
+coverage.txt
+
+# SQLite panel state
+*.db
+*.db-shm
+*.db-wal
+
+# Go caches / vendoring
+/.gocache/
+/.gomodcache/
+vendor/
+
+# Frontend (no Node on the server, ever)
+/web/node_modules/
+/web/dist/
+# NOTE: internal/server/web/dist/ (the built SPA) IS committed on purpose so a
+# clean `go build` yields a working UI with no Node toolchain. Rebuild via `make web`.
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local env
+.env
+.env.local

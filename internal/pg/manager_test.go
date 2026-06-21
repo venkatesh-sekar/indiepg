@@ -1,0 +1,164 @@
+package pg
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/venkatesh-sekar/pgpanel/internal/config"
+	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/pgpanel/internal/exec"
+)
+
+func newManager(r exec.Runner) *Manager {
+	return New(Options{Runner: r, Config: config.Default()})
+}
+
+// joinedCall renders a recorded RunSpec the way the FakeRunner matches it, so
+// tests can assert on the resolved argv.
+func joinedCall(spec exec.RunSpec) string {
+	parts := make([]string, 0, len(spec.Args)+4)
+	if spec.AsUser != "" {
+		parts = append(parts, "sudo", "-u", spec.AsUser)
+	}
+	parts = append(parts, spec.Name)
+	parts = append(parts, spec.Args...)
+	return strings.Join(parts, " ")
+}
+
+func TestProvision_HappyPath(t *testing.T) {
+	r := exec.NewFakeRunner()
+	r.On("system_identifier", exec.FakeResponse{}) // unused here
+	m := newManager(r)
+
+	res, err := m.Provision(context.Background())
+	require.NoError(t, err)
+	require.True(t, res.OK)
+	require.NotEmpty(t, res.Statements)
+
+	calls := r.Calls()
+	require.NotEmpty(t, calls)
+
+	joined := make([]string, len(calls))
+	for i, c := range calls {
+		joined[i] = joinedCall(c)
+	}
+	all := strings.Join(joined, "\n")
+
+	require.Contains(t, all, "apt-get update")
+	require.Contains(t, all, "apt-get install -y postgresql postgresql-contrib")
+	require.Contains(t, all, "systemctl enable --now postgresql")
+	// roles + extension are created via psql run as the postgres OS user.
+	require.Contains(t, all, "sudo -u postgres psql")
+	require.Contains(t, all, "pg_stat_statements")
+
+	// every psql admin step targets the maintenance database and stops on error.
+	for _, c := range calls {
+		if c.Name == "psql" {
+			require.Equal(t, "postgres", c.AsUser)
+			require.Contains(t, c.Args, "ON_ERROR_STOP=1")
+		}
+	}
+}
+
+func TestProvision_AptInstallFailureStops(t *testing.T) {
+	r := exec.NewFakeRunner()
+	r.On("install", exec.FakeResponse{ExitCode: 100, Err: errFake("dpkg lock")})
+	m := newManager(r)
+
+	_, err := m.Provision(context.Background())
+	require.Error(t, err)
+	require.Equal(t, core.CodeExec, core.CodeOf(err))
+
+	// it must not proceed to systemctl/psql after the install failure.
+	for _, c := range r.Calls() {
+		require.NotEqual(t, "systemctl", c.Name)
+		require.NotEqual(t, "psql", c.Name)
+	}
+}
+
+func TestProvision_NoRunner(t *testing.T) {
+	m := New(Options{Config: config.Default()})
+	_, err := m.Provision(context.Background())
+	require.Error(t, err)
+	require.Equal(t, core.CodeInternal, core.CodeOf(err))
+}
+
+func TestIsRunning(t *testing.T) {
+	tests := []struct {
+		name   string
+		stdout string
+		resp   exec.FakeResponse
+		want   bool
+	}{
+		{"active", "active\n", exec.FakeResponse{Stdout: "active\n"}, true},
+		{"inactive", "inactive\n", exec.FakeResponse{Stdout: "inactive\n", ExitCode: 3, Err: errFake("inactive")}, false},
+		{"failed", "failed\n", exec.FakeResponse{Stdout: "failed\n", ExitCode: 3, Err: errFake("failed")}, false},
+		{"unknown empty", "", exec.FakeResponse{ExitCode: 4, Err: errFake("unknown")}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := exec.NewFakeRunner()
+			r.On("is-active", tt.resp)
+			m := newManager(r)
+			got, err := m.IsRunning(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestIsRunning_NoRunner(t *testing.T) {
+	m := New(Options{Config: config.Default()})
+	_, err := m.IsRunning(context.Background())
+	require.Error(t, err)
+	require.Equal(t, core.CodeInternal, core.CodeOf(err))
+}
+
+func TestSystemIdentifier_ViaPsql(t *testing.T) {
+	r := exec.NewFakeRunner()
+	r.On("pg_control_system", exec.FakeResponse{Stdout: "7361234567890123456\n"})
+	m := newManager(r)
+
+	id, err := m.SystemIdentifier(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "7361234567890123456", id)
+
+	// run as the postgres OS user.
+	var sawPsql bool
+	for _, c := range r.Calls() {
+		if c.Name == "psql" {
+			sawPsql = true
+			require.Equal(t, "postgres", c.AsUser)
+		}
+	}
+	require.True(t, sawPsql)
+}
+
+func TestSystemIdentifier_EmptyOutput(t *testing.T) {
+	r := exec.NewFakeRunner()
+	r.On("pg_control_system", exec.FakeResponse{Stdout: "   \n"})
+	m := newManager(r)
+
+	_, err := m.SystemIdentifier(context.Background())
+	require.Error(t, err)
+	require.Equal(t, core.CodeInternal, core.CodeOf(err))
+}
+
+func TestSystemIdentifier_PsqlFailure(t *testing.T) {
+	r := exec.NewFakeRunner()
+	r.On("pg_control_system", exec.FakeResponse{ExitCode: 2, Err: errFake("connection refused")})
+	m := newManager(r)
+
+	_, err := m.SystemIdentifier(context.Background())
+	require.Error(t, err)
+	require.Equal(t, core.CodeExec, core.CodeOf(err))
+}
+
+// errFake is a tiny error helper for FakeResponse.Err.
+type fakeErr string
+
+func (e fakeErr) Error() string { return string(e) }
+func errFake(s string) error    { return fakeErr(s) }

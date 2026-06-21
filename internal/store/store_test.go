@@ -1,0 +1,213 @@
+package store
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"github.com/venkatesh-sekar/pgpanel/internal/core"
+)
+
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+	s, err := Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+func TestOpenAndPing(t *testing.T) {
+	s := newTestStore(t)
+	require.NoError(t, s.Ping(context.Background()))
+}
+
+func TestMigrateIsIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	// Re-running migrate must not error.
+	require.NoError(t, s.migrate())
+	require.NoError(t, s.migrate())
+}
+
+func TestInstanceRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, err := s.GetInstance(ctx)
+	require.Equal(t, core.CodeNotFound, core.CodeOf(err))
+
+	inst := Instance{
+		InstanceID:   "uuid-1",
+		Label:        "web-db-01",
+		Hostname:     "host-a",
+		PanelVersion: "1.0.0",
+		CreatedAt:    time.Now().UTC().Truncate(time.Second),
+	}
+	require.NoError(t, s.SaveInstance(ctx, inst))
+
+	got, err := s.GetInstance(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "uuid-1", got.InstanceID)
+	require.Equal(t, "web-db-01", got.Label)
+
+	require.NoError(t, s.SetPGSystemID(ctx, "7300000000000000000"))
+	got, err = s.GetInstance(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "7300000000000000000", got.PGSystemID)
+}
+
+func TestConfigRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, err := s.GetConfig(ctx, "bind_addr")
+	require.Equal(t, core.CodeNotFound, core.CodeOf(err))
+
+	require.NoError(t, s.SetConfig(ctx, "bind_addr", "127.0.0.1:8443"))
+	v, err := s.GetConfig(ctx, "bind_addr")
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1:8443", v)
+
+	require.NoError(t, s.SetConfig(ctx, "bind_addr", "100.64.0.1:8443"))
+	all, err := s.AllConfig(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "100.64.0.1:8443", all["bind_addr"])
+
+	require.NoError(t, s.DeleteConfig(ctx, "bind_addr"))
+	_, err = s.GetConfig(ctx, "bind_addr")
+	require.Equal(t, core.CodeNotFound, core.CodeOf(err))
+}
+
+func TestAuthRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, err := s.GetAuth(ctx)
+	require.Equal(t, core.CodeNotFound, core.CodeOf(err))
+
+	require.NoError(t, s.InitAuth(ctx, "argon2-hash", []byte("secret-bytes")))
+	rec, err := s.GetAuth(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "argon2-hash", rec.PasswordHash)
+	require.Equal(t, []byte("secret-bytes"), rec.SessionSecret)
+	require.Equal(t, 0, rec.FailedAttempts)
+	require.Nil(t, rec.LockedUntil)
+
+	until := time.Now().Add(time.Minute).UTC().Truncate(time.Second)
+	require.NoError(t, s.SetLockout(ctx, 3, &until))
+	rec, err = s.GetAuth(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 3, rec.FailedAttempts)
+	require.NotNil(t, rec.LockedUntil)
+
+	require.NoError(t, s.SetPasswordHash(ctx, "new-hash"))
+	rec, err = s.GetAuth(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "new-hash", rec.PasswordHash)
+	require.Equal(t, 0, rec.FailedAttempts)
+	require.Nil(t, rec.LockedUntil)
+}
+
+func TestAuditAppendAndList(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	for i := 0; i < 3; i++ {
+		_, err := s.AppendAudit(ctx, AuditEntry{Actor: "admin", Action: "login", Result: "ok"})
+		require.NoError(t, err)
+	}
+	entries, err := s.ListAudit(ctx, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, entries, 3)
+	require.Equal(t, "admin", entries[0].Actor)
+}
+
+func TestBackupHistory(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, err := s.LatestSuccessfulBackup(ctx)
+	require.Equal(t, core.CodeNotFound, core.CodeOf(err))
+
+	stopped := time.Now().UTC().Truncate(time.Second)
+	_, err = s.InsertBackup(ctx, BackupRecord{
+		Label: "20260621-full", BackupType: "full", StartedAt: stopped.Add(-time.Minute),
+		StoppedAt: &stopped, SizeBytes: 1000, RepoBytes: 300, Result: "success",
+	})
+	require.NoError(t, err)
+	_, err = s.InsertBackup(ctx, BackupRecord{Label: "20260621-incr", BackupType: "incr", Result: "failed", Error: "boom"})
+	require.NoError(t, err)
+
+	all, err := s.ListBackups(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+
+	latest, err := s.LatestSuccessfulBackup(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "20260621-full", latest.Label)
+	require.NotNil(t, latest.StoppedAt)
+}
+
+func TestRestoreTests(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	_, err := s.InsertRestoreTest(ctx, RestoreTestRecord{SourceLabel: "20260621-full", VerifiedRows: 42, Result: "pass"})
+	require.NoError(t, err)
+	list, err := s.ListRestoreTests(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, int64(42), list[0].VerifiedRows)
+}
+
+func TestAlerts(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	require.NoError(t, s.UpsertAlert(ctx, AlertRecord{
+		ID: "pg-down", Name: "Postgres down", Enabled: true,
+		Definition: `{"threshold":1}`, Severity: "critical", State: "ok",
+	}))
+	got, err := s.GetAlert(ctx, "pg-down")
+	require.NoError(t, err)
+	require.True(t, got.Enabled)
+	require.Equal(t, "critical", got.Severity)
+
+	fired := time.Now().UTC().Truncate(time.Second)
+	got.State = "firing"
+	got.LastFiredAt = &fired
+	require.NoError(t, s.UpsertAlert(ctx, *got))
+
+	got, err = s.GetAlert(ctx, "pg-down")
+	require.NoError(t, err)
+	require.Equal(t, "firing", got.State)
+	require.NotNil(t, got.LastFiredAt)
+
+	list, err := s.ListAlerts(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+
+	require.NoError(t, s.DeleteAlert(ctx, "pg-down"))
+	_, err = s.GetAlert(ctx, "pg-down")
+	require.Equal(t, core.CodeNotFound, core.CodeOf(err))
+}
+
+func TestTelemetryBuffer(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	base := time.Now().UTC().Truncate(time.Second)
+	for i := 0; i < 5; i++ {
+		require.NoError(t, s.InsertSample(ctx, TelemetrySample{
+			TS: base.Add(time.Duration(i) * time.Minute), Metric: "pg.connections", Value: float64(i),
+		}))
+	}
+	samples, err := s.RecentSamples(ctx, "pg.connections", time.Time{})
+	require.NoError(t, err)
+	require.Len(t, samples, 5)
+	require.Equal(t, float64(0), samples[0].Value)
+
+	cutoff := base.Add(3 * time.Minute)
+	n, err := s.PruneTelemetry(ctx, cutoff)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), n)
+}
