@@ -12,7 +12,6 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "@/api/client";
-import type { SessionInfo } from "@/api/types";
 
 interface SessionState {
   ready: boolean;
@@ -27,46 +26,70 @@ const SessionContext = createContext<SessionState | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
-  const [info, setInfo] = useState<SessionInfo>({ authenticated: false });
+  const [authenticated, setAuthenticated] = useState(false);
+  const [subject, setSubject] = useState<string | undefined>(undefined);
+
+  // Best-effort: load the signed-in admin's subject for the header. A failure
+  // here must never block the authenticated state, so it falls back to unset.
+  const loadSubject = useCallback(async () => {
+    try {
+      const who = await api.whoami();
+      setSubject(who.subject);
+    } catch {
+      setSubject(undefined);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
-      const session = await api.session();
-      setInfo(session);
+      const status = await api.session();
+      setAuthenticated(status.authenticated);
+      if (status.authenticated) {
+        await loadSubject();
+      } else {
+        setSubject(undefined);
+      }
     } catch {
-      setInfo({ authenticated: false });
+      setAuthenticated(false);
+      setSubject(undefined);
     } finally {
       setReady(true);
     }
-  }, []);
+  }, [loadSubject]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const login = useCallback(async (password: string) => {
-    const session = await api.login(password);
-    setInfo(session.authenticated ? session : { authenticated: true });
-  }, []);
+  const login = useCallback(
+    async (password: string) => {
+      // api.login throws on failure; success sets the HttpOnly session cookie.
+      await api.login(password);
+      setAuthenticated(true);
+      await loadSubject();
+    },
+    [loadSubject],
+  );
 
   const logout = useCallback(async () => {
     try {
       await api.logout();
     } finally {
-      setInfo({ authenticated: false });
+      setAuthenticated(false);
+      setSubject(undefined);
     }
   }, []);
 
   const value = useMemo<SessionState>(
     () => ({
       ready,
-      authenticated: info.authenticated,
-      subject: info.subject,
+      authenticated,
+      subject,
       login,
       logout,
       refresh,
     }),
-    [ready, info, login, logout, refresh],
+    [ready, authenticated, subject, login, logout, refresh],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

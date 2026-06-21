@@ -53,11 +53,31 @@ export interface Result {
 // Auth & session (internal/auth, internal/server)
 // ---------------------------------------------------------------------------
 
-export interface SessionInfo {
+/** GET /api/auth/status — public; polled on load to choose login vs app vs
+ *  first-run, and to surface lockout. Mirrors the server's authStatusResponse. */
+export interface AuthStatus {
   authenticated: boolean;
-  subject?: string;
-  issued_at?: string;
-  expires_at?: string;
+  /** An admin credential exists (install has run). */
+  installed: boolean;
+  /** The account is temporarily locked after repeated failed logins. */
+  locked: boolean;
+  /** When locked, the UTC instant the lockout lifts. */
+  locked_until?: string;
+}
+
+/** POST /api/auth/login success body. The token is also set as an HttpOnly
+ *  session cookie; browser flows rely on the cookie and ignore the token. */
+export interface LoginResult {
+  token: string;
+  expires_at: string;
+}
+
+/** GET /api/auth/whoami — identifies the signed-in admin for the UI header.
+ *  Mirrors the server's whoamiResponse. */
+export interface SessionInfo {
+  subject: string;
+  issued_at: string;
+  expires_at: string;
 }
 
 export interface InstanceInfo {

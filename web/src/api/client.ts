@@ -8,6 +8,7 @@ import type {
   AlertRule,
   AlertsConfig,
   ApiErrorBody,
+  AuthStatus,
   BackupHistory,
   ChannelConfig,
   ClusterMigrationRequest,
@@ -22,6 +23,7 @@ import type {
   ErrorCode,
   GrantRequest,
   InstanceInfo,
+  LoginResult,
   MigrationSession,
   NewAppRequest,
   QueryResult,
@@ -150,7 +152,8 @@ function codeForStatus(status: number): ErrorCode {
       return "not_found";
     case 409:
       return "conflict";
-    case 423:
+    case 429:
+      // The server maps a lockout (CodeLocked) to 429 Too Many Requests.
       return "locked";
     default:
       return "internal";
@@ -163,14 +166,17 @@ function codeForStatus(status: number): ErrorCode {
 
 export const api = {
   // session ----------------------------------------------------------------
-  session(): Promise<SessionInfo> {
-    return request<SessionInfo>("/auth/status");
+  session(): Promise<AuthStatus> {
+    return request<AuthStatus>("/auth/status");
   },
-  login(password: string): Promise<SessionInfo> {
-    return request<SessionInfo>("/auth/login", { method: "POST", body: { password } });
+  login(password: string): Promise<LoginResult> {
+    return request<LoginResult>("/auth/login", { method: "POST", body: { password } });
   },
   logout(): Promise<void> {
     return request<void>("/auth/logout", { method: "POST" });
+  },
+  whoami(): Promise<SessionInfo> {
+    return request<SessionInfo>("/auth/whoami");
   },
   instance(): Promise<InstanceInfo> {
     return request<InstanceInfo>("/instance");
