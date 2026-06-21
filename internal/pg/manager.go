@@ -44,8 +44,12 @@ const (
 // cluster-wide queries (listing databases, reading the system identifier).
 const defaultConnectDatabase = "postgres"
 
-// aptPackages is the set of packages Provision installs.
-var aptPackages = []string{"postgresql", "postgresql-contrib"}
+// aptPackages is the set of packages Provision installs. pgbackrest is included
+// here (not installed lazily) because the backup feature shells out to the
+// `pgbackrest` binary via `sudo -u postgres`; without it the first backup fails
+// with "sudo: pgbackrest: command not found". The Debian/Ubuntu package puts the
+// binary in /usr/bin, which is on sudo's secure_path.
+var aptPackages = []string{"postgresql", "postgresql-contrib", "pgbackrest"}
 
 // serviceName is the systemd unit for the managed Postgres.
 const serviceName = "postgresql"

@@ -69,7 +69,7 @@ func TestProvision_HappyPath(t *testing.T) {
 	all := strings.Join(joined, "\n")
 
 	require.Contains(t, all, "apt-get update")
-	require.Contains(t, all, "apt-get install -y postgresql postgresql-contrib")
+	require.Contains(t, all, "apt-get install -y postgresql postgresql-contrib pgbackrest")
 	require.Contains(t, all, "systemctl enable --now postgresql")
 	// roles + extension are created via psql run as the postgres OS user.
 	require.Contains(t, all, "sudo -u postgres psql")
