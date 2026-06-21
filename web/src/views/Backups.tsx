@@ -2,6 +2,7 @@
 // and a guarded restore flow (typed-name confirm equal to the stanza name).
 
 import { useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { ApiError, api } from "@/api/client";
 import { bytes, dateTime, duration, millis } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
@@ -22,12 +23,23 @@ import type {
   BackupHistory,
   BackupRecord,
   BackupType,
+  ConfigResponse,
   RecoveryTarget,
 } from "@/api/types";
 
 export function Backups() {
   const toast = useToast();
   const history = useAsync<BackupHistory>(() => api.backupHistory(), []);
+  const config = useAsync<ConfigResponse>(() => api.getConfig(), []);
+
+  // Where backups actually land: local (this server) when no S3 bucket/endpoint
+  // is set, otherwise the configured bucket. Undefined while config loads, so the
+  // copy stays neutral until we know rather than flashing the wrong destination.
+  const backup = config.data?.config.backup;
+  const isLocal: boolean | undefined = config.data
+    ? !backup?.bucket?.trim() && !backup?.endpoint?.trim()
+    : undefined;
+  const bucketName = backup?.bucket?.trim() || backup?.endpoint?.trim() || "";
 
   const [runType, setRunType] = useState<BackupType | null>(null);
   const [runBusy, setRunBusy] = useState(false);
@@ -66,7 +78,19 @@ export function Backups() {
     <div className="view">
       <PageHeader
         title="Backups"
-        description="Back up your database to cloud storage, and check that your backups actually work."
+        description={
+          <>
+            Back up your database and check that your backups actually work.
+            {isLocal !== undefined ? (
+              <>
+                {" "}
+                <Badge tone={isLocal ? "warn" : "ok"}>
+                  {isLocal ? "Stored on this server" : `Stored in S3 · ${bucketName}`}
+                </Badge>
+              </>
+            ) : null}
+          </>
+        }
         actions={
           <div className="btn-row">
             <button
@@ -105,9 +129,31 @@ export function Backups() {
         }
       />
 
+      {isLocal ? (
+        <Callout tone="warn" title="Your backups are on this server — move them to S3">
+          Backups are being written to <code>/var/lib/pgbackrest</code> on this same
+          machine. That covers accidental drops and bad migrations, but{" "}
+          <strong>not disk failure or losing the server</strong> — if this box goes, the
+          backups go with it. <Link to="/settings">Set up an S3 bucket in Settings</Link>{" "}
+          for real off-server backups. You can switch anytime and it takes effect
+          immediately — new backups go to S3, and the local ones stay on disk.
+        </Callout>
+      ) : null}
+
       <Callout tone="info" title="How backups work here">
-        Backups are stored in your cloud bucket using pgBackRest. A{" "}
-        <strong>full</strong> backup copies everything; an{" "}
+        {isLocal === false ? (
+          <>
+            Backups are stored in your S3 bucket
+            {bucketName ? (
+              <>
+                {" "}
+                (<code>{bucketName}</code>)
+              </>
+            ) : null}{" "}
+            using pgBackRest.{" "}
+          </>
+        ) : null}
+        A <strong>full</strong> backup copies everything; an{" "}
         <strong>incremental</strong> backup only copies what changed since the last one, so it&apos;s
         faster and smaller. <strong>Test a restore</strong> proves your backups can actually be
         recovered — before you ever need them.
@@ -149,7 +195,9 @@ export function Backups() {
         title={runType === "full" ? "Run a full backup?" : "Run an incremental backup?"}
         message={
           runType === "full"
-            ? "This copies the entire database to your bucket. It can take a while and use more storage, but it's a complete restore point."
+            ? isLocal
+              ? "This copies the entire database to local storage on this server. It can take a while and use more storage, but it's a complete restore point."
+              : "This copies the entire database to your bucket. It can take a while and use more storage, but it's a complete restore point."
             : "This copies only what changed since the last backup. It's fast and small."
         }
         confirmLabel="Start backup"

@@ -23,7 +23,7 @@ export function Settings() {
     <div className="view">
       <PageHeader
         title="Settings"
-        description="Connect a cloud storage bucket so the panel can back up your database to it."
+        description="Backups are stored on this server until you connect an S3-compatible bucket here — recommended for real, off-server protection."
       />
       {config.loading ? (
         <Spinner label="Loading settings…" />
@@ -132,6 +132,16 @@ function BackupSettingsForm({
           )
         }
       >
+        {!hasTarget ? (
+          <Callout tone="warn" title="Backups are currently stored on this server">
+            With no bucket set, the panel writes backups to{" "}
+            <code>/var/lib/pgbackrest</code> on this same machine — a fine starting
+            point, but it won&apos;t survive disk or server loss. Add an S3-compatible
+            bucket below for real off-server backups. Switching is live and starts a
+            fresh backup repo in the bucket (existing local backups stay on disk).
+          </Callout>
+        ) : null}
+
         <Callout tone="info" title="Works with any S3-compatible bucket">
           Backblaze B2, Cloudflare R2, AWS S3, MinIO, and friends. Create a bucket
           and an access key with read/write access, then paste the details here.
