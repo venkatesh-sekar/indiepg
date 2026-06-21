@@ -278,6 +278,50 @@ func TestDropDatabase(t *testing.T) {
 	})
 }
 
+func TestRoleMembershipBuilders(t *testing.T) {
+	t.Run("grant membership", func(t *testing.T) {
+		got, err := GrantRoleMembership("shop_owner", "indiepg_admin")
+		require.NoError(t, err)
+		require.Equal(t, `GRANT "shop_owner" TO "indiepg_admin";`, got)
+	})
+	t.Run("revoke membership", func(t *testing.T) {
+		got, err := RevokeRoleMembership("shop_rw", "indiepg_admin")
+		require.NoError(t, err)
+		require.Equal(t, `REVOKE "shop_rw" FROM "indiepg_admin";`, got)
+	})
+	t.Run("invalid group name rejected", func(t *testing.T) {
+		_, err := GrantRoleMembership("bad name", "indiepg_admin")
+		require.Error(t, err)
+		require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	})
+	t.Run("invalid member name rejected", func(t *testing.T) {
+		_, err := RevokeRoleMembership("shop_rw", "bad name")
+		require.Error(t, err)
+		require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	})
+}
+
+func TestDefaultReadFor(t *testing.T) {
+	t.Run("emits FOR ROLE default privileges for tables and sequences", func(t *testing.T) {
+		got, err := DefaultReadFor("shop_rw", "public", "shop_ro")
+		require.NoError(t, err)
+		require.Equal(t, []string{
+			`ALTER DEFAULT PRIVILEGES FOR ROLE "shop_rw" IN SCHEMA "public" GRANT SELECT ON TABLES TO "shop_ro";`,
+			`ALTER DEFAULT PRIVILEGES FOR ROLE "shop_rw" IN SCHEMA "public" GRANT SELECT ON SEQUENCES TO "shop_ro";`,
+		}, got)
+	})
+	t.Run("non-public schema is validated and quoted", func(t *testing.T) {
+		got, err := DefaultReadFor("rw", "reporting", "ro")
+		require.NoError(t, err)
+		require.Contains(t, strings.Join(got, "\n"), `FOR ROLE "rw" IN SCHEMA "reporting" GRANT SELECT ON TABLES TO "ro";`)
+	})
+	t.Run("invalid creator rejected", func(t *testing.T) {
+		_, err := DefaultReadFor("bad creator", "public", "ro")
+		require.Error(t, err)
+		require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	})
+}
+
 func TestBuildNewApp(t *testing.T) {
 	plan := NewAppPlan{
 		Database:      "shop",
@@ -301,6 +345,11 @@ func TestBuildNewApp(t *testing.T) {
 	// Read-only user is created and granted SELECT + default privileges.
 	require.Contains(t, joined, `CREATE ROLE "shop_ro" LOGIN PASSWORD 'ropass';`)
 	require.Contains(t, joined, `ALTER DEFAULT PRIVILEGES IN SCHEMA "public" GRANT SELECT ON TABLES TO "shop_ro";`)
+	// Future objects the read-write user creates must be readable by the
+	// read-only user: default privileges attach to the creator, so they are set
+	// FOR ROLE the read-write user (not whoever runs the DDL).
+	require.Contains(t, joined, `ALTER DEFAULT PRIVILEGES FOR ROLE "shop_rw" IN SCHEMA "public" GRANT SELECT ON TABLES TO "shop_ro";`)
+	require.Contains(t, joined, `ALTER DEFAULT PRIVILEGES FOR ROLE "shop_rw" IN SCHEMA "public" GRANT SELECT ON SEQUENCES TO "shop_ro";`)
 
 	// CREATE DATABASE appears exactly once.
 	require.Equal(t, 1, strings.Count(joined, "CREATE DATABASE"))

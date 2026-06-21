@@ -94,6 +94,63 @@ func CreateRole(name, password string, canLogin bool) (string, error) {
 	), nil
 }
 
+// GrantRoleMembership builds a "GRANT group TO member" statement making member
+// a member of group. The panel uses this so its non-superuser admin role can be
+// made a member of an app's owner role — a prerequisite, on a non-superuser
+// connection, for CREATE DATABASE ... OWNER on that role (and later DROP of that
+// database) — and, transiently, a member of the read-write role so it can set
+// that role's default privileges via ALTER DEFAULT PRIVILEGES FOR ROLE.
+func GrantRoleMembership(group, member string) (string, error) {
+	if err := core.ValidateIdentifier(group, "role"); err != nil {
+		return "", err
+	}
+	if err := core.ValidateIdentifier(member, "role"); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("GRANT %s TO %s;", core.QuoteIdent(group), core.QuoteIdent(member)), nil
+}
+
+// RevokeRoleMembership builds a "REVOKE group FROM member" statement, the
+// inverse of GrantRoleMembership. Default privileges already installed via
+// ALTER DEFAULT PRIVILEGES FOR ROLE persist after the grantor's membership is
+// revoked, so this is used to relinquish a transient membership once defaults
+// are set.
+func RevokeRoleMembership(group, member string) (string, error) {
+	if err := core.ValidateIdentifier(group, "role"); err != nil {
+		return "", err
+	}
+	if err := core.ValidateIdentifier(member, "role"); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("REVOKE %s FROM %s;", core.QuoteIdent(group), core.QuoteIdent(member)), nil
+}
+
+// DefaultReadFor builds ALTER DEFAULT PRIVILEGES statements so that future
+// tables and sequences created *by* creator in schema are automatically
+// readable by grantee. The FOR ROLE clause is essential: default privileges
+// attach to the role that creates the object, so to make a read-only user see
+// tables a read-write app creates later, the defaults must name the creating
+// (read-write) role — not whoever runs this DDL. The executing role must be a
+// member of creator.
+func DefaultReadFor(creator, schema, grantee string) ([]string, error) {
+	if err := core.ValidateIdentifier(creator, "role"); err != nil {
+		return nil, err
+	}
+	if err := validateSchemaName(schema); err != nil {
+		return nil, err
+	}
+	if err := core.ValidateIdentifier(grantee, "role"); err != nil {
+		return nil, err
+	}
+	c := core.QuoteIdent(creator)
+	sch := core.QuoteIdent(schema)
+	g := core.QuoteIdent(grantee)
+	return []string{
+		fmt.Sprintf("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s GRANT SELECT ON TABLES TO %s;", c, sch, g),
+		fmt.Sprintf("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s GRANT SELECT ON SEQUENCES TO %s;", c, sch, g),
+	}, nil
+}
+
 // CreateReadonlyUser builds the full ordered statement set to create a
 // read-only login user "done correctly": the LOGIN role itself, CONNECT on the
 // database, USAGE on the schema, SELECT on all current tables and sequences,
@@ -329,12 +386,21 @@ type NewAppPlan struct {
 //  1. the owner (NOLOGIN) role,
 //  2. the database owned by it,
 //  3. the read-write login user with read-write grants,
-//  4. the read-only login user with read-only grants (incl. default privileges).
+//  4. the read-only login user with read-only grants (incl. default privileges),
+//  5. default privileges so future objects the read-write user creates are
+//     automatically readable by the read-only user.
 //
 // All objects target the conventional "public" schema. Statements should be
 // run in order; the database creation cannot run inside the same transaction
 // as the grants because CREATE DATABASE is not transactional in Postgres — the
 // caller is responsible for that sequencing.
+//
+// This is the logical definition of the bundle. When a *non-superuser* role
+// executes it (as the panel's admin role does), additional role-membership
+// plumbing is required and is the executor's responsibility (see
+// Manager.AdminNewApp): the executor must be a member of the owner role to
+// create the database it owns, and transiently a member of the read-write role
+// to install step 5's FOR ROLE default privileges.
 func BuildNewApp(p NewAppPlan) ([]string, error) {
 	if err := core.ValidateIdentifier(p.Database, "database"); err != nil {
 		return nil, err
@@ -382,6 +448,13 @@ func BuildNewApp(p NewAppPlan) ([]string, error) {
 			core.QuoteIdent(p.ReadonlyUser), core.QuoteLiteral(p.ReadonlyPass)),
 	)
 	stmts = append(stmts, grantReadonly(p.ReadonlyUser, p.Database, schema)...)
+	// 5. Future objects created by the read-write user are readable by the
+	// read-only user (default privileges attach to the creating role).
+	roDefaults, err := DefaultReadFor(p.ReadwriteUser, schema, p.ReadonlyUser)
+	if err != nil {
+		return nil, err
+	}
+	stmts = append(stmts, roDefaults...)
 
 	return stmts, nil
 }

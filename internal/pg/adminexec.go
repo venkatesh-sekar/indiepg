@@ -163,6 +163,13 @@ func (m *Manager) AdminCreateDatabase(ctx context.Context, name, owner string) (
 // grants. It sequences the work across the maintenance pool (roles + CREATE
 // DATABASE) and the new database (grants), because CREATE DATABASE cannot run in
 // a transaction and the grants must run inside the new database.
+//
+// Because the panel's admin role is NOSUPERUSER, the flow also manages role
+// memberships Postgres requires of a non-superuser: the admin role is made a
+// member of the owner role (so it may create — and later drop — the database it
+// owns) and is transiently made a member of the read-write role (so it may set
+// that role's FOR ROLE default privileges, which is what keeps the read-only
+// user able to read objects the app creates after provisioning).
 func (m *Manager) AdminNewApp(ctx context.Context, plan admin.NewAppPlan) (core.Result, error) {
 	// Validate the whole plan (identifiers + distinct role names) up front.
 	if _, err := admin.BuildNewApp(plan); err != nil {
@@ -194,8 +201,17 @@ func (m *Manager) AdminNewApp(ctx context.Context, plan admin.NewAppPlan) (core.
 
 	recorded := make([]string, 0, 16)
 
-	// 1. Owner group role (cluster-global, on the maintenance pool).
+	// 1. Owner group role (cluster-global, on the maintenance pool), plus
+	// membership of it for the panel's admin role. The admin role is NOSUPERUSER,
+	// so Postgres will refuse the CREATE DATABASE ... OWNER in step 2 (and a later
+	// DROP DATABASE) unless the admin role is a member of the owning role. Grant
+	// the membership in the SAME transaction as the role creation so the two
+	// commit or roll back together — a failure never leaves an orphan owner role.
 	ownerStmt, err := admin.CreateRole(plan.OwnerRole, "", false)
+	if err != nil {
+		return core.Result{}, err
+	}
+	ownerToAdmin, err := admin.GrantRoleMembership(plan.OwnerRole, AdminRole)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -203,7 +219,7 @@ func (m *Manager) AdminNewApp(ctx context.Context, plan admin.NewAppPlan) (core.
 	if priv == nil {
 		return core.Result{}, notConnected()
 	}
-	rec, err := m.runStmtsTx(ctx, priv, []string{ownerStmt})
+	rec, err := m.runStmtsTx(ctx, priv, []string{ownerStmt, ownerToAdmin})
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -249,6 +265,30 @@ func (m *Manager) AdminNewApp(ctx context.Context, plan admin.NewAppPlan) (core.
 		return core.Result{}, err
 	}
 	stmts = append(stmts, roGrants...)
+
+	// Make future tables/sequences the read-write user creates automatically
+	// readable by the read-only user. Default privileges attach to the *creating*
+	// role, so this must be set FOR the read-write role — otherwise the read-only
+	// user could see only objects that exist now, not ones the app adds later
+	// (the read-only DSN would silently break). Setting another role's default
+	// privileges requires membership in it, so the admin role is briefly made a
+	// member of the read-write role and relinquishes it once the defaults are in
+	// place; the installed defaults persist after the revoke.
+	rwToAdmin, err := admin.GrantRoleMembership(plan.ReadwriteUser, AdminRole)
+	if err != nil {
+		return core.Result{}, err
+	}
+	stmts = append(stmts, rwToAdmin)
+	roDefaults, err := admin.DefaultReadFor(plan.ReadwriteUser, schema, plan.ReadonlyUser)
+	if err != nil {
+		return core.Result{}, err
+	}
+	stmts = append(stmts, roDefaults...)
+	rwFromAdmin, err := admin.RevokeRoleMembership(plan.ReadwriteUser, AdminRole)
+	if err != nil {
+		return core.Result{}, err
+	}
+	stmts = append(stmts, rwFromAdmin)
 
 	rec3, err := m.runStmtsTx(ctx, target, stmts)
 	if err != nil {
