@@ -197,9 +197,18 @@ func (m *Manager) stanzaCreate(ctx context.Context, stanza, configPath string) e
 		Timeout: stanzaCreateTimeout,
 	})
 	if err != nil {
-		return core.ExecError("backup: stanza-create for %q failed", stanza).
+		out := core.ExecError("backup: stanza-create for %q failed", stanza).
 			WithHint("verify Postgres is running and the S3 credentials/bucket are correct; " +
-				"if it reports an existing or partial repo, run `pgbackrest --stanza=" + stanza + " stanza-delete` and retry").Wrap(err)
+				"if it reports an existing or partial repo, run `pgbackrest --stanza=" + stanza + " stanza-delete` and retry")
+		// Lift the underlying command's stderr (the precise reason) onto this error
+		// so it reaches the operator at the point of configuration (the settings
+		// save doubles as a connection test), not only the backup-history row.
+		if inner, ok := core.AsError(err); ok {
+			if s, _ := inner.Details["stderr"].(string); s != "" {
+				out = out.WithDetail("stderr", s)
+			}
+		}
+		return out.Wrap(err)
 	}
 	return nil
 }

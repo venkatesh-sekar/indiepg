@@ -12,6 +12,7 @@ import type {
   BackupHistory,
   ChannelConfig,
   ClusterMigrationRequest,
+  ConfigResponse,
   CreateDatabaseRequest,
   CreateReadonlyUserRequest,
   CreateRoleRequest,
@@ -34,6 +35,7 @@ import type {
   SessionInfo,
   SingleDBMigrationRequest,
   TestChannelRequest,
+  UpdateConfigRequest,
 } from "./types";
 
 /** Typed error thrown by every client method on failure. */
@@ -247,6 +249,14 @@ export const api = {
   },
   runRestoreTest(): Promise<Result> {
     return request<Result>("/backups/restore-test", { method: "POST" });
+  },
+
+  // settings / config ------------------------------------------------------
+  getConfig(): Promise<ConfigResponse> {
+    return request<ConfigResponse>("/config");
+  },
+  updateConfig(req: UpdateConfigRequest): Promise<ConfigResponse> {
+    return request<ConfigResponse>("/config", { method: "PUT", body: req });
   },
 
   // alerts -----------------------------------------------------------------

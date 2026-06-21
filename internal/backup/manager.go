@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/config"
@@ -22,13 +23,44 @@ import (
 type Manager struct {
 	runner exec.Runner
 	store  *store.Store
-	cfg    config.Config
-	owner  *identity.Owner
 	log    *core.Logger
 	// confDir is the directory holding the managed pgbackrest.conf. It defaults
 	// to /etc/pgbackrest and is overridable (tests) so the config-writing path is
 	// exercisable without touching the real system directory.
 	confDir string
+
+	// mu guards cfg and owner, which Reconfigure swaps when the operator saves new
+	// settings (e.g. wiring an S3 target + ownership guard) without restarting the
+	// panel. Every read goes through config()/currentOwner().
+	mu    sync.RWMutex
+	cfg   config.Config
+	owner *identity.Owner
+}
+
+// config returns the current configuration snapshot under the read lock.
+func (m *Manager) config() config.Config {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cfg
+}
+
+// currentOwner returns the current ownership guard (possibly nil) under the read
+// lock.
+func (m *Manager) currentOwner() *identity.Owner {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.owner
+}
+
+// Reconfigure swaps the live configuration and ownership guard. The server calls
+// it after a settings save so a freshly-configured S3 target (and its
+// single-writer Owner) takes effect immediately, without a restart. A nil owner
+// is valid (local-only, or S3 with the guard unavailable — see acquireForWrite).
+func (m *Manager) Reconfigure(cfg config.Config, owner *identity.Owner) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg = cfg
+	m.owner = owner
 }
 
 // Options configure a Manager. Owner may be nil only for an explicitly
@@ -71,14 +103,14 @@ func New(opts Options) *Manager {
 // repoPrefix is the ownership-marker prefix for this manager's repo. It is the
 // configured backup prefix (namespaced by instance id at install time).
 func (m *Manager) repoPrefix() string {
-	return m.cfg.Backup.Prefix
+	return m.config().Backup.Prefix
 }
 
 // Info parses the current backups from the stanza by running `pgbackrest info`
 // and parsing its JSON. It is a read-only operation and does not touch
 // ownership.
 func (m *Manager) Info(ctx context.Context) ([]BackupInfo, error) {
-	stanza := m.cfg.Stanza
+	stanza := m.config().Stanza
 	if err := validateStanza(stanza); err != nil {
 		return nil, err
 	}
@@ -96,7 +128,7 @@ func (m *Manager) Info(ctx context.Context) ([]BackupInfo, error) {
 // runs pgBackRest. A pgBackRest failure is recorded as a failed history row and
 // returned as the underlying exec error.
 func (m *Manager) Backup(ctx context.Context, t Type) (core.Result, error) {
-	stanza := m.cfg.Stanza
+	stanza := m.config().Stanza
 	if err := validateStanza(stanza); err != nil {
 		return core.Result{}, err
 	}
@@ -192,7 +224,7 @@ func (m *Manager) Backup(ctx context.Context, t Type) (core.Result, error) {
 // (not claims) ownership when an Owner is configured: restoring from a repo owned
 // by a foreign panel is a HARD STOP.
 func (m *Manager) Restore(ctx context.Context, target *RecoveryTarget, delta bool, confirmTyped string) (core.Result, error) {
-	stanza := m.cfg.Stanza
+	stanza := m.config().Stanza
 	if err := validateStanza(stanza); err != nil {
 		return core.Result{}, err
 	}
@@ -246,7 +278,8 @@ func (m *Manager) Restore(ctx context.Context, target *RecoveryTarget, delta boo
 // explicitly local-only, where there is no shared resource to corrupt and the
 // single-writer guard may be safely skipped.
 func (m *Manager) remoteTargetConfigured() bool {
-	return m.cfg.Backup.Bucket != "" || m.cfg.Backup.Endpoint != ""
+	cfg := m.config()
+	return cfg.Backup.Bucket != "" || cfg.Backup.Endpoint != ""
 }
 
 // acquireForWrite claims (or verifies mine) the repo and heartbeats. A nil Owner
@@ -256,7 +289,8 @@ func (m *Manager) remoteTargetConfigured() bool {
 // bucket/endpoint) is allowed to proceed without an Owner. A foreign owner is
 // propagated unchanged (HARD STOP).
 func (m *Manager) acquireForWrite(ctx context.Context) error {
-	if m.owner == nil {
+	owner := m.currentOwner()
+	if owner == nil {
 		if m.remoteTargetConfigured() {
 			oe := core.NewOwnershipError(
 				m.repoPrefix(), "", "", "", false,
@@ -270,10 +304,10 @@ func (m *Manager) acquireForWrite(ctx context.Context) error {
 		return nil
 	}
 	prefix := m.repoPrefix()
-	if _, err := m.owner.Claim(ctx, prefix); err != nil {
+	if _, err := owner.Claim(ctx, prefix); err != nil {
 		return err
 	}
-	if err := m.owner.Heartbeat(ctx, prefix); err != nil {
+	if err := owner.Heartbeat(ctx, prefix); err != nil {
 		return err
 	}
 	return nil
@@ -291,7 +325,7 @@ func (m *Manager) takeSafetyBackup(ctx context.Context) (string, error) {
 	if err != nil {
 		m.log.Error("safety backup before restore failed; refusing to overwrite the live cluster", "error", err)
 		return "", core.NewSafetyError(
-			"restore stanza "+m.cfg.Stanza,
+			"restore stanza "+m.config().Stanza,
 			[]string{"a successful safety backup of the current cluster"},
 			"refusing to restore: the pre-restore safety backup failed (%v); the live cluster was left untouched — fix the backup target/repo and retry, or take a manual backup before restoring",
 			err,
@@ -306,11 +340,12 @@ func (m *Manager) takeSafetyBackup(ctx context.Context) (string, error) {
 // (*core.NotFoundError) is acceptable for a read — we are not corrupting it — so
 // it is not treated as fatal.
 func (m *Manager) verifyForRead(ctx context.Context) error {
-	if m.owner == nil {
+	owner := m.currentOwner()
+	if owner == nil {
 		m.log.Warn("no ownership guard configured; restoring without single-writer verification")
 		return nil
 	}
-	_, err := m.owner.Verify(ctx, m.repoPrefix())
+	_, err := owner.Verify(ctx, m.repoPrefix())
 	if err == nil {
 		return nil
 	}

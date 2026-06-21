@@ -14,6 +14,7 @@ import { RolesDatabases } from "@/views/RolesDatabases";
 import { Backups } from "@/views/Backups";
 import { Alerts } from "@/views/Alerts";
 import { Migrate } from "@/views/Migrate";
+import { Settings } from "@/views/Settings";
 
 export default function App() {
   return (
@@ -34,6 +35,7 @@ export default function App() {
             <Route path="backups" element={<Backups />} />
             <Route path="alerts" element={<Alerts />} />
             <Route path="migrate" element={<Migrate />} />
+            <Route path="settings" element={<Settings />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

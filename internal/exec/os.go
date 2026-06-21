@@ -80,14 +80,38 @@ func (r *OSRunner) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	}
 
 	if err != nil {
+		// Fold the command's own stderr into the message, not just a structured
+		// detail: callers render the error string (e.g. backup_history.error), and
+		// without this the operator sees only "exit status N" with no clue WHY
+		// (pgBackRest, pg_dump, etc. print the actionable reason to stderr).
+		tail := stderrTail(spec, res.Stderr)
 		if ctx.Err() == context.DeadlineExceeded {
-			return res, core.ExecError("command timed out after %s: %s", spec.Timeout, display).
+			return res, core.ExecError("command timed out after %s: %s%s", spec.Timeout, display, tail).
 				WithDetail("stderr", res.Stderr).Wrap(err)
 		}
-		return res, core.ExecError("command failed (exit %d): %s", res.ExitCode, display).
+		return res, core.ExecError("command failed (exit %d): %s%s", res.ExitCode, display, tail).
 			WithDetail("stderr", res.Stderr).Wrap(err)
 	}
 	return res, nil
+}
+
+// stderrTail returns a compact, message-appendable form of a failed command's
+// stderr, or "" when there is nothing useful to add. It is omitted for Sensitive
+// commands (whose output may carry secrets) and capped to a sane length, keeping
+// the TAIL because tools print the decisive error line last.
+func stderrTail(spec RunSpec, stderr string) string {
+	if spec.Sensitive {
+		return ""
+	}
+	s := strings.TrimSpace(stderr)
+	if s == "" {
+		return ""
+	}
+	const max = 800
+	if len(s) > max {
+		s = "…" + s[len(s)-max:]
+	}
+	return ": " + s
 }
 
 // resolveArgv builds the full argv, prepending "sudo -u <user>" when AsUser is

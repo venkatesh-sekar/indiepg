@@ -19,6 +19,7 @@ const NAV: NavItem[] = [
   { to: "/backups", label: "Backups", icon: "▤", hint: "Backup & restore" },
   { to: "/alerts", label: "Alerts", icon: "◬", hint: "Notifications & rules" },
   { to: "/migrate", label: "Migrate", icon: "⇄", hint: "Move a database here" },
+  { to: "/settings", label: "Settings", icon: "⚙", hint: "Backup storage & retention" },
 ];
 
 export function Layout() {

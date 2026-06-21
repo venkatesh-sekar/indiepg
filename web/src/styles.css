@@ -555,6 +555,21 @@ code {
   color: var(--text-muted);
 }
 
+/* Verbatim command output (e.g. pgBackRest stderr) inside a callout. */
+.callout-detail {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-sm);
+}
+
 .callout-info {
   background: var(--info-soft);
   border-color: transparent;
@@ -806,6 +821,19 @@ code {
 
 .field-narrow {
   max-width: 200px;
+}
+
+/* Two-column form grid (e.g. the S3 settings form); collapses on narrow viewports. */
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+
+@media (max-width: 720px) {
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 fieldset.field {

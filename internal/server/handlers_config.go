@@ -90,6 +90,10 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refresh the live backup Manager so a freshly-saved S3 target (and its
+	// single-writer ownership guard) takes effect immediately, without a restart.
+	s.backups.Reconfigure(cfg, backupOwnerFor(ctx, s.store, cfg, s.log))
+
 	s.audit(ctx, "update_config", "config", "success", "panel configuration updated", "")
 
 	resp := map[string]any{
@@ -110,6 +114,11 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		resp["backup_warning"] = ae.Message
 		if ae.Hint != "" {
 			resp["backup_hint"] = ae.Hint
+		}
+		// Surface the underlying command's stderr (the precise reason) so the
+		// operator sees WHY the target failed right where they entered it.
+		if s, ok := ae.Details["stderr"].(string); ok && s != "" {
+			resp["backup_detail"] = s
 		}
 		s.log.Warn("pgBackRest configuration failed after config save", "err", perr)
 	} else {

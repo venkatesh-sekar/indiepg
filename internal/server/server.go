@@ -21,6 +21,7 @@ import (
 	"github.com/venkatesh-sekar/indiepg/internal/config"
 	"github.com/venkatesh-sekar/indiepg/internal/core"
 	"github.com/venkatesh-sekar/indiepg/internal/exec"
+	"github.com/venkatesh-sekar/indiepg/internal/identity"
 	"github.com/venkatesh-sekar/indiepg/internal/pg"
 	"github.com/venkatesh-sekar/indiepg/internal/pg/guard"
 	"github.com/venkatesh-sekar/indiepg/internal/server/web"
@@ -157,6 +158,39 @@ func (s *Server) ensureBackupConfigured(ctx context.Context, cfg config.Config) 
 	return s.backups.EnsureConfigured(ctx, params)
 }
 
+// backupOwnerFor builds the single-writer ownership guard for the configured S3
+// repo, or returns nil when there is no remote target (local-only: nothing to
+// guard). The marker lives in the SAME bucket as the backups, so a second panel
+// pointed at the repo will see it and refuse to share. A nil return when S3 IS
+// configured is fail-closed by design: the Manager's acquireForWrite then aborts
+// the backup rather than silently dropping the guard.
+//
+// It is a free function (not a method) so newServer can call it while still
+// assembling the Server.
+func backupOwnerFor(ctx context.Context, st *store.Store, cfg config.Config, log *core.Logger) *identity.Owner {
+	if cfg.Backup.Bucket == "" && cfg.Backup.Endpoint == "" {
+		return nil // local-only; no shared resource to corrupt.
+	}
+	id, err := identity.Load(ctx, st)
+	if err != nil {
+		log.Warn("backup ownership guard unavailable: panel identity not loaded", "err", err)
+		return nil
+	}
+	objstore, err := backup.NewS3ObjectStore(backup.S3StoreParams{
+		Endpoint:  cfg.Backup.Endpoint,
+		Region:    cfg.Backup.Region,
+		Bucket:    cfg.Backup.Bucket,
+		AccessKey: cfg.Backup.AccessKey,
+		SecretKey: cfg.Backup.SecretKey,
+		UseSSL:    cfg.Backup.UseSSL,
+	})
+	if err != nil {
+		log.Warn("backup ownership guard unavailable: could not build S3 client", "err", err)
+		return nil
+	}
+	return identity.NewOwner(id, objstore, log)
+}
+
 // newServer is the unexported builder used by New and by tests to inject a
 // pre-wired authenticator and SPA filesystem.
 func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth.Authenticator, dist fs.FS, ttl time.Duration) (*Server, error) {
@@ -167,13 +201,18 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 	pgmgr := pg.New(pg.Options{Runner: runner, Config: cfg, Logger: log})
 
 	s := &Server{
-		cfg:     cfg,
-		store:   st,
-		log:     log,
-		auth:    authn,
-		pg:      pgmgr,
-		guard:   guard.New(guard.Options{ReadOnly: true, AutoLimit: cfg.QueryLimit}),
-		backups: backup.New(backup.Options{Runner: runner, Store: st, Config: cfg, Logger: log}),
+		cfg:   cfg,
+		store: st,
+		log:   log,
+		auth:  authn,
+		pg:    pgmgr,
+		guard: guard.New(guard.Options{ReadOnly: true, AutoLimit: cfg.QueryLimit}),
+		backups: backup.New(backup.Options{
+			Runner: runner, Store: st, Config: cfg, Logger: log,
+			// Wire the single-writer ownership guard when an S3 target is already
+			// configured, so backups are protected immediately on startup.
+			Owner: backupOwnerFor(context.Background(), st, cfg, log),
+		}),
 		sampler: pg.NewSampler(pgmgr),
 
 		sessionTTL: ttl,

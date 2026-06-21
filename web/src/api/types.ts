@@ -265,6 +265,82 @@ export interface RestoreRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Configuration / settings (internal/config, internal/server/handlers_config)
+// ---------------------------------------------------------------------------
+
+/** config.S3Target — the S3 backup destination. Secrets (secret_key, cipher_pass)
+ *  are write-only and never returned; presence is reported by the *_is_set flags
+ *  on ConfigResponse. */
+export interface S3Target {
+  endpoint: string;
+  region: string;
+  bucket: string;
+  prefix: string;
+  access_key: string;
+  use_ssl: boolean;
+}
+
+export interface Schedules {
+  full_backup: string;
+  incremental_backup: string;
+  restore_test: string;
+  telemetry_sample: string;
+  digest: string;
+}
+
+/** config.Config — the full panel configuration as returned by GET /api/config.
+ *  Secrets are omitted server-side (json:"-"). */
+export interface PanelConfig {
+  bind_addr: string;
+  force_public_bind: boolean;
+  otlp_endpoint: string;
+  otlp_insecure: boolean;
+  stanza: string;
+  backup: S3Target;
+  retention_days: number;
+  schedules: Schedules;
+  statement_timeout: number;
+  query_limit: number;
+  pg_socket_dir: string;
+}
+
+/** Envelope returned by GET and PUT /api/config. The backup_* fields on the PUT
+ *  response report whether re-provisioning pgBackRest succeeded after the save. */
+export interface ConfigResponse {
+  config: PanelConfig;
+  backup_secret_is_set: boolean;
+  backup_cipher_is_set: boolean;
+  /** Present on the update response: did pgBackRest (re)configure cleanly? */
+  backup_configured?: boolean;
+  /** Present when provisioning failed (non-fatal): the reason to surface. */
+  backup_warning?: string;
+  backup_hint?: string;
+  /** The underlying command's stderr (the precise failure reason), when available. */
+  backup_detail?: string;
+}
+
+/** Editable S3 fields. Secrets are write-only: omit (or send empty) to keep the
+ *  stored value; send a non-empty value to replace it. */
+export interface BackupTargetUpdate {
+  endpoint?: string;
+  region?: string;
+  bucket?: string;
+  prefix?: string;
+  access_key?: string;
+  secret_key?: string;
+  use_ssl?: boolean;
+  cipher_pass?: string;
+}
+
+/** Partial config update — only the provided fields are applied (PUT /api/config). */
+export interface UpdateConfigRequest {
+  stanza?: string;
+  retention_days?: number;
+  query_limit?: number;
+  backup?: BackupTargetUpdate;
+}
+
+// ---------------------------------------------------------------------------
 // Alerts (internal/alert)
 // ---------------------------------------------------------------------------
 
