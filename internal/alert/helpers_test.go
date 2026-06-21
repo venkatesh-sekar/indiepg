@@ -1,8 +1,8 @@
 package alert
 
 import (
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
-	"github.com/venkatesh-sekar/pgpanel/internal/telemetry"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/telemetry"
 )
 
 // store_AlertRecord builds a minimal AlertRecord for decode tests.

@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
 )
 
 func TestTokenFromRequest(t *testing.T) {
@@ -92,7 +92,7 @@ func TestIsSecureRequest(t *testing.T) {
 	})
 
 	t.Run("spoofed forwarded proto is ignored without trust flag", func(t *testing.T) {
-		// Default (no PGPANEL_TRUST_FORWARDED_PROTO): the header is spoofable
+		// Default (no INDIEPG_TRUST_FORWARDED_PROTO): the header is spoofable
 		// and must NOT be honored, so the cookie stays non-Secure on plain HTTP.
 		t.Setenv(trustForwardedProtoEnv, "")
 		r := httptest.NewRequest(http.MethodGet, "http://x/", nil)

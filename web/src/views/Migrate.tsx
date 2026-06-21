@@ -35,7 +35,7 @@ export function Migrate() {
       />
 
       <Callout tone="info" title="Always verified">
-        Before any overwrite, pgpanel takes a <strong>safety backup</strong>, checks the transferred
+        Before any overwrite, indiepg takes a <strong>safety backup</strong>, checks the transferred
         data with a <strong>checksum</strong>, and compares <strong>row counts</strong> between the
         old and new server. You only get a green light when the numbers match.
       </Callout>
@@ -270,7 +270,7 @@ function SessionProgress({
             <Callout tone="danger" title="Migration failed">
               {session.error || "The migration could not complete."}
               <div className="muted">
-                Your existing data is safe — pgpanel took a safety backup before importing.
+                Your existing data is safe — indiepg took a safety backup before importing.
               </div>
             </Callout>
           ) : status === "expired" ? (

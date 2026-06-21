@@ -50,7 +50,7 @@ export function Login() {
       <form className="login-card" onSubmit={onSubmit}>
         <div className="login-brand">
           <span className="brand-mark">pg</span>
-          <h1>pgpanel</h1>
+          <h1>indiepg</h1>
         </div>
         <p className="login-sub">Sign in with your admin password.</p>
 
@@ -77,7 +77,7 @@ export function Login() {
         </button>
 
         <p className="login-help muted">
-          Forgot it? On the server, run <code>pgpanel reset-password</code> over SSH.
+          Forgot it? On the server, run <code>indiepg reset-password</code> over SSH.
         </p>
       </form>
     </div>

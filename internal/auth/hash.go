@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // HashParams holds the Argon2id cost parameters. They are encoded into every

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -29,7 +29,7 @@ func TestOpenCreatesPrivateStateFile(t *testing.T) {
 	// must be created 0600 (owner-only) and its parent dir 0700, regardless of
 	// the process umask.
 	dir := filepath.Join(t.TempDir(), "nested")
-	path := filepath.Join(dir, "pgpanel.db")
+	path := filepath.Join(dir, "indiepg.db")
 
 	s, err := Open(path)
 	require.NoError(t, err)
@@ -47,7 +47,7 @@ func TestOpenCreatesPrivateStateFile(t *testing.T) {
 func TestOpenTightensExistingStateFile(t *testing.T) {
 	// A pre-existing world-readable state file (e.g. created by an older build)
 	// must be chmod-ed down to 0600 on Open.
-	path := filepath.Join(t.TempDir(), "pgpanel.db")
+	path := filepath.Join(t.TempDir(), "indiepg.db")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	require.NoError(t, err)
 	require.NoError(t, f.Close())

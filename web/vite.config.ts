@@ -20,7 +20,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // During `vite dev` proxy the API to a locally running pgpanel binary.
+      // During `vite dev` proxy the API to a locally running indiepg binary.
       "/api": {
         target: "http://127.0.0.1:8443",
         changeOrigin: true,

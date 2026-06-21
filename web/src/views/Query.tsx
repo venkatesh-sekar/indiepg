@@ -1,6 +1,6 @@
 // Query view: read-only SQL editor with an explicit, unmissable read-only
 // affordance + a results table. The server enforces read-only at the DB level
-// (pgpanel_readonly role) and auto-LIMITs — this UI makes that visible.
+// (indiepg_readonly role) and auto-LIMITs — this UI makes that visible.
 
 import { useState, type KeyboardEvent } from "react";
 import { ApiError, api } from "@/api/client";

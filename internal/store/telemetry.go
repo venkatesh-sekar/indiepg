@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // InsertSample buffers a single telemetry sample for the in-panel dashboard.

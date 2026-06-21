@@ -332,7 +332,7 @@ function ChannelModal({
           <>
             <Callout tone="info">
               Find your <strong>user key</strong> on the Pushover dashboard and create an{" "}
-              <strong>application token</strong> for pgpanel.
+              <strong>application token</strong> for indiepg.
             </Callout>
             <label className="field">
               <span className="field-label">Application token</span>

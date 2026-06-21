@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // fakeDoer captures the request and returns a canned response/error.

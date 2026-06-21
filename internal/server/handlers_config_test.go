@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
 )
 
 func strp(s string) *string { return &s }

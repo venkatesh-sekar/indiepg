@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
 
 func TestMarkerIsStale(t *testing.T) {

@@ -1,4 +1,4 @@
-# pgpanel
+# indiepg
 
 A single self-hosted binary that installs and **owns** a native PostgreSQL,
 serves a private web admin panel to safely browse/query it and run backups, and
@@ -27,36 +27,71 @@ panels can never silently corrupt one repository.
 
 ## Quick start
 
-Download the binary onto a fresh box and install:
+One command on a fresh Debian/Ubuntu box. It downloads indiepg, provisions
+Postgres, installs a systemd service, and prints your panel URL and a one-time
+admin password:
 
 ```sh
-sudo ./pgpanel install      # provision Postgres, set admin password, generate identity
-sudo systemctl enable --now pgpanel
+curl -fsSL https://raw.githubusercontent.com/venkatesh-sekar/indiepg/main/scripts/install.sh | sudo sh
 ```
 
-Then open the panel on its **private** bind address (localhost / Tailscale /
-private net — never `0.0.0.0` unless explicitly forced).
-
-Lost the admin password? From an SSH session on the box:
+Already have the binary on the box? Skip the download — `install` does the rest,
+including writing and starting the service:
 
 ```sh
-sudo pgpanel reset-password
+sudo indiepg install
 ```
+
+Either way it ends with everything you need:
+
+```
+============================================================
+  indiepg is installed.
+  Running now as a systemd service (auto-starts on boot).
+
+  Panel URL       http://127.0.0.1:8443
+  Admin password  <48-char password>   (shown once — save it now)
+  Reset it later  sudo indiepg reset-password
+
+  The panel binds a PRIVATE address — reach it over localhost,
+  Tailscale, or your private network.
+============================================================
+```
+
+No second `systemctl` step, no hand-written unit file, no guessing the URL.
+The panel never binds `0.0.0.0` unless you explicitly force it.
+
+**Lost the password?** From an SSH session on the box, generate a fresh one —
+no flags, nothing to remember:
+
+```sh
+sudo indiepg reset-password                       # prints a new password, once
+sudo indiepg reset-password --password 'my-pick'  # or set your own
+```
+
+> The one-liner pulls the latest [GitHub release](https://github.com/venkatesh-sekar/indiepg/releases).
+> Until you've cut one, build locally (see **Dev build**) and run
+> `sudo ./indiepg install`.
 
 ## Dev build
 
-Requires Go 1.26 and Node (only to build the SPA once).
+Requires Go 1.26. Node is only needed to rebuild the SPA — the built assets are
+committed, so a plain `make run` works without it.
 
 ```sh
-make web      # build the embedded SPA into internal/server/web/dist
-make build    # compile the static binary (CGO_ENABLED=0)
-make run      # build + serve locally
+make run      # build + serve locally; prints a generated login password
+make reset    # wipe local dev state for a clean slate
 make test     # run the test suite
 make vet      # go vet ./...
+
+make web      # (optional) rebuild the embedded SPA after editing web/ sources
+make build    # compile the static binary (CGO_ENABLED=0)
 ```
 
-The frontend is compiled to static files and embedded with `embed.FS`; the
-server never needs Node at runtime.
+`make run` serves against `./indiepg-dev.db` and, on first run, prints a
+generated admin password — copy it to log in. `make reset` deletes that local
+state so the next run starts fresh. The frontend is compiled to static files and
+embedded with `embed.FS`; the server never needs Node at runtime.
 
 ## Safety invariants
 

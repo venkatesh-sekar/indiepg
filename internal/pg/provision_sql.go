@@ -3,7 +3,7 @@ package pg
 import (
 	"fmt"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // provisionSQL builds the idempotent SQL run during Provision to create the two

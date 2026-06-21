@@ -1,9 +1,9 @@
 {
-  "name": "pgpanel-web",
+  "name": "indiepg-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Embedded admin SPA for pgpanel.",
+  "description": "Embedded admin SPA for indiepg.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

@@ -13,8 +13,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
 
 // Severity ranks an alert from informational to critical.

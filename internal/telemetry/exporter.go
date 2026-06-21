@@ -10,8 +10,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // Well-known OpenTelemetry resource attribute keys. We set them directly rather
@@ -24,10 +24,10 @@ const (
 	attrServiceNamespace  = "service.namespace"
 
 	// meterName scopes the instruments created by this exporter.
-	meterName = "github.com/venkatesh-sekar/pgpanel/internal/telemetry"
+	meterName = "github.com/venkatesh-sekar/indiepg/internal/telemetry"
 
 	// serviceName is the OTel service.name reported for all panels.
-	serviceName = "pgpanel"
+	serviceName = "indiepg"
 )
 
 // Options configure the Exporter.

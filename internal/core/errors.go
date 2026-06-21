@@ -1,4 +1,4 @@
-// Package core holds shared primitives used by every pgpanel package: typed
+// Package core holds shared primitives used by every indiepg package: typed
 // errors with stable codes, a confirmation/result helper, identifier
 // validation and safe SQL quoting, and a small structured logger.
 //

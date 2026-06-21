@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 func TestStatusForCode(t *testing.T) {
@@ -89,7 +89,7 @@ func TestToAPIError(t *testing.T) {
 	})
 
 	t.Run("wrapped non-panel error does not leak through the chain", func(t *testing.T) {
-		secret := "/var/lib/pgpanel/secret.key permission denied"
+		secret := "/var/lib/indiepg/secret.key permission denied"
 		ae, _ := toAPIError(fmt.Errorf("loading config: %w", errors.New(secret)))
 		require.Equal(t, core.CodeInternal, ae.Code)
 		require.Equal(t, "internal server error", ae.Message)

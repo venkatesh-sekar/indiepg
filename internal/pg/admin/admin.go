@@ -14,7 +14,7 @@ package admin
 import (
 	"fmt"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // AccessLevel is the privilege tier for a grant or revoke. The tiers are

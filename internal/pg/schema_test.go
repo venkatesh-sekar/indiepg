@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // compile-time assertion: a pgxpool.Pool is a usable read-only queryier.

@@ -37,7 +37,7 @@ export function Layout() {
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark">pg</span>
-          <span className="brand-name">pgpanel</span>
+          <span className="brand-name">indiepg</span>
         </div>
         <nav className="nav">
           {NAV.map((item) => (

@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
-	"github.com/venkatesh-sekar/pgpanel/internal/telemetry"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/telemetry"
 )
 
 func newTestStore(t *testing.T) *store.Store {

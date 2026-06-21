@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/auth"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/auth"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // loginRequest is the JSON body for POST /api/auth/login.

@@ -17,7 +17,7 @@ import (
 	// Pure-Go SQLite driver, registered as "sqlite".
 	_ "modernc.org/sqlite"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // Store is the handle to the panel's SQLite database. It is safe for concurrent

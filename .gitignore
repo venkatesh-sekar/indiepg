@@ -1,5 +1,5 @@
 # Build artifacts
-/pgpanel
+/indiepg
 /dist/
 *.test
 *.out

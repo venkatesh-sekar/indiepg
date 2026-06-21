@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // AppendAudit inserts an audit entry and returns its assigned id. The TS field

@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 func nullTimeStr(t *time.Time) any {

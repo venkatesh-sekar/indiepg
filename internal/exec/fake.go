@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // FakeRunner is an in-memory Runner for tests. It records every RunSpec it

@@ -1,4 +1,4 @@
-// Package scheduler is a thin wrapper over robfig/cron/v3 that gives pgpanel a
+// Package scheduler is a thin wrapper over robfig/cron/v3 that gives indiepg a
 // small, named job registry for its internal cron needs (backups, telemetry
 // sampling, restore-testing, digests). The panel never shells out to the
 // system cron; everything runs in-process so the single binary stays
@@ -25,7 +25,7 @@ import (
 
 	cron "github.com/robfig/cron/v3"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // JobFunc is a scheduled unit of work. Returned errors are logged, not fatal,

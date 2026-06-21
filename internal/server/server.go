@@ -16,11 +16,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/auth"
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/server/web"
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/auth"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/server/web"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
 
 // defaultSessionTTL is how long an issued session token stays valid.

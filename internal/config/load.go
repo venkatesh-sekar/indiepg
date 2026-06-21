@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // Store is the minimal store surface config needs. The concrete
@@ -46,7 +46,7 @@ const (
 )
 
 // Load reads configuration from the store, applies environment-variable
-// overrides (PGPANEL_*), and validates it. Missing keys fall back to defaults.
+// overrides (INDIEPG_*), and validates it. Missing keys fall back to defaults.
 func Load(ctx context.Context, st Store) (Config, error) {
 	cfg := Default()
 
@@ -125,30 +125,30 @@ func applyMap(cfg *Config, kv map[string]string) {
 	setStr(kv, keySchedDigest, &cfg.Schedules.Digest)
 }
 
-// applyEnv overlays PGPANEL_* environment overrides (highest precedence).
+// applyEnv overlays INDIEPG_* environment overrides (highest precedence).
 func applyEnv(cfg *Config) {
-	if v, ok := os.LookupEnv("PGPANEL_BIND_ADDR"); ok {
+	if v, ok := os.LookupEnv("INDIEPG_BIND_ADDR"); ok {
 		cfg.BindAddr = v
 	}
-	if v, ok := os.LookupEnv("PGPANEL_FORCE_PUBLIC_BIND"); ok {
+	if v, ok := os.LookupEnv("INDIEPG_FORCE_PUBLIC_BIND"); ok {
 		cfg.ForcePublicBind = truthy(v)
 	}
-	if v, ok := os.LookupEnv("PGPANEL_OTLP_ENDPOINT"); ok {
+	if v, ok := os.LookupEnv("INDIEPG_OTLP_ENDPOINT"); ok {
 		cfg.OTLPEndpoint = v
 	}
-	if v, ok := os.LookupEnv("PGPANEL_OTLP_INSECURE"); ok {
+	if v, ok := os.LookupEnv("INDIEPG_OTLP_INSECURE"); ok {
 		cfg.OTLPInsecure = truthy(v)
 	}
-	if v, ok := os.LookupEnv("PGPANEL_S3_BUCKET"); ok {
+	if v, ok := os.LookupEnv("INDIEPG_S3_BUCKET"); ok {
 		cfg.Backup.Bucket = v
 	}
-	if v, ok := os.LookupEnv("PGPANEL_S3_ENDPOINT"); ok {
+	if v, ok := os.LookupEnv("INDIEPG_S3_ENDPOINT"); ok {
 		cfg.Backup.Endpoint = v
 	}
-	if v, ok := os.LookupEnv("PGPANEL_S3_ACCESS_KEY"); ok {
+	if v, ok := os.LookupEnv("INDIEPG_S3_ACCESS_KEY"); ok {
 		cfg.Backup.AccessKey = v
 	}
-	if v, ok := os.LookupEnv("PGPANEL_S3_SECRET_KEY"); ok {
+	if v, ok := os.LookupEnv("INDIEPG_S3_SECRET_KEY"); ok {
 		cfg.Backup.SecretKey = v
 	}
 }

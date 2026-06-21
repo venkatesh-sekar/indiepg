@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
-	"github.com/venkatesh-sekar/pgpanel/internal/telemetry"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/telemetry"
 )
 
 // State is the persisted evaluation state of a rule.

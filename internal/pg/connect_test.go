@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 func TestLibpqEscape(t *testing.T) {
@@ -41,7 +41,7 @@ func TestBuildDSN(t *testing.T) {
 	require.Contains(t, dsn, "user="+ReadOnlyRole)
 	require.Contains(t, dsn, "dbname=postgres")
 	require.Contains(t, dsn, "sslmode=disable")
-	require.Contains(t, dsn, "application_name=pgpanel")
+	require.Contains(t, dsn, "application_name=indiepg")
 	require.Contains(t, dsn, "statement_timeout=30000")
 }
 

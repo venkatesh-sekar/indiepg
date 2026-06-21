@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // Notifier delivers an Event to a notification channel. Implementations must be
@@ -92,8 +92,8 @@ func (n *PushoverNotifier) Send(ctx context.Context, ev Event) error {
 
 // SendTest delivers a synthetic test notification.
 func (n *PushoverNotifier) SendTest(ctx context.Context) error {
-	return n.post(ctx, "pgpanel test alert",
-		"This is a test notification from pgpanel. If you can read this, Pushover is configured correctly.", 0)
+	return n.post(ctx, "indiepg test alert",
+		"This is a test notification from indiepg. If you can read this, Pushover is configured correctly.", 0)
 }
 
 func (n *PushoverNotifier) post(ctx context.Context, title, message string, priority int) error {
@@ -184,7 +184,7 @@ func (n *WebhookNotifier) Send(ctx context.Context, ev Event) error {
 func (n *WebhookNotifier) SendTest(ctx context.Context) error {
 	payload := webhookPayload{
 		Event:     "test",
-		Message:   "This is a test notification from pgpanel.",
+		Message:   "This is a test notification from indiepg.",
 		Timestamp: time.Now().UTC(),
 	}
 	return n.post(ctx, payload)

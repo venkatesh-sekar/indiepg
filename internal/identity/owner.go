@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // Owner enforces single-writer ownership of a repo prefix in an ObjectStore.

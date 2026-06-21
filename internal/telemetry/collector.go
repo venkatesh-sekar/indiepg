@@ -3,8 +3,8 @@ package telemetry
 import (
 	"context"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
 
 // Collector runs the sampling loop: Sample -> buffer in the local store ->

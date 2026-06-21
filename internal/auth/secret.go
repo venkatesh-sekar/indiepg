@@ -3,7 +3,7 @@ package auth
 import (
 	"crypto/rand"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // passwordAlphabet is the alphanumeric set used for generated admin/default

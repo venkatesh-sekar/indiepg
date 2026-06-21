@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
 
 // auditActor is the recorded actor for panel-originated actions. There is a

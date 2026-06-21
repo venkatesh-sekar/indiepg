@@ -2,18 +2,25 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"os"
 	"strings"
 	"syscall"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/auth"
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/exec"
-	"github.com/venkatesh-sekar/pgpanel/internal/identity"
-	"github.com/venkatesh-sekar/pgpanel/internal/pg"
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/auth"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/exec"
+	"github.com/venkatesh-sekar/indiepg/internal/identity"
+	"github.com/venkatesh-sekar/indiepg/internal/pg"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
+
+// fallbackStatePath mirrors the CLI's default state path. It is used only when
+// an explicit path was not threaded into the systemd unit's ExecStart, so the
+// generated service still points at the canonical location.
+const fallbackStatePath = "/var/lib/indiepg/indiepg.db"
 
 // stateFileMode is the mode the SQLite state file must carry: owner read/write
 // only. The store hardens the file to this on Open; ResetPassword treats a file
@@ -21,21 +28,33 @@ import (
 // the panel's operator on the box.
 const stateFileMode os.FileMode = 0o600
 
-// InstallOptions drive first-run install (called by cmd/pgpanel install).
+// InstallOptions drive first-run install (called by cmd/indiepg install).
 type InstallOptions struct {
 	Store    *store.Store
 	Logger   *core.Logger
 	Label    string
 	BindAddr string
 	Password string // generated and printed once if empty
+
+	// StatePath is the SQLite state file the installed systemd service will
+	// serve from; it is baked into the unit's ExecStart. Empty falls back to the
+	// canonical location.
+	StatePath string
+	// NoService skips writing/enabling the systemd unit (useful on non-systemd
+	// hosts or for hands-on setups). Install still prints how to start manually.
+	NoService bool
 }
 
 // Install generates the instance identity, provisions Postgres, writes default
-// config, and sets the admin password. It is idempotent where possible: an
-// existing identity is reused, config defaults are merged with any persisted
-// values, and Postgres provisioning is itself idempotent. A real OS runner is
-// constructed internally for the shell steps; the identity/config/password
-// steps perform no external side effects and are unit-tested via installCore.
+// config, sets the admin password, and installs+starts a systemd service so a
+// single `indiepg install` leaves a running, reboot-safe panel — no second
+// `systemctl` step. It is idempotent where possible: an existing identity is
+// reused, config defaults are merged with any persisted values, and both
+// Postgres provisioning and the service install are themselves idempotent. Real
+// OS runners are constructed internally for the shell steps; the
+// identity/config/password steps perform no external side effects and are
+// unit-tested via installCore. It ends by printing a single summary block with
+// the panel URL, the one-time admin password, and how to reset it.
 func Install(ctx context.Context, opts InstallOptions) error {
 	if opts.Store == nil {
 		return core.InternalError("install: Store is required")
@@ -45,13 +64,23 @@ func Install(ctx context.Context, opts InstallOptions) error {
 		log = core.Discard()
 	}
 
-	cfg, err := installCore(ctx, opts.Store, log, opts.Label, opts.BindAddr, opts.Password)
+	cfg, generatedPassword, err := installCore(ctx, opts.Store, log, opts.Label, opts.BindAddr, opts.Password)
 	if err != nil {
 		return err
 	}
 
+	// Safety net: the admin password is already persisted (hashed and
+	// unrecoverable). If a later step fails before the summary prints, still
+	// surface the generated password so a partial install never locks the
+	// operator out. On the happy path the summary is the single place it shows.
+	showGeneratedPassword := func() {
+		if generatedPassword != "" {
+			announceGeneratedPassword(generatedPassword)
+		}
+	}
+
 	// Provision the native Postgres (apt + systemctl) via a real OS runner.
-	// This is the only non-hermetic step and is delegated to internal/pg.
+	// This is a non-hermetic step and is delegated to internal/pg.
 	mgr := pg.New(pg.Options{
 		Runner: exec.NewOSRunner(log, false),
 		Config: cfg,
@@ -59,6 +88,7 @@ func Install(ctx context.Context, opts InstallOptions) error {
 	})
 	res, err := mgr.Provision(ctx)
 	if err != nil {
+		showGeneratedPassword()
 		return err
 	}
 	log.Info("postgres provisioned", "message", res.Message)
@@ -71,6 +101,29 @@ func Install(ctx context.Context, opts InstallOptions) error {
 		}
 	}
 
+	// Install and start the systemd service so the panel runs immediately and
+	// survives reboots. Skipped on --no-service or a non-systemd host; either
+	// way the summary tells the operator how to start it.
+	serviceRunning := false
+	switch {
+	case opts.NoService:
+		log.Info("skipping systemd service setup (--no-service)")
+	case !systemctlAvailable():
+		log.Warn("systemctl not found; skipping service setup — start with `indiepg serve`")
+	default:
+		statePath := opts.StatePath
+		if statePath == "" {
+			statePath = fallbackStatePath
+		}
+		runner := exec.NewOSRunner(log, false)
+		if err := installSystemdService(ctx, runner, log, resolveExecPath(), statePath); err != nil {
+			showGeneratedPassword()
+			return err
+		}
+		serviceRunning = true
+	}
+
+	announceInstallSummary(cfg.BindAddr, generatedPassword, serviceRunning)
 	log.Info("install complete")
 	return nil
 }
@@ -78,24 +131,27 @@ func Install(ctx context.Context, opts InstallOptions) error {
 // installCore performs the hermetic part of install: ensure an instance
 // identity exists, persist default configuration (honoring an explicit bind
 // address and namespacing the backup prefix by instance id), and set the admin
-// password. It returns the effective config so the caller can hand it to
-// Postgres provisioning. It performs no shell or network I/O, which makes it
-// directly unit-testable with an in-memory store.
+// password. It returns the effective config (handed to Postgres provisioning)
+// and the generated admin password, which is non-empty only when install
+// generated one — so the caller can show it in the install summary. It performs
+// no shell or network I/O, which makes it directly unit-testable with an
+// in-memory store.
 //
-// When password is empty, a strong one is generated and printed once; an
-// explicit password (flag/env) remains supported as an override.
-func installCore(ctx context.Context, st *store.Store, log *core.Logger, label, bindAddr, password string) (config.Config, error) {
+// When password is empty, a strong one is generated and returned for one-time
+// display; an explicit password (flag/env) remains supported as an override and
+// is never echoed back.
+func installCore(ctx context.Context, st *store.Store, log *core.Logger, label, bindAddr, password string) (config.Config, string, error) {
 	// 1) Identity — reuse an existing one (idempotent re-install) or generate.
 	id, err := identity.Load(ctx, st)
 	if err != nil {
 		if core.CodeOf(err) != core.CodeNotFound {
-			return config.Config{}, err
+			return config.Config{}, "", err
 		}
 		if label == "" {
 			label = defaultLabel()
 		}
 		if id, err = identity.Generate(ctx, st, label, panelVersion()); err != nil {
-			return config.Config{}, err
+			return config.Config{}, "", err
 		}
 		log.Info("instance identity generated", "label", label)
 	} else {
@@ -124,26 +180,32 @@ func installCore(ctx context.Context, st *store.Store, log *core.Logger, label, 
 		log.Info("namespaced backup prefix by instance id", "prefix", cfg.Backup.Prefix)
 	}
 	if err := cfg.Validate(); err != nil {
-		return config.Config{}, err
+		return config.Config{}, "", err
 	}
 	if err := config.Save(ctx, st, cfg); err != nil {
-		return config.Config{}, err
+		return config.Config{}, "", err
 	}
 
 	// 3) Admin password — generate-when-empty, then hash and store via the
-	// authenticator. A generated password is shown exactly once: there is no
-	// recovery path other than reset-password, so the operator must save it now.
+	// authenticator. A generated password is returned for one-time display in
+	// the install summary; there is no recovery path other than reset-password,
+	// so the operator must save it now.
 	password, generated := resolveAdminPassword(password)
 	authn := auth.New(st, auth.DefaultLockoutPolicy(), defaultSessionTTL)
 	if err := authn.SetPassword(ctx, password); err != nil {
-		return config.Config{}, err
+		return config.Config{}, "", err
 	}
-	if generated {
-		announceGeneratedPassword(password)
+	// Audit the genesis credential event (mirrors reset-password), best-effort.
+	if _, err := st.AppendAudit(ctx, storeAuditEntry(
+		"set_password", "auth", "success", "admin password set during install", "")); err != nil {
+		log.Warn("audit append failed", "action", "set_password", "err", err)
 	}
 	log.Info("admin password set")
 
-	return cfg, nil
+	if generated {
+		return cfg, password, nil
+	}
+	return cfg, "", nil
 }
 
 // resolveAdminPassword returns the admin password to set and whether it was
@@ -165,13 +227,61 @@ func announceGeneratedPassword(password string) {
 	os.Stdout.WriteString("GENERATED ADMIN PASSWORD — SAVE THIS NOW:\n\n")
 	os.Stdout.WriteString("    " + password + "\n\n")
 	os.Stdout.WriteString("This is shown only once. There is no recovery other than\n")
-	os.Stdout.WriteString("`pgpanel reset-password` from an SSH/root session on this box.\n")
+	os.Stdout.WriteString("`indiepg reset-password` from an SSH/root session on this box.\n")
 	os.Stdout.WriteString(banner + "\n\n")
+}
+
+// announceInstallSummary prints the single end-of-install block: where the panel
+// is reachable, the one-time admin password (only when install generated one —
+// an operator-supplied password is never echoed), and how to reset it later. It
+// writes to stdout (never the log) so a generated secret is not shipped off-box.
+func announceInstallSummary(bindAddr, generatedPassword string, serviceRunning bool) {
+	const banner = "============================================================"
+	out := os.Stdout
+
+	out.WriteString("\n" + banner + "\n")
+	out.WriteString("  indiepg is installed.\n")
+	if serviceRunning {
+		out.WriteString("  Running now as a systemd service (auto-starts on boot).\n")
+	} else {
+		out.WriteString("  Start it with:   indiepg serve\n")
+	}
+	out.WriteString("\n")
+	fmt.Fprintf(out, "  Panel URL       %s\n", panelURL(bindAddr))
+	if generatedPassword != "" {
+		fmt.Fprintf(out, "  Admin password  %s   (shown once — save it now)\n", generatedPassword)
+	} else {
+		out.WriteString("  Admin password  (the one you provided)\n")
+	}
+	out.WriteString("  Reset it later  sudo indiepg reset-password\n")
+	out.WriteString("\n")
+	out.WriteString("  The panel binds a PRIVATE address — reach it over localhost,\n")
+	out.WriteString("  Tailscale, or your private network.\n")
+	out.WriteString(banner + "\n\n")
+}
+
+// panelURL renders a clickable http URL from a bind address, normalizing a
+// wildcard/empty host to localhost and bracketing IPv6 literals. The server
+// speaks plain HTTP behind a private bind, so the scheme is always http.
+func panelURL(bindAddr string) string {
+	host, port, err := net.SplitHostPort(bindAddr)
+	if err != nil {
+		// Not host:port — surface it as-is rather than guessing.
+		return "http://" + bindAddr
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "localhost"
+	}
+	if strings.Contains(host, ":") { // IPv6 literal needs brackets in a URL.
+		host = "[" + host + "]"
+	}
+	return "http://" + host + ":" + port
 }
 
 // EnsureAdminPassword makes the panel usable on first run without a separate
 // install step: if no admin password has been set yet, it generates a strong
-// one, stores it, and prints it once. This is what lets `pgpanel serve` (e.g.
+// one, stores it, and prints it once. This is what lets `indiepg serve` (e.g.
 // `make run`) be logged into out of the box — otherwise the operator would face
 // a login screen with no credentials. It is a no-op once an admin password
 // exists. Returns true if a password was generated.
@@ -191,6 +301,10 @@ func EnsureAdminPassword(ctx context.Context, st *store.Store, log *core.Logger)
 	if err := authn.SetPassword(ctx, password); err != nil {
 		return false, err
 	}
+	if _, err := st.AppendAudit(ctx, storeAuditEntry(
+		"set_password", "auth", "success", "admin password generated on first run", "")); err != nil {
+		log.Warn("audit append failed", "action", "set_password", "err", err)
+	}
 	log.Info("no admin password was set; generated one for first-run login")
 	announceGeneratedPassword(password)
 	return true, nil
@@ -199,18 +313,16 @@ func EnsureAdminPassword(ctx context.Context, st *store.Store, log *core.Logger)
 // ResetPassword sets a new admin password from an SSH/root context. It is the
 // privileged escape hatch the design deliberately keeps off the network, so it
 // enforces a local-operator check: the caller must be root (euid 0) or own the
-// 0600 state DB file. An empty password is rejected (the caller is expected to
-// have prompted). It requires the panel to have been installed (an auth record
-// must exist), surfacing a CodeNotFound otherwise.
+// 0600 state DB file. When password is empty/blank a strong one is generated and
+// printed once (the no-flag recovery path — "get me back in" with nothing to
+// remember); a supplied value is used as-is. It requires the panel to have been
+// installed (an auth record must exist), surfacing a CodeNotFound otherwise.
 func ResetPassword(ctx context.Context, st *store.Store, log *core.Logger, password string) error {
 	if st == nil {
 		return core.InternalError("reset-password: Store is required")
 	}
 	if log == nil {
 		log = core.Discard()
-	}
-	if strings.TrimSpace(password) == "" {
-		return core.ValidationError("reset-password: new password must not be empty")
 	}
 
 	// Enforce the SSH/root-only invariant (design §3, §4.2, §10): the network
@@ -225,6 +337,10 @@ func ResetPassword(ctx context.Context, st *store.Store, log *core.Logger, passw
 		return err
 	}
 
+	// Empty input means "just give me a fresh one" — generate and show it once,
+	// mirroring install. An explicit value is set silently (the operator knows
+	// it) and never echoed.
+	password, generated := resolveAdminPassword(password)
 	authn := auth.New(st, auth.DefaultLockoutPolicy(), defaultSessionTTL)
 	if err := authn.SetPassword(ctx, password); err != nil {
 		return err
@@ -234,7 +350,10 @@ func ResetPassword(ctx context.Context, st *store.Store, log *core.Logger, passw
 		"reset_password", "auth", "success", "admin password reset from CLI", "")); err != nil {
 		log.Warn("audit append failed", "action", "reset_password", "err", err)
 	}
-	log.Info("admin password reset")
+	log.Info("admin password reset", "generated", generated)
+	if generated {
+		announceGeneratedPassword(password)
+	}
 	return nil
 }
 
@@ -322,7 +441,7 @@ func defaultLabel() string {
 	if h, err := os.Hostname(); err == nil && h != "" {
 		return h
 	}
-	return "pgpanel"
+	return "indiepg"
 }
 
 // panelVersion returns the build version, defaulting to "dev".

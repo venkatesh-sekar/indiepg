@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // GetAuth returns the admin auth record, or a CodeNotFound error if it has not

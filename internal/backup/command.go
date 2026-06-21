@@ -3,8 +3,8 @@ package backup
 import (
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/exec"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/exec"
 )
 
 // Command timeouts. Info is quick; backup/restore can be long-running.

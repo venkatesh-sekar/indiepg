@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // handleLiveness is the unauthenticated liveness probe. It returns 200 as long

@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
 )
 
 // handleGetConfig returns the current panel configuration. The S3 secret key is

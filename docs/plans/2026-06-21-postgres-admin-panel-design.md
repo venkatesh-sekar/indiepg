@@ -2,7 +2,7 @@
 
 - **Date:** 2026-06-21
 - **Status:** Approved design (pre-implementation)
-- **Working name:** `pgpanel` (placeholder — trivially renamed; it's just the binary/module name)
+- **Working name:** `indiepg` (placeholder — trivially renamed; it's just the binary/module name)
 - **Supersedes:** the `sm` CLI at `/primary01/git/server-management` (fresh rewrite, not a fork)
 
 ---
@@ -58,14 +58,14 @@ may not be a Postgres expert — the tool must be lightweight, fast, simple, and
 ## 4. Architecture
 
 ### 4.1 Process & deployment
-- The panel runs as its **own `systemd` service** (`pgpanel.service`).
+- The panel runs as its **own `systemd` service** (`indiepg.service`).
 - The Postgres it provisions runs as the normal **`postgresql` systemd service**.
 - The panel talks to Postgres over the **local unix socket** — no TCP password juggling.
 - **One panel per host**, enforced by systemd + a pidfile/socket lock (refuse to start a second instance).
 
 ### 4.2 Internal modules (all inside the one binary)
 - **Web server** — serves the embedded SPA + a small JSON API. Binds private by default; never `0.0.0.0` unless explicitly forced.
-- **Auth** — argon2id password hash in SQLite, signed session cookies, failure lockout, `pgpanel reset-password` CLI escape hatch (requires SSH/root on the box).
+- **Auth** — argon2id password hash in SQLite, signed session cookies, failure lockout, `indiepg reset-password` CLI escape hatch (requires SSH/root on the box).
 - **PG manager** — installs/configures Postgres; connects via two distinct roles:
   - **read-only role** → query box + table browsing (read-only enforced at the DB level).
   - **privileged path** → only for guided admin actions, each gated by confirmation.
@@ -252,7 +252,7 @@ Everything is in scope; this is **build order** so there's something usable earl
 
 ## 11. Open questions
 
-- **Final name** (placeholder `pgpanel`).
+- **Final name** (placeholder `indiepg`).
 - Frontend framework: **React vs. Svelte** (either embeds fine; pick on dev preference).
 - Default backup schedule & retention (proposed: daily incremental + weekly full, 14-day retention).
 - Whether v1 ships the managed-OTel-Collector option for log scraping, or stays OTLP-push-only.

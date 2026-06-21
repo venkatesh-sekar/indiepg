@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/auth"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/auth"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // trustForwardedProtoEnv, when set truthy, tells the panel it sits behind a
@@ -19,19 +19,19 @@ import (
 // honored. It is a deliberate, server-side opt-in: an attacker cannot set a
 // process environment variable, so the spoofable header alone never decides the
 // Secure cookie flag. The default (unset) trusts only r.TLS.
-const trustForwardedProtoEnv = "PGPANEL_TRUST_FORWARDED_PROTO"
+const trustForwardedProtoEnv = "INDIEPG_TRUST_FORWARDED_PROTO"
 
 // csrfHeaderName is a non-simple custom header. A browser cannot attach it to a
 // cross-site form/navigation request without triggering a CORS preflight, so
 // its presence is sufficient proof the request came from our own SPA (which
 // sets it on every XHR). It is the second accepted CSRF signal alongside an
 // Origin/Referer host that matches the bind host.
-const csrfHeaderName = "X-Pgpanel-Csrf"
+const csrfHeaderName = "X-Indiepg-Csrf"
 
 // sessionCookieName is the name of the signed session cookie. It is host-only,
 // HttpOnly, SameSite=Strict, and Secure-aware so a stolen cookie cannot be read
 // by JS or sent cross-site.
-const sessionCookieName = "pgpanel_session"
+const sessionCookieName = "indiepg_session"
 
 // ctxKey is an unexported context key type to avoid collisions.
 type ctxKey int

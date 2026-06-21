@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/venkatesh-sekar/pgpanel/internal/telemetry"
+	"github.com/venkatesh-sekar/indiepg/internal/telemetry"
 )
 
 func TestMetricValue(t *testing.T) {

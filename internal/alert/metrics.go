@@ -1,6 +1,6 @@
 package alert
 
-import "github.com/venkatesh-sekar/pgpanel/internal/telemetry"
+import "github.com/venkatesh-sekar/indiepg/internal/telemetry"
 
 // Metric keys identify the scalar values a Rule can be evaluated against. They
 // are derived from a telemetry.Snapshot: the raw fields, plus a few computed

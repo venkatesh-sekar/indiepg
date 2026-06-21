@@ -1,4 +1,4 @@
-module github.com/venkatesh-sekar/pgpanel
+module github.com/venkatesh-sekar/indiepg
 
 go 1.26
 

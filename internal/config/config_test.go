@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // fakeStore is an in-memory Store for config tests.
@@ -100,8 +100,8 @@ func TestEnvOverride(t *testing.T) {
 	st := newFakeStore()
 	require.NoError(t, Save(ctx, st, Default()))
 
-	t.Setenv("PGPANEL_BIND_ADDR", "10.1.2.3:9000")
-	t.Setenv("PGPANEL_S3_BUCKET", "env-bucket")
+	t.Setenv("INDIEPG_BIND_ADDR", "10.1.2.3:9000")
+	t.Setenv("INDIEPG_S3_BUCKET", "env-bucket")
 
 	got, err := Load(ctx, st)
 	require.NoError(t, err)

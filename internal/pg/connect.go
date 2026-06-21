@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // defaultSocketDir is used when the config does not specify a socket directory.
@@ -62,7 +62,7 @@ func buildDSN(c connConfig) (string, error) {
 		{"user", c.User},
 		{"dbname", c.Database},
 		{"sslmode", "disable"}, // local unix socket: TLS is neither needed nor available
-		{"application_name", "pgpanel"},
+		{"application_name", "indiepg"},
 	}
 
 	out := ""

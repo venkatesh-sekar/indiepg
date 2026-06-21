@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // UpsertAlert inserts or updates an alert rule + state row by ID.

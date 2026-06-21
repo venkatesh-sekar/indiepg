@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // Session is the payload carried inside a signed token. Timestamps are encoded

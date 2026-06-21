@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // Status is a state in the migration session state machine. The happy path is

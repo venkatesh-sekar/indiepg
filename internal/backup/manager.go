@@ -4,11 +4,11 @@ import (
 	"context"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/exec"
-	"github.com/venkatesh-sekar/pgpanel/internal/identity"
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/exec"
+	"github.com/venkatesh-sekar/indiepg/internal/identity"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
 
 // Manager orchestrates pgBackRest operations with single-writer ownership

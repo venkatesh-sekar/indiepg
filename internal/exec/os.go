@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // OSRunner is the real Runner backed by os/exec. When dryRun is true it records

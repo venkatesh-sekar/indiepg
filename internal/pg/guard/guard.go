@@ -1,5 +1,5 @@
 // Package guard provides SQL statement classification and read-only enforcement
-// for the pgpanel query box. It is the UI-layer guard rail that complements the
+// for the indiepg query box. It is the UI-layer guard rail that complements the
 // database-level read-only role (the read-only role is the authoritative
 // defense; this package is a fast, helpful second layer).
 //
@@ -23,7 +23,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // Class is the safety classification of a single SQL statement.

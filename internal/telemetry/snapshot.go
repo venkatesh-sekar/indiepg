@@ -14,7 +14,7 @@ package telemetry
 import (
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
 
 // Metric keys are the stable names used both for the buffered samples

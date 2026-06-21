@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/exec"
-	"github.com/venkatesh-sekar/pgpanel/internal/identity"
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/exec"
+	"github.com/venkatesh-sekar/indiepg/internal/identity"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
 
 // fakeObjectStore is an in-memory identity.ObjectStore. To stay decoupled from

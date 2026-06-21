@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // GetInstance returns the panel identity row, or a CodeNotFound error if the

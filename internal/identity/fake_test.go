@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // fakeObjectStore is an in-memory ObjectStore for tests. It records call counts

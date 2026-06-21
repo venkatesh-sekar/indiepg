@@ -29,8 +29,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
 
 // MarkerObjectName is the S3 key (relative to a repo prefix) of the owner

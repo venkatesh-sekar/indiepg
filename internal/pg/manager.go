@@ -24,9 +24,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/exec"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/exec"
 )
 
 // Dedicated DB-level roles the manager creates and connects as. The read-only
@@ -34,9 +34,9 @@ import (
 // reject writes; the admin role drives guided privileged actions.
 const (
 	// ReadOnlyRole is the login role used for the read-only pool.
-	ReadOnlyRole = "pgpanel_readonly"
+	ReadOnlyRole = "indiepg_readonly"
 	// AdminRole is the login role used for the privileged pool.
-	AdminRole = "pgpanel_admin"
+	AdminRole = "indiepg_admin"
 )
 
 // defaultConnectDatabase is the database the pools dial first. Postgres always

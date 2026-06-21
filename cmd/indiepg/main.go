@@ -1,17 +1,17 @@
-// Command pgpanel is the single self-hosted binary: it installs and owns a
+// Command indiepg is the single self-hosted binary: it installs and owns a
 // native PostgreSQL, serves a private web admin panel, and exports telemetry.
 //
 // Subcommands:
 //
-//	pgpanel serve            run the web server
-//	pgpanel install          provision Postgres, set admin password, claim identity
-//	pgpanel reset-password   SSH/root escape hatch to reset the admin password
-//	pgpanel version          print the version
+//	indiepg serve            run the web server
+//	indiepg install          provision Postgres + install the service; print URL & password
+//	indiepg reset-password   SSH/root escape hatch to reset the admin password
+//	indiepg version          print the version
 //
-// The wiring here is intentionally thin: it constructs the foundation
-// (logger, store, config) and hands off to the per-feature packages. Some calls
-// reference packages still under implementation; the signatures match the
-// SCAFFOLD contract so this file compiles once those packages land.
+// The everyday surface is just two verbs: `install` to set up (one command,
+// leaves a running systemd service) and `reset-password` to get back in. The
+// wiring here is intentionally thin: it constructs the foundation (logger,
+// store, config) and hands off to the per-feature packages.
 package main
 
 import (
@@ -22,14 +22,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/venkatesh-sekar/pgpanel/internal/config"
-	"github.com/venkatesh-sekar/pgpanel/internal/core"
-	"github.com/venkatesh-sekar/pgpanel/internal/server"
-	"github.com/venkatesh-sekar/pgpanel/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/server"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
 
 // defaultStatePath is where the panel keeps its SQLite state.
-const defaultStatePath = "/var/lib/pgpanel/pgpanel.db"
+const defaultStatePath = "/var/lib/indiepg/indiepg.db"
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
@@ -46,7 +46,7 @@ func rootCmd() *cobra.Command {
 	)
 
 	root := &cobra.Command{
-		Use:           "pgpanel",
+		Use:           "indiepg",
 		Short:         "Private web admin panel that installs and owns a native PostgreSQL",
 		SilenceUsage:  true,
 		SilenceErrors: false,
@@ -92,7 +92,7 @@ func serveCmd(statePath, logLevel *string) *cobra.Command {
 			}
 
 			// First-run convenience: if no admin password exists yet, generate
-			// one and print it once so `pgpanel serve` (e.g. `make run`) can be
+			// one and print it once so `indiepg serve` (e.g. `make run`) can be
 			// logged into without a separate `install` step.
 			if _, err := server.EnsureAdminPassword(ctx, st, log); err != nil {
 				return err
@@ -110,7 +110,7 @@ func serveCmd(statePath, logLevel *string) *cobra.Command {
 			ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			log.Info("starting pgpanel", "version", core.Version, "bind", cfg.BindAddr)
+			log.Info("starting indiepg", "version", core.Version, "bind", cfg.BindAddr)
 			return srv.ListenAndServe(ctx)
 		},
 	}
@@ -118,13 +118,18 @@ func serveCmd(statePath, logLevel *string) *cobra.Command {
 
 func installCmd(statePath, logLevel *string) *cobra.Command {
 	var (
-		label    string
-		bindAddr string
-		password string
+		label     string
+		bindAddr  string
+		password  string
+		noService bool
 	)
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Provision Postgres, set the admin password, and claim the panel identity",
+		Short: "Set up indiepg: provision Postgres, install the service, print URL + password",
+		Long: "Install provisions the native Postgres, sets the admin password, and " +
+			"installs+starts a systemd service so the panel is running and reboot-safe " +
+			"after this one command. It ends by printing the panel URL and a one-time " +
+			"admin password. Safe to re-run.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			log, st, err := openFoundation(*statePath, *logLevel)
 			if err != nil {
@@ -133,17 +138,20 @@ func installCmd(statePath, logLevel *string) *cobra.Command {
 			defer st.Close()
 
 			return server.Install(cmd.Context(), server.InstallOptions{
-				Store:    st,
-				Logger:   log,
-				Label:    label,
-				BindAddr: bindAddr,
-				Password: password,
+				Store:     st,
+				Logger:    log,
+				Label:     label,
+				BindAddr:  bindAddr,
+				Password:  password,
+				StatePath: *statePath,
+				NoService: noService,
 			})
 		},
 	}
 	cmd.Flags().StringVar(&label, "label", "", "human label for this panel (default: hostname)")
 	cmd.Flags().StringVar(&bindAddr, "bind", config.DefaultBindAddr, "private bind address")
 	cmd.Flags().StringVar(&password, "password", "", "admin password (generated and shown once if empty)")
+	cmd.Flags().BoolVar(&noService, "no-service", false, "do not install/start the systemd service")
 	return cmd
 }
 
@@ -152,6 +160,9 @@ func resetPasswordCmd(statePath, logLevel *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reset-password",
 		Short: "Reset the admin password (requires SSH/root on the box)",
+		Long: "Reset the admin password from an SSH/root session on the box. With no " +
+			"--password flag it generates a strong one and prints it once; pass " +
+			"--password to set a specific value.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			log, st, err := openFoundation(*statePath, *logLevel)
 			if err != nil {
@@ -162,14 +173,14 @@ func resetPasswordCmd(statePath, logLevel *string) *cobra.Command {
 			return server.ResetPassword(cmd.Context(), st, log, password)
 		},
 	}
-	cmd.Flags().StringVar(&password, "password", "", "new admin password (required)")
+	cmd.Flags().StringVar(&password, "password", "", "new admin password (generated and shown once if empty)")
 	return cmd
 }
 
 func versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print the pgpanel version",
+		Short: "Print the indiepg version",
 		Run: func(_ *cobra.Command, _ []string) {
 			fmt.Println(core.Version)
 		},
