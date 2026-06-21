@@ -91,6 +91,13 @@ func serveCmd(statePath, logLevel *string) *cobra.Command {
 				return err
 			}
 
+			// First-run convenience: if no admin password exists yet, generate
+			// one and print it once so `pgpanel serve` (e.g. `make run`) can be
+			// logged into without a separate `install` step.
+			if _, err := server.EnsureAdminPassword(ctx, st, log); err != nil {
+				return err
+			}
+
 			srv, err := server.New(server.Options{
 				Config: cfg,
 				Store:  st,
@@ -136,7 +143,7 @@ func installCmd(statePath, logLevel *string) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&label, "label", "", "human label for this panel (default: hostname)")
 	cmd.Flags().StringVar(&bindAddr, "bind", config.DefaultBindAddr, "private bind address")
-	cmd.Flags().StringVar(&password, "password", "", "admin password (prompted if empty)")
+	cmd.Flags().StringVar(&password, "password", "", "admin password (generated and shown once if empty)")
 	return cmd
 }
 
@@ -155,7 +162,7 @@ func resetPasswordCmd(statePath, logLevel *string) *cobra.Command {
 			return server.ResetPassword(cmd.Context(), st, log, password)
 		},
 	}
-	cmd.Flags().StringVar(&password, "password", "", "new admin password (prompted if empty)")
+	cmd.Flags().StringVar(&password, "password", "", "new admin password (required)")
 	return cmd
 }
 

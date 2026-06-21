@@ -169,6 +169,33 @@ func announceGeneratedPassword(password string) {
 	os.Stdout.WriteString(banner + "\n\n")
 }
 
+// EnsureAdminPassword makes the panel usable on first run without a separate
+// install step: if no admin password has been set yet, it generates a strong
+// one, stores it, and prints it once. This is what lets `pgpanel serve` (e.g.
+// `make run`) be logged into out of the box — otherwise the operator would face
+// a login screen with no credentials. It is a no-op once an admin password
+// exists. Returns true if a password was generated.
+func EnsureAdminPassword(ctx context.Context, st *store.Store, log *core.Logger) (bool, error) {
+	if st == nil {
+		return false, core.InternalError("ensure admin password: Store is required")
+	}
+	// An existing auth record means the panel is already initialized.
+	if _, err := st.GetAuth(ctx); err == nil {
+		return false, nil
+	} else if core.CodeOf(err) != core.CodeNotFound {
+		return false, err
+	}
+
+	authn := auth.New(st, auth.DefaultLockoutPolicy(), defaultSessionTTL)
+	password := auth.GeneratePassword()
+	if err := authn.SetPassword(ctx, password); err != nil {
+		return false, err
+	}
+	log.Info("no admin password was set; generated one for first-run login")
+	announceGeneratedPassword(password)
+	return true, nil
+}
+
 // ResetPassword sets a new admin password from an SSH/root context. It is the
 // privileged escape hatch the design deliberately keeps off the network, so it
 // enforces a local-operator check: the caller must be root (euid 0) or own the

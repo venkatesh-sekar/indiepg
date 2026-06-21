@@ -270,3 +270,41 @@ func TestAuthorizeResetAllowsInMemoryStore(t *testing.T) {
 	st := openTestStore(t)
 	require.NoError(t, authorizeReset(st))
 }
+
+func TestEnsureAdminPasswordGeneratesOnFirstRun(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	// Fresh store: no auth record yet.
+	_, err := st.GetAuth(ctx)
+	require.Equal(t, core.CodeNotFound, core.CodeOf(err))
+
+	generated, err := EnsureAdminPassword(ctx, st, core.Discard())
+	require.NoError(t, err)
+	require.True(t, generated, "first run must generate a password")
+
+	// Auth is now initialized so the panel is loginable.
+	_, err = st.GetAuth(ctx)
+	require.NoError(t, err)
+
+	// Second call is a no-op — it must not rotate an existing password.
+	generated, err = EnsureAdminPassword(ctx, st, core.Discard())
+	require.NoError(t, err)
+	require.False(t, generated)
+}
+
+func TestEnsureAdminPasswordNoOpWhenAlreadySet(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	authn := auth.New(st, auth.DefaultLockoutPolicy(), defaultSessionTTL)
+	require.NoError(t, authn.SetPassword(ctx, "an-existing-password"))
+
+	generated, err := EnsureAdminPassword(ctx, st, core.Discard())
+	require.NoError(t, err)
+	require.False(t, generated)
+
+	// The existing password is untouched.
+	_, err = authn.Authenticate(ctx, "an-existing-password")
+	require.NoError(t, err)
+}

@@ -41,9 +41,10 @@ fmt:
 tidy:
 	$(GO) mod tidy
 
-## run: build and run the server locally
+## run: build and run the server locally (writable dev state, no root needed).
+## On first run it prints a generated admin password — copy it to log in.
 run: build
-	./$(BINARY) serve
+	./$(BINARY) serve --state ./pgpanel-dev.db
 
 ## clean: remove build artifacts
 clean:
