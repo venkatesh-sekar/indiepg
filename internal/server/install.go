@@ -64,7 +64,7 @@ func Install(ctx context.Context, opts InstallOptions) error {
 		log = core.Discard()
 	}
 
-	cfg, generatedPassword, err := installCore(ctx, opts.Store, log, opts.Label, opts.BindAddr, opts.Password)
+	cfg, generatedPassword, pwState, err := installCore(ctx, opts.Store, log, opts.Label, opts.BindAddr, opts.Password)
 	if err != nil {
 		return err
 	}
@@ -123,10 +123,22 @@ func Install(ctx context.Context, opts InstallOptions) error {
 		serviceRunning = true
 	}
 
-	announceInstallSummary(cfg.BindAddr, generatedPassword, serviceRunning)
+	announceInstallSummary(cfg.BindAddr, generatedPassword, pwState, serviceRunning)
 	log.Info("install complete")
 	return nil
 }
+
+// pwOutcome reports how install handled the admin password, so the summary can
+// say the right thing: a freshly generated password is shown once, an operator-
+// supplied one is acknowledged but never echoed, and on an idempotent re-install
+// an already-set password is left untouched.
+type pwOutcome int
+
+const (
+	pwGenerated pwOutcome = iota // freshly generated; shown once
+	pwProvided                   // set from an explicit --password; not echoed
+	pwKept                       // pre-existing password left unchanged
+)
 
 // installCore performs the hermetic part of install: ensure an instance
 // identity exists, persist default configuration (honoring an explicit bind
@@ -140,18 +152,18 @@ func Install(ctx context.Context, opts InstallOptions) error {
 // When password is empty, a strong one is generated and returned for one-time
 // display; an explicit password (flag/env) remains supported as an override and
 // is never echoed back.
-func installCore(ctx context.Context, st *store.Store, log *core.Logger, label, bindAddr, password string) (config.Config, string, error) {
+func installCore(ctx context.Context, st *store.Store, log *core.Logger, label, bindAddr, password string) (config.Config, string, pwOutcome, error) {
 	// 1) Identity — reuse an existing one (idempotent re-install) or generate.
 	id, err := identity.Load(ctx, st)
 	if err != nil {
 		if core.CodeOf(err) != core.CodeNotFound {
-			return config.Config{}, "", err
+			return config.Config{}, "", pwKept, err
 		}
 		if label == "" {
 			label = defaultLabel()
 		}
 		if id, err = identity.Generate(ctx, st, label, panelVersion()); err != nil {
-			return config.Config{}, "", err
+			return config.Config{}, "", pwKept, err
 		}
 		log.Info("instance identity generated", "label", label)
 	} else {
@@ -180,32 +192,55 @@ func installCore(ctx context.Context, st *store.Store, log *core.Logger, label, 
 		log.Info("namespaced backup prefix by instance id", "prefix", cfg.Backup.Prefix)
 	}
 	if err := cfg.Validate(); err != nil {
-		return config.Config{}, "", err
+		return config.Config{}, "", pwKept, err
 	}
 	if err := config.Save(ctx, st, cfg); err != nil {
-		return config.Config{}, "", err
+		return config.Config{}, "", pwKept, err
 	}
 
-	// 3) Admin password — generate-when-empty, then hash and store via the
-	// authenticator. A generated password is returned for one-time display in
-	// the install summary; there is no recovery path other than reset-password,
-	// so the operator must save it now.
-	password, generated := resolveAdminPassword(password)
+	// 3) Admin password. Install is meant to be safe to re-run (to update, change
+	// the bind address, etc.), so an already-set password is left UNTOUCHED unless
+	// the operator explicitly passes one — re-running install must never silently
+	// rotate the admin credential. On a fresh box with no password, a strong one
+	// is generated and returned for one-time display; there is no recovery path
+	// other than reset-password, so the operator must save it now.
 	authn := auth.New(st, auth.DefaultLockoutPolicy(), defaultSessionTTL)
-	if err := authn.SetPassword(ctx, password); err != nil {
-		return config.Config{}, "", err
+
+	// 3a) Explicit --password always wins (set/override), and is never echoed.
+	if strings.TrimSpace(password) != "" {
+		if err := authn.SetPassword(ctx, password); err != nil {
+			return config.Config{}, "", pwProvided, err
+		}
+		auditPasswordSet(ctx, st, log, "admin password set from --password during install")
+		log.Info("admin password set from --password")
+		return cfg, "", pwProvided, nil
 	}
-	// Audit the genesis credential event (mirrors reset-password), best-effort.
+
+	// 3b) No explicit password: keep an existing one rather than rotating it.
+	if _, err := st.GetAuth(ctx); err == nil {
+		log.Info("admin password already set; leaving it unchanged")
+		return cfg, "", pwKept, nil
+	} else if core.CodeOf(err) != core.CodeNotFound {
+		return config.Config{}, "", pwKept, err
+	}
+
+	// 3c) Fresh box: generate, store, and return for one-time display.
+	generated := auth.GeneratePassword()
+	if err := authn.SetPassword(ctx, generated); err != nil {
+		return config.Config{}, "", pwGenerated, err
+	}
+	auditPasswordSet(ctx, st, log, "admin password generated during install")
+	log.Info("admin password generated")
+	return cfg, generated, pwGenerated, nil
+}
+
+// auditPasswordSet records a best-effort genesis/credential audit row, mirroring
+// reset-password. A failure to audit must not fail the install.
+func auditPasswordSet(ctx context.Context, st *store.Store, log *core.Logger, detail string) {
 	if _, err := st.AppendAudit(ctx, storeAuditEntry(
-		"set_password", "auth", "success", "admin password set during install", "")); err != nil {
+		"set_password", "auth", "success", detail, "")); err != nil {
 		log.Warn("audit append failed", "action", "set_password", "err", err)
 	}
-	log.Info("admin password set")
-
-	if generated {
-		return cfg, password, nil
-	}
-	return cfg, "", nil
 }
 
 // resolveAdminPassword returns the admin password to set and whether it was
@@ -235,7 +270,7 @@ func announceGeneratedPassword(password string) {
 // is reachable, the one-time admin password (only when install generated one —
 // an operator-supplied password is never echoed), and how to reset it later. It
 // writes to stdout (never the log) so a generated secret is not shipped off-box.
-func announceInstallSummary(bindAddr, generatedPassword string, serviceRunning bool) {
+func announceInstallSummary(bindAddr, generatedPassword string, pw pwOutcome, serviceRunning bool) {
 	const banner = "============================================================"
 	out := os.Stdout
 
@@ -248,10 +283,13 @@ func announceInstallSummary(bindAddr, generatedPassword string, serviceRunning b
 	}
 	out.WriteString("\n")
 	fmt.Fprintf(out, "  Panel URL       %s\n", panelURL(bindAddr))
-	if generatedPassword != "" {
+	switch pw {
+	case pwGenerated:
 		fmt.Fprintf(out, "  Admin password  %s   (shown once — save it now)\n", generatedPassword)
-	} else {
+	case pwProvided:
 		out.WriteString("  Admin password  (the one you provided)\n")
+	case pwKept:
+		out.WriteString("  Admin password  (unchanged from the previous install)\n")
 	}
 	out.WriteString("  Reset it later  sudo indiepg reset-password\n")
 	out.WriteString("\n")

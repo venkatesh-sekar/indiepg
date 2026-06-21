@@ -25,7 +25,7 @@ func TestInstallCoreSetsIdentityConfigAndPassword(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 
-	cfg, genPw, err := installCore(ctx, st, core.Discard(), "web-db-01", "127.0.0.1:9000", testPassword)
+	cfg, genPw, _, err := installCore(ctx, st, core.Discard(), "web-db-01", "127.0.0.1:9000", testPassword)
 	require.NoError(t, err)
 	require.Equal(t, "127.0.0.1:9000", cfg.BindAddr)
 	require.Empty(t, genPw, "an explicit password must not be echoed back")
@@ -54,7 +54,7 @@ func TestInstallCoreGeneratesPasswordWhenEmpty(t *testing.T) {
 	// An empty password is not rejected: install generates a strong one, sets
 	// it, and returns the plaintext for one-time display. The blank input must
 	// never become the admin password.
-	_, genPw, err := installCore(ctx, st, core.Discard(), "label", "", "   ")
+	_, genPw, _, err := installCore(ctx, st, core.Discard(), "label", "", "   ")
 	require.NoError(t, err)
 	require.Len(t, genPw, 48, "a generated password is returned for one-time display")
 
@@ -87,7 +87,7 @@ func TestResolveAdminPassword(t *testing.T) {
 func TestInstallCoreRejectsPublicBind(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	_, _, err := installCore(ctx, st, core.Discard(), "label", "0.0.0.0:8443", testPassword)
+	_, _, _, err := installCore(ctx, st, core.Discard(), "label", "0.0.0.0:8443", testPassword)
 	require.Error(t, err)
 	require.Equal(t, core.CodeSafety, core.CodeOf(err))
 }
@@ -96,13 +96,13 @@ func TestInstallCoreIsIdempotentOnIdentity(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 
-	_, _, err := installCore(ctx, st, core.Discard(), "first", "", testPassword)
+	_, _, _, err := installCore(ctx, st, core.Discard(), "first", "", testPassword)
 	require.NoError(t, err)
 	first, err := st.GetInstance(ctx)
 	require.NoError(t, err)
 
 	// Re-running install must reuse the existing identity, not regenerate it.
-	_, _, err = installCore(ctx, st, core.Discard(), "second", "", testPassword)
+	_, _, _, err = installCore(ctx, st, core.Discard(), "second", "", testPassword)
 	require.NoError(t, err)
 	second, err := st.GetInstance(ctx)
 	require.NoError(t, err)
@@ -111,10 +111,56 @@ func TestInstallCoreIsIdempotentOnIdentity(t *testing.T) {
 	require.Equal(t, first.Label, second.Label, "label should not change on re-install")
 }
 
+func TestInstallCoreKeepsExistingPasswordOnReinstall(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	// First install on a fresh box generates and returns a password.
+	_, genPw, outcome, err := installCore(ctx, st, core.Discard(), "label", "", "")
+	require.NoError(t, err)
+	require.Equal(t, pwGenerated, outcome)
+	require.NotEmpty(t, genPw)
+
+	// Re-running install with no --password must NOT rotate the credential — this
+	// is what makes `update` (and any idempotent re-install) safe.
+	_, genPw2, outcome2, err := installCore(ctx, st, core.Discard(), "label", "", "")
+	require.NoError(t, err)
+	require.Equal(t, pwKept, outcome2)
+	require.Empty(t, genPw2, "a kept password must not be echoed")
+
+	// The original password still authenticates.
+	authn := auth.New(st, auth.DefaultLockoutPolicy(), defaultSessionTTL)
+	_, err = authn.Authenticate(ctx, genPw)
+	require.NoError(t, err, "re-install must leave the existing password working")
+}
+
+func TestInstallCoreExplicitPasswordOverridesOnReinstall(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	// Fresh install generates one.
+	_, genPw, _, err := installCore(ctx, st, core.Discard(), "label", "", "")
+	require.NoError(t, err)
+	require.NotEmpty(t, genPw)
+
+	// An explicit --password on a re-install is still honored as an override.
+	const override = "operator-chosen-override-pw"
+	_, genPw2, outcome, err := installCore(ctx, st, core.Discard(), "label", "", override)
+	require.NoError(t, err)
+	require.Equal(t, pwProvided, outcome)
+	require.Empty(t, genPw2, "an explicit password is never echoed")
+
+	authn := auth.New(st, auth.DefaultLockoutPolicy(), defaultSessionTTL)
+	_, err = authn.Authenticate(ctx, override)
+	require.NoError(t, err)
+	_, err = authn.Authenticate(ctx, genPw)
+	require.Error(t, err, "the override must have replaced the generated password")
+}
+
 func TestInstallCoreDefaultsBindWhenEmpty(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	cfg, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
+	cfg, _, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
 	require.NoError(t, err)
 	require.Equal(t, config.DefaultBindAddr, cfg.BindAddr)
 }
@@ -134,7 +180,7 @@ func TestResetPasswordGeneratesWhenEmpty(t *testing.T) {
 
 	// Install first so an auth record exists, then reset with a blank password:
 	// it must generate a fresh one (no error) and rotate away from the old one.
-	_, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
+	_, _, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
 	require.NoError(t, err)
 
 	require.NoError(t, ResetPassword(ctx, st, core.Discard(), "   "))
@@ -152,7 +198,7 @@ func TestResetPasswordChangesPassword(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 
-	_, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
+	_, _, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
 	require.NoError(t, err)
 
 	const newPass = "a-brand-new-password-99"
@@ -183,7 +229,7 @@ func TestInstallCoreNamespacesBackupPrefixWhenBucketSet(t *testing.T) {
 	seeded.Backup.Bucket = "my-backups"
 	require.NoError(t, config.Save(ctx, st, seeded))
 
-	_, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
+	_, _, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
 	require.NoError(t, err)
 
 	loaded, err := config.Load(ctx, st)
@@ -204,7 +250,7 @@ func TestInstallCorePreservesExplicitBackupPrefix(t *testing.T) {
 	seeded.Backup.Prefix = "operator/chosen"
 	require.NoError(t, config.Save(ctx, st, seeded))
 
-	_, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
+	_, _, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
 	require.NoError(t, err)
 
 	loaded, err := config.Load(ctx, st)
@@ -218,7 +264,7 @@ func TestInstallCoreLeavesPrefixEmptyWithoutBucket(t *testing.T) {
 	st := openTestStore(t)
 
 	// No bucket configured -> nothing to namespace.
-	_, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
+	_, _, _, err := installCore(ctx, st, core.Discard(), "label", "", testPassword)
 	require.NoError(t, err)
 
 	loaded, err := config.Load(ctx, st)

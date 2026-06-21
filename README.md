@@ -69,6 +69,35 @@ sudo indiepg reset-password                       # prints a new password, once
 sudo indiepg reset-password --password 'my-pick'  # or set your own
 ```
 
+**Updating.** Swap in the latest release binary and restart the service in one
+step. It's a binary-only upgrade — your admin password, config, and databases
+are left exactly as they are:
+
+```sh
+sudo indiepg update                  # latest release
+sudo indiepg update --version v1.2.3 # pin a specific tag
+```
+
+**Start / stop / restart.** Thin wrappers over the systemd unit, so you don't
+have to remember the service name:
+
+```sh
+sudo indiepg stop                    # stop now
+sudo indiepg start                   # start again
+sudo indiepg restart                 # restart
+sudo systemctl disable indiepg       # stop auto-start on boot (systemd directly)
+```
+
+**Uninstalling.** Remove indiepg entirely with `uninstall`:
+
+```sh
+sudo indiepg uninstall               # stop+disable+remove the service
+sudo indiepg uninstall --purge       # also delete the state DB and the binary
+```
+
+> `uninstall` never touches PostgreSQL or the databases it manages — that data
+> stays put. Remove Postgres yourself if you really want it gone.
+
 > The one-liner pulls the latest [GitHub release](https://github.com/venkatesh-sekar/indiepg/releases).
 > Until you've cut one, build locally (see **Dev build**) and run
 > `sudo ./indiepg install`.

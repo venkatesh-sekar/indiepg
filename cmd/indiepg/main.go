@@ -5,13 +5,17 @@
 //
 //	indiepg serve            run the web server
 //	indiepg install          provision Postgres + install the service; print URL & password
+//	indiepg update           swap in the latest release binary + restart the service
+//	indiepg uninstall        stop+remove the service (Postgres and its data are left intact)
+//	indiepg start|stop|restart  control the systemd service
 //	indiepg reset-password   SSH/root escape hatch to reset the admin password
 //	indiepg version          print the version
 //
 // The everyday surface is just two verbs: `install` to set up (one command,
-// leaves a running systemd service) and `reset-password` to get back in. The
-// wiring here is intentionally thin: it constructs the foundation (logger,
-// store, config) and hands off to the per-feature packages.
+// leaves a running systemd service) and `reset-password` to get back in;
+// `update`/`uninstall` round out the lifecycle. The wiring here is intentionally
+// thin: it constructs the foundation (logger, store, config) and hands off to
+// the per-feature packages.
 package main
 
 import (
@@ -57,6 +61,11 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(
 		serveCmd(&statePath, &logLevel),
 		installCmd(&statePath, &logLevel),
+		updateCmd(&logLevel),
+		uninstallCmd(&statePath, &logLevel),
+		serviceCmd("start", "Start the indiepg systemd service", server.ServiceStart, &logLevel),
+		serviceCmd("stop", "Stop the indiepg systemd service", server.ServiceStop, &logLevel),
+		serviceCmd("restart", "Restart the indiepg systemd service", server.ServiceRestart, &logLevel),
 		resetPasswordCmd(&statePath, &logLevel),
 		versionCmd(),
 	)
@@ -152,6 +161,58 @@ func installCmd(statePath, logLevel *string) *cobra.Command {
 	cmd.Flags().StringVar(&bindAddr, "bind", config.DefaultBindAddr, "private bind address")
 	cmd.Flags().StringVar(&password, "password", "", "admin password (generated and shown once if empty)")
 	cmd.Flags().BoolVar(&noService, "no-service", false, "do not install/start the systemd service")
+	return cmd
+}
+
+// serviceCmd builds a thin start/stop/restart wrapper over the systemd unit.
+func serviceCmd(use, short string, action server.ServiceAction, logLevel *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return server.ControlService(cmd.Context(), core.NewLogger(core.LogLevel(*logLevel)), action)
+		},
+	}
+}
+
+func updateCmd(logLevel *string) *cobra.Command {
+	var version string
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Update indiepg to the latest release binary and restart the service",
+		Long: "Update downloads and checksum-verifies the latest (or --version) release " +
+			"binary over the current one, then restarts the systemd service so it takes " +
+			"effect. It is a binary swap only: it does NOT change your admin password, " +
+			"panel config, or databases. Requires root and curl/wget.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return server.Update(cmd.Context(), server.UpdateOptions{
+				Logger:  core.NewLogger(core.LogLevel(*logLevel)),
+				Version: version,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&version, "version", "", "release tag to install (default: latest)")
+	return cmd
+}
+
+func uninstallCmd(statePath, logLevel *string) *cobra.Command {
+	var purge bool
+	cmd := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Stop and remove the indiepg service (Postgres and your data are left intact)",
+		Long: "Uninstall stops and disables the systemd service and removes its unit file. " +
+			"With --purge it also deletes the panel state DB (admin password, config, " +
+			"instance identity) and the indiepg binary. It NEVER touches PostgreSQL or " +
+			"the databases it manages — remove those yourself if you want them gone.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return server.Uninstall(cmd.Context(), server.UninstallOptions{
+				Logger:    core.NewLogger(core.LogLevel(*logLevel)),
+				StatePath: *statePath,
+				Purge:     purge,
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&purge, "purge", false, "also delete the panel state DB and the indiepg binary")
 	return cmd
 }
 
