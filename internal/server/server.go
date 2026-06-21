@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/auth"
@@ -22,6 +23,7 @@ import (
 	"github.com/venkatesh-sekar/indiepg/internal/core"
 	"github.com/venkatesh-sekar/indiepg/internal/exec"
 	"github.com/venkatesh-sekar/indiepg/internal/identity"
+	"github.com/venkatesh-sekar/indiepg/internal/migrate"
 	"github.com/venkatesh-sekar/indiepg/internal/pg"
 	"github.com/venkatesh-sekar/indiepg/internal/pg/guard"
 	"github.com/venkatesh-sekar/indiepg/internal/server/web"
@@ -59,6 +61,13 @@ type Server struct {
 	guard   *guard.Guard
 	backups *backup.Manager
 	sampler *pg.Sampler
+
+	// migrateEngine wraps pg_dump/pg_restore/psql for both migration modes; it is
+	// always built (direct pull needs no S3). migrate is the S3-backed session
+	// coordinator and is nil unless an S3 backup target is configured — that nil
+	// is the ONLY honest reason the ssh-less handshake reports "S3 required".
+	migrateEngine migrate.PgEngine
+	migrate       *migrate.Service
 
 	sessionTTL time.Duration
 	spa        http.Handler
@@ -117,6 +126,21 @@ func New(opts Options) (*Server, error) {
 		log.Warn("could not configure pgBackRest from stored settings; backups may be unavailable until fixed", "err", berr)
 	}
 
+	// Sweep any migration jobs left "running" by a panel restart: the goroutine
+	// that owned each job is gone, so its local record would otherwise show a
+	// phantom in-flight migration forever. SweepRunningMigrations marks them failed
+	// with an "interrupted by panel restart" error. Best-effort: a sweep failure
+	// only logs. Stale per-job temp dirs are removed too so a crash mid-dump does
+	// not leak disk.
+	if swept, serr := srv.store.SweepRunningMigrations(connectCtx); serr != nil {
+		log.Warn("could not sweep interrupted migrations on startup", "err", serr)
+	} else if swept > 0 {
+		log.Warn("marked interrupted migrations as failed on startup", "count", swept)
+	}
+	if rerr := os.RemoveAll(migrateWorkBaseDir); rerr != nil {
+		log.Warn("could not clear stale migration work dir on startup", "dir", migrateWorkBaseDir, "err", rerr)
+	}
+
 	return srv, nil
 }
 
@@ -153,7 +177,31 @@ func (s *Server) ensureBackupConfigured(ctx context.Context, cfg config.Config) 
 		PGPort:        port,
 		PGSocketDir:   cfg.PGSocketDir,
 	}
-	return s.backups.EnsureConfigured(ctx, params)
+
+	// Provision in the order pgBackRest requires (ported from server-management):
+	//   1. write the managed pgBackRest config (+ local repo dir),
+	//   2. enable Postgres WAL archiving (archive_mode/command, wal_level) and
+	//      restart Postgres if a postmaster-only setting changed — without this
+	//      `pgbackrest backup` fails with "archive_mode must be enabled",
+	//   3. initialize the repository (stanza-create) once 1+2 are in place.
+	cfgChanged, err := s.backups.EnsureConfig(ctx, params)
+	if err != nil {
+		return false, err
+	}
+
+	archChanged, err := s.pg.EnsureArchiving(ctx, cfg.Stanza)
+	if err != nil {
+		return false, core.InternalError("server: enable WAL archiving for backups").Wrap(err)
+	}
+
+	// stanza-create is idempotent, so run it on every pass: it self-heals a repo
+	// that a prior run failed to initialize (where cfgChanged would now be false),
+	// rather than leaving backups permanently broken until the config next changes.
+	if err := s.backups.StanzaCreate(ctx, cfg.Stanza); err != nil {
+		return false, err
+	}
+
+	return cfgChanged || archChanged, nil
 }
 
 // backupOwnerFor builds the single-writer ownership guard for the configured S3
@@ -189,6 +237,33 @@ func backupOwnerFor(ctx context.Context, st *store.Store, cfg config.Config, log
 	return identity.NewOwner(id, objstore, log)
 }
 
+// migrateServiceFor builds the S3-backed migration session Service when an S3
+// backup target is configured, or returns nil when there is none. A nil Service
+// is what makes the ssh-less handshake honestly report "requires S3"; the direct
+// pull path never consults it. It reuses the backup S3 client (the same bucket
+// the panel already uses) so no second credential is needed.
+//
+// It is a free function (not a method) so newServer can call it while still
+// assembling the Server.
+func migrateServiceFor(cfg config.Config, runner exec.Runner, log *core.Logger) *migrate.Service {
+	if cfg.Backup.Bucket == "" && cfg.Backup.Endpoint == "" {
+		return nil // no S3 target: ssh-less handshake is unavailable, direct pull still works.
+	}
+	objstore, err := backup.NewS3ObjectStore(backup.S3StoreParams{
+		Endpoint:  cfg.Backup.Endpoint,
+		Region:    cfg.Backup.Region,
+		Bucket:    cfg.Backup.Bucket,
+		AccessKey: cfg.Backup.AccessKey,
+		SecretKey: cfg.Backup.SecretKey,
+		UseSSL:    cfg.Backup.UseSSL,
+	})
+	if err != nil {
+		log.Warn("ssh-less migration unavailable: could not build S3 client", "err", err)
+		return nil
+	}
+	return migrate.NewService(objstore, runner, log)
+}
+
 // newServer is the unexported builder used by New and by tests to inject a
 // pre-wired authenticator and SPA filesystem.
 func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth.Authenticator, dist fs.FS, ttl time.Duration) (*Server, error) {
@@ -212,6 +287,11 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 			Owner: backupOwnerFor(context.Background(), st, cfg, log),
 		}),
 		sampler: pg.NewSampler(pgmgr),
+
+		// Migration: the dump/restore engine is always available (direct pull needs
+		// no S3); the S3 session Service is built only when an S3 target exists.
+		migrateEngine: migrate.NewEngine(runner, log),
+		migrate:       migrateServiceFor(cfg, runner, log),
 
 		sessionTTL: ttl,
 		spa:        newSPAHandler(dist),

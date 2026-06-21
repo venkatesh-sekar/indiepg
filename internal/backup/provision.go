@@ -53,8 +53,31 @@ func (m *Manager) ConfigPath() string {
 //   - The rendered text is deterministic, so an unchanged config is a no-op and
 //     does not re-run stanza-create.
 func (m *Manager) EnsureConfigured(ctx context.Context, p ConfigParams) (bool, error) {
+	changed, err := m.EnsureConfig(ctx, p)
+	if err != nil {
+		return false, err
+	}
+	if changed {
+		if err := m.StanzaCreate(ctx, p.Stanza); err != nil {
+			return false, err
+		}
+	}
+	return changed, nil
+}
+
+// EnsureConfig renders and installs the managed pgBackRest config (and the local
+// repo dir) from p, WITHOUT running stanza-create. It returns whether the file
+// changed. It is split from stanza-create so the server can enable Postgres WAL
+// archiving (and restart Postgres) BETWEEN writing the config and initializing
+// the repository — the order pgBackRest requires (a stanza/backup fails with
+// "archive_mode must be enabled" if archiving is not yet on).
+//
+// Safety properties are unchanged: a config file lacking indiepg's marker is
+// never clobbered, the write is atomic at 0600 owned by the pgBackRest user, and
+// an unchanged (deterministic) render is a no-op.
+func (m *Manager) EnsureConfig(ctx context.Context, p ConfigParams) (bool, error) {
 	if m.runner == nil {
-		return false, core.InternalError("backup: EnsureConfigured requires a Runner")
+		return false, core.InternalError("backup: EnsureConfig requires a Runner")
 	}
 
 	desired, err := RenderConfig(p)
@@ -73,7 +96,7 @@ func (m *Manager) EnsureConfigured(ctx context.Context, p ConfigParams) (bool, e
 			).WithHint("move or remove the hand-written config (or its repo settings into /etc/pgbackrest/conf.d/) so indiepg can manage it")
 		}
 		if string(existing) == desired {
-			return false, nil // already current; no rewrite, no stanza-create.
+			return false, nil // already current; no rewrite.
 		}
 	case os.IsNotExist(err):
 		// First write; fall through.
@@ -93,11 +116,19 @@ func (m *Manager) EnsureConfigured(ctx context.Context, p ConfigParams) (bool, e
 		return false, err
 	}
 
-	if err := m.stanzaCreate(ctx, p.Stanza, path); err != nil {
-		return false, err
-	}
-	m.log.InfoCtx(ctx, "configured pgBackRest", "stanza", p.Stanza, "path", path, "remote", p.RemoteConfigured())
+	m.log.InfoCtx(ctx, "wrote pgBackRest config", "stanza", p.Stanza, "path", path, "remote", p.RemoteConfigured())
 	return true, nil
+}
+
+// StanzaCreate initializes the pgBackRest repository for the stanza using the
+// managed config. It is idempotent in pgBackRest (a no-op when the stanza already
+// exists with matching settings), so it is safe to call on every provisioning
+// pass.
+func (m *Manager) StanzaCreate(ctx context.Context, stanza string) error {
+	if m.runner == nil {
+		return core.InternalError("backup: StanzaCreate requires a Runner")
+	}
+	return m.stanzaCreate(ctx, stanza, m.ConfigPath())
 }
 
 // readNoFollow reads the config file refusing to traverse a symlink at the
