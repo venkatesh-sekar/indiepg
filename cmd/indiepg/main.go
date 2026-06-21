@@ -176,22 +176,30 @@ func serviceCmd(use, short string, action server.ServiceAction, logLevel *string
 }
 
 func updateCmd(logLevel *string) *cobra.Command {
-	var version string
+	var (
+		version string
+		force   bool
+	)
 	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Update indiepg to the latest release binary and restart the service",
-		Long: "Update downloads and checksum-verifies the latest (or --version) release " +
-			"binary over the current one, then restarts the systemd service so it takes " +
-			"effect. It is a binary swap only: it does NOT change your admin password, " +
-			"panel config, or databases. Requires root and curl/wget.",
+		Long: "Update checks the latest (or --version) release against the running build. " +
+			"If you're already on it, it says so and does nothing. Otherwise it downloads " +
+			"and checksum-verifies the new binary over the current one, then restarts the " +
+			"systemd service so it takes effect. It is a binary swap only: it does NOT " +
+			"change your admin password, panel config, or databases. Use --force to " +
+			"reinstall the same version (e.g. to repair a corrupted binary). Requires root " +
+			"and curl/wget.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return server.Update(cmd.Context(), server.UpdateOptions{
 				Logger:  core.NewLogger(core.LogLevel(*logLevel)),
 				Version: version,
+				Force:   force,
 			})
 		},
 	}
 	cmd.Flags().StringVar(&version, "version", "", "release tag to install (default: latest)")
+	cmd.Flags().BoolVar(&force, "force", false, "reinstall even if already on the target version")
 	return cmd
 }
 
