@@ -3,10 +3,18 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/venkatesh-sekar/pgpanel/internal/core"
 )
+
+// genericInternalMessage is the safe, fixed client-facing message used whenever
+// an error is not a typed panel error. Raw error text is never placed in the
+// wire payload for these; it is kept to server-side logs only so an unexpected
+// internal failure cannot leak connection strings, SQL fragments, file paths,
+// or other sensitive detail to the SPA.
+const genericInternalMessage = "internal server error"
 
 // apiError is the JSON error envelope returned for any failed request. The
 // stable Code lets the SPA branch on the kind of failure (e.g. render a
@@ -85,8 +93,8 @@ func writeData(w http.ResponseWriter, status int, data any) {
 }
 
 // writeError renders any error as the JSON apiError envelope with the HTTP
-// status derived from its stable code. Non-panel errors are normalized to an
-// internal error and never leak raw messages beyond the wrapped text.
+// status derived from its stable code. Non-panel errors are normalized to a
+// generic internal error and their raw text never reaches the client payload.
 func writeError(w http.ResponseWriter, err error) {
 	ae, status := toAPIError(err)
 	writeJSON(w, status, ae)
@@ -101,12 +109,19 @@ func toAPIError(err error) (apiError, int) {
 	}
 
 	code := core.CodeOf(err)
-	out := apiError{Code: code, Message: err.Error()}
+
+	// Safe-by-default: the client Message is only ever built from a typed panel
+	// error's curated Message. For any other error the payload carries a fixed
+	// generic string and the raw text is confined to the server-side log, so an
+	// unexpected internal failure cannot leak sensitive detail to the SPA.
+	out := apiError{Code: code, Message: genericInternalMessage}
 
 	if pe, ok := core.AsError(err); ok {
 		out.Message = pe.Message
 		out.Hint = pe.Hint
 		out.Details = pe.Details
+	} else {
+		slog.Error("non-panel error normalized to internal", "err", err.Error())
 	}
 
 	var se *core.SafetyError

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/venkatesh-sekar/pgpanel/internal/core"
@@ -147,6 +148,15 @@ func (m *Manager) Connect(ctx context.Context) error {
 }
 
 // openPool builds a pgxpool.Pool for the given connConfig and pings it.
+//
+// For pools that connect as the read-only role, an AfterConnect hook re-asserts
+// the read-only transaction default on every pooled connection as
+// defense-in-depth (see provisionSQL): the authoritative DB-level boundary is the
+// role's lack of write privilege, but re-asserting the GUC at connect time costs
+// nothing and closes the window where a reused connection might have had it
+// flipped off. The hook is gated on the connecting user, so it covers both the
+// main read-only pool and any transient per-database read-only pool, and is never
+// installed on the privileged (admin) pool.
 func (m *Manager) openPool(ctx context.Context, c connConfig, maxConns int32) (*pgxpool.Pool, error) {
 	dsn, err := buildDSN(c)
 	if err != nil {
@@ -159,6 +169,18 @@ func (m *Manager) openPool(ctx context.Context, c connConfig, maxConns int32) (*
 	poolCfg.MaxConns = maxConns
 	poolCfg.MaxConnLifetime = time.Hour
 	poolCfg.MaxConnIdleTime = 5 * time.Minute
+
+	if c.User == ReadOnlyRole {
+		poolCfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+			// Re-assert read-only on each new pooled connection. Secondary to the
+			// privilege-denial boundary; a failure here means we cannot vouch for
+			// the connection, so surface it rather than hand back a writable conn.
+			if _, err := conn.Exec(ctx, "SET default_transaction_read_only = on"); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {

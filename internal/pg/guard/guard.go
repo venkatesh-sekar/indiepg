@@ -225,19 +225,49 @@ func classifyWith(toks []token) Class {
 	return cls
 }
 
-// classifyCopy distinguishes COPY ... FROM (a write into a table) from
-// COPY ... TO (a read out of a table or query). FROM is a write; TO is a read.
+// classifyCopy classifies a COPY statement. The only read-like form is
+// COPY <relation|(query)> TO STDOUT, which streams rows back to the client.
+// Every other form has a server-side side effect and is NOT a read:
+//   - COPY ... FROM ...        loads data into a table (a write).
+//   - COPY ... TO/FROM PROGRAM runs a shell command on the server (unsafe).
+//   - COPY ... TO '<file>'     writes a file on the server (superuser-only).
+//
+// We scan the top-level (depth 0) tokens for the FROM/TO direction and the
+// destination keyword. TO STDOUT is the sole read; anything else is treated as
+// a write so the read-only gate rejects it.
 func classifyCopy(toks []token) Class {
 	for i := 1; i < len(toks); i++ {
-		if toks[i].isWord("FROM") {
+		t := toks[i]
+		if t.depth != 0 {
+			continue
+		}
+		if t.isWord("FROM") {
+			// COPY ... FROM (table, file, PROGRAM, or STDIN) is always a write.
 			return ClassWrite
 		}
-		if toks[i].isWord("TO") {
-			return ClassRead
+		if t.isWord("TO") {
+			// Read only when the destination is STDOUT; PROGRAM and file targets
+			// have server-side side effects and are not safe reads.
+			if nextTopLevelWord(toks, i+1) == "STDOUT" {
+				return ClassRead
+			}
+			return ClassWrite
 		}
 	}
 	// Bare COPY without FROM/TO is malformed; treat conservatively as a write.
 	return ClassWrite
+}
+
+// nextTopLevelWord returns the upper-cased text of the first depth-0 word token
+// at or after index i, or "" if none exists. It is used to inspect the target of
+// a COPY ... TO clause (STDOUT vs PROGRAM/file).
+func nextTopLevelWord(toks []token, i int) string {
+	for ; i < len(toks); i++ {
+		if toks[i].depth == 0 && toks[i].kind == tokWord {
+			return toks[i].upper()
+		}
+	}
+	return ""
 }
 
 // classFromVerb maps a leading verb word to a class (used for the inner
@@ -281,15 +311,26 @@ func New(opts Options) *Guard {
 // Options returns the guard's configured options.
 func (g *Guard) Options() Options { return g.opts }
 
-// Check classifies sql and applies policy. When the guard is read-only and the
-// statement is not read-only, it returns a *core.Error with code CodeSafety (and
-// the classification, for context). When auto-LIMIT is enabled and the statement
-// is an unbounded read, the returned SQL has a top-level LIMIT injected; this is
-// the SQL the caller should execute.
+// Check classifies sql and applies policy. When sql contains more than one
+// statement (top-level ';'), it returns a *core.Error with code CodeSafety: the
+// query box runs a single statement only, never a batch. When the guard is
+// read-only and the statement is not read-only, it returns a *core.Error with
+// code CodeSafety (and the classification, for context). When auto-LIMIT is
+// enabled and the statement is an unbounded read, the returned SQL has a
+// top-level LIMIT injected; this is the SQL the caller should execute.
 //
 // Check never executes anything and never panics.
 func (g *Guard) Check(sql string) (rewritten string, cls Classification, err error) {
 	cls = Classify(sql)
+
+	// Reject multi-statement input outright: the query box runs a single
+	// statement. Splitting on top-level ';' (the tokenizer ignores ';' inside
+	// strings/dollar-quotes/parens) keeps a smuggled second statement (e.g.
+	// "SELECT 1; DROP TABLE users") from slipping through the read-only gate,
+	// and ensures we never append a LIMIT to a multi-statement string.
+	if countStatements(tokenize(cls.Statement)) > 1 {
+		return cls.Statement, cls, multiStatementRejection()
+	}
 
 	if g.opts.ReadOnly && !cls.Class.IsReadOnly() {
 		// A non-read statement is blocked in read-only mode. Build a *core.Error
@@ -316,10 +357,24 @@ func (g *Guard) EnsureLimit(sql string) string {
 	}
 	stmt := trimStatement(sql)
 	toks := tokenize(stmt)
-	if !limitInjectable(toks) || hasTopLevelLimit(toks) {
+	// Never rewrite a multi-statement string: appending LIMIT would land it on
+	// the trailing statement, producing invalid or surprising SQL.
+	if countStatements(toks) > 1 || !limitInjectable(toks) || hasTopLevelLimit(toks) {
 		return sql
 	}
 	return injectLimit(stmt, g.opts.AutoLimit)
+}
+
+// multiStatementRejection builds the safety error returned by Check when the
+// query box receives more than one statement. It carries code CodeSafety (via
+// core.NewSafetyError) so handlers branch on it the same way they do for a
+// read-only rejection; the query box runs exactly one statement, never a batch.
+func multiStatementRejection() error {
+	return core.NewSafetyError(
+		"multi-statement query",
+		[]string{"submit a single statement"},
+		"multiple SQL statements are not allowed in the query box; run one statement at a time",
+	)
 }
 
 // readOnlyRejection builds the safety error returned by Check when a non-read
@@ -374,6 +429,34 @@ func trimStatement(sql string) string {
 		s = strings.TrimRight(s[:len(s)-1], " \t\n\r\f\v")
 	}
 	return s
+}
+
+// countStatements reports how many non-empty statements the tokenized input
+// contains, splitting on top-level (depth 0) semicolons. The tokenizer already
+// ignores semicolons inside strings, dollar-quotes, and parentheses, so a
+// semicolon embedded in one statement does not inflate the count. Trailing
+// semicolons (and runs of empty statements such as ";;") contribute nothing.
+//
+// It is used to reject multi-statement input in the query box: only a single
+// statement may be classified and run.
+func countStatements(toks []token) int {
+	count := 0
+	inStmt := false
+	for _, t := range toks {
+		if t.depth == 0 && t.kind == tokPunct && t.text == ";" {
+			if inStmt {
+				count++
+				inStmt = false
+			}
+			continue
+		}
+		// Any token other than a top-level statement separator is content.
+		inStmt = true
+	}
+	if inStmt {
+		count++
+	}
+	return count
 }
 
 // firstWords returns up to n leading word tokens (upper-cased), skipping

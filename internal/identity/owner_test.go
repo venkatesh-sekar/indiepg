@@ -127,6 +127,220 @@ func TestClaimForeignStaleStillRefuses(t *testing.T) {
 	require.Equal(t, beforePuts, os.puts, "claim must not adopt; that is a separate action")
 }
 
+// TestClaimCASRaceLostToForeign exercises the conditional-create (CAS) path: the
+// owner reads the repo as absent, but a foreign panel claims it before our
+// conditional write lands. PutObjectIfAbsent then fails the precondition, we
+// re-read, and the now-present foreign marker is a HARD STOP — proving two
+// panels can never both claim a fresh repo.
+func TestClaimCASRaceLostToForeign(t *testing.T) {
+	ctx := context.Background()
+	os := newFakeObjectStore()
+	repo := "panel/shared"
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+
+	// Model the race: the first GetObject (the initial read) sees the repo as
+	// absent, but by the time we conditionally create, a foreign owner exists.
+	// We seed that foreign marker into the store, and force only the first read
+	// to report not-found so the fresh-claim path is taken.
+	seedForeign(t, os, repo, now.Add(-time.Minute)) // active foreign owner present
+	firstRead := true
+	os.getErr = func(string) error {
+		if firstRead {
+			firstRead = false
+			return core.NotFoundError("not found (raced)")
+		}
+		return nil // subsequent reads see the real (foreign) marker
+	}
+
+	o := ownerAt(os, now)
+	_, err := o.Claim(ctx, repo)
+	require.Error(t, err)
+	require.Equal(t, core.CodeOwnership, core.CodeOf(err))
+
+	var oe *core.OwnershipError
+	require.ErrorAs(t, err, &oe)
+	require.Equal(t, otherID, oe.OwnerID, "lost the race to the foreign owner")
+
+	// The conditional create must have been attempted (and refused), and the
+	// foreign marker must be untouched.
+	require.Equal(t, 1, os.putsIf, "fresh claim must go through the conditional create")
+	require.Equal(t, 0, os.puts, "losing the race must not overwrite the foreign marker")
+}
+
+// TestClaimCASRaceLostToMine covers losing the create race to a marker that turns
+// out to be mine (e.g. a concurrent claim by the same panel): after the
+// precondition failure we re-read, see our own marker, and proceed by refreshing
+// the heartbeat rather than erroring.
+func TestClaimCASRaceLostToMine(t *testing.T) {
+	ctx := context.Background()
+	os := newFakeObjectStore()
+	repo := "panel/" + myID
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+
+	// Seed a marker already owned by me (as if a sibling goroutine just claimed).
+	mine := OwnershipMarker{
+		InstanceID: myID,
+		Hostname:   "host-a",
+		PGSystemID: "7300000000000000001",
+		ClaimedAt:  now.Add(-time.Hour),
+		LastSeen:   now.Add(-time.Hour),
+	}
+	data, err := marshalMarker(mine)
+	require.NoError(t, err)
+	os.set(markerKey(repo), data)
+
+	firstRead := true
+	os.getErr = func(string) error {
+		if firstRead {
+			firstRead = false
+			return core.NotFoundError("not found (raced)")
+		}
+		return nil
+	}
+
+	o := ownerAt(os, now)
+	m, err := o.Claim(ctx, repo)
+	require.NoError(t, err)
+	require.Equal(t, myID, m.InstanceID)
+	require.Equal(t, now, m.LastSeen, "heartbeat refreshed after losing the race to myself")
+	require.Equal(t, now.Add(-time.Hour), m.ClaimedAt, "claimed_at preserved")
+	require.Equal(t, 1, os.putsIf, "conditional create attempted")
+	require.Equal(t, 1, os.puts, "re-claim refreshes the heartbeat via a normal write")
+}
+
+// TestClaimFreshUsesConditionalCreate asserts the happy fresh-claim path goes
+// through PutObjectIfAbsent (not the unconditional PutObject), so the race is
+// closed by construction.
+func TestClaimFreshUsesConditionalCreate(t *testing.T) {
+	ctx := context.Background()
+	os := newFakeObjectStore()
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	o := ownerAt(os, now)
+
+	_, err := o.Claim(ctx, "panel/"+myID)
+	require.NoError(t, err)
+	require.Equal(t, 1, os.putsIf, "fresh claim must use the conditional create primitive")
+	require.Equal(t, 0, os.puts, "fresh claim must not use the unconditional put")
+}
+
+// TestClaimSystemIDMismatchHardStop covers the "different cluster, same repo"
+// guard: the marker is mine by instance id, but its stored Postgres system id
+// differs from ours. Claim must HARD STOP and never overwrite the stored id.
+func TestClaimSystemIDMismatchHardStop(t *testing.T) {
+	ctx := context.Background()
+	os := newFakeObjectStore()
+	repo := "panel/" + myID
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+
+	// A marker written by my instance id but a DIFFERENT cluster.
+	stored := OwnershipMarker{
+		InstanceID: myID,
+		Hostname:   "host-a",
+		PGSystemID: "9999999999999999999", // ours (ownerAt) is 7300000000000000001
+		ClaimedAt:  now.Add(-time.Hour),
+		LastSeen:   now.Add(-time.Minute),
+	}
+	data, err := marshalMarker(stored)
+	require.NoError(t, err)
+	os.set(markerKey(repo), data)
+
+	o := ownerAt(os, now)
+	beforePuts := os.puts
+	_, err = o.Claim(ctx, repo)
+	require.Error(t, err)
+	require.Equal(t, core.CodeOwnership, core.CodeOf(err))
+
+	var oe *core.OwnershipError
+	require.ErrorAs(t, err, &oe)
+	require.False(t, oe.Adoptable)
+	require.Contains(t, oe.Error(), "9999999999999999999", "error names the stored system id")
+	require.Contains(t, oe.Error(), "7300000000000000001", "error names our system id")
+
+	// HARD STOP: the stored marker (and its system id) must be untouched.
+	require.Equal(t, beforePuts, os.puts, "must not overwrite a mismatched system id")
+	raw, ok := os.raw(markerKey(repo))
+	require.True(t, ok)
+	require.Contains(t, string(raw), "9999999999999999999")
+}
+
+// TestClaimEmptyStoredSystemIDFilledNotConflict ensures an older marker with a
+// blank stored system id is not treated as a conflict; the heartbeat fills it in.
+func TestClaimEmptyStoredSystemIDFilledNotConflict(t *testing.T) {
+	ctx := context.Background()
+	os := newFakeObjectStore()
+	repo := "panel/" + myID
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+
+	stored := OwnershipMarker{
+		InstanceID: myID,
+		Hostname:   "host-a",
+		PGSystemID: "", // unknown when the marker was first written
+		ClaimedAt:  now.Add(-time.Hour),
+		LastSeen:   now.Add(-time.Minute),
+	}
+	data, err := marshalMarker(stored)
+	require.NoError(t, err)
+	os.set(markerKey(repo), data)
+
+	o := ownerAt(os, now)
+	m, err := o.Claim(ctx, repo)
+	require.NoError(t, err)
+	require.Equal(t, "7300000000000000001", m.PGSystemID, "blank stored id is filled with ours")
+}
+
+// TestVerifySystemIDMismatchHardStop covers the read-side guard: Verify must HARD
+// STOP (never write) when the stored cluster id differs from ours.
+func TestVerifySystemIDMismatchHardStop(t *testing.T) {
+	ctx := context.Background()
+	os := newFakeObjectStore()
+	repo := "panel/" + myID
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+
+	stored := OwnershipMarker{
+		InstanceID: myID,
+		Hostname:   "host-a",
+		PGSystemID: "9999999999999999999",
+		ClaimedAt:  now.Add(-time.Hour),
+		LastSeen:   now.Add(-time.Minute),
+	}
+	data, err := marshalMarker(stored)
+	require.NoError(t, err)
+	os.set(markerKey(repo), data)
+
+	o := ownerAt(os, now)
+	beforePuts := os.puts
+	_, err = o.Verify(ctx, repo)
+	require.Equal(t, core.CodeOwnership, core.CodeOf(err))
+	require.Equal(t, beforePuts, os.puts, "verify never writes")
+}
+
+// TestHeartbeatSystemIDMismatchHardStop covers the heartbeat guard: a mismatched
+// stored cluster id is a HARD STOP and must not keep the wrong-cluster claim
+// alive.
+func TestHeartbeatSystemIDMismatchHardStop(t *testing.T) {
+	ctx := context.Background()
+	os := newFakeObjectStore()
+	repo := "panel/" + myID
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+
+	stored := OwnershipMarker{
+		InstanceID: myID,
+		Hostname:   "host-a",
+		PGSystemID: "9999999999999999999",
+		ClaimedAt:  now.Add(-time.Hour),
+		LastSeen:   now.Add(-time.Minute),
+	}
+	data, err := marshalMarker(stored)
+	require.NoError(t, err)
+	os.set(markerKey(repo), data)
+
+	o := ownerAt(os, now)
+	beforePuts := os.puts
+	err = o.Heartbeat(ctx, repo)
+	require.Equal(t, core.CodeOwnership, core.CodeOf(err))
+	require.Equal(t, beforePuts, os.puts, "must not refresh a mismatched-cluster marker")
+}
+
 func TestVerify(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
@@ -313,7 +527,9 @@ func TestClaimWrapsTransportErrors(t *testing.T) {
 
 	t.Run("put error on fresh claim is wrapped", func(t *testing.T) {
 		os := newFakeObjectStore()
-		os.putErr = core.ExecError("s3 write denied")
+		// The fresh-claim path is a conditional create (PutObjectIfAbsent), so
+		// inject the transport error on that primitive, not the plain PutObject.
+		os.putIfErr = core.ExecError("s3 write denied")
 		o := ownerAt(os, now)
 		_, err := o.Claim(ctx, "panel/x")
 		require.Error(t, err)

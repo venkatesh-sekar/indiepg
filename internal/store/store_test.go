@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -20,6 +22,44 @@ func newTestStore(t *testing.T) *Store {
 func TestOpenAndPing(t *testing.T) {
 	s := newTestStore(t)
 	require.NoError(t, s.Ping(context.Background()))
+}
+
+func TestOpenCreatesPrivateStateFile(t *testing.T) {
+	// The state file holds the password hash and session signing secret, so it
+	// must be created 0600 (owner-only) and its parent dir 0700, regardless of
+	// the process umask.
+	dir := filepath.Join(t.TempDir(), "nested")
+	path := filepath.Join(dir, "pgpanel.db")
+
+	s, err := Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	fi, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), fi.Mode().Perm(), "state file must be owner read/write only")
+
+	di, err := os.Stat(dir)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), di.Mode().Perm(), "state dir must be owner-only")
+}
+
+func TestOpenTightensExistingStateFile(t *testing.T) {
+	// A pre-existing world-readable state file (e.g. created by an older build)
+	// must be chmod-ed down to 0600 on Open.
+	path := filepath.Join(t.TempDir(), "pgpanel.db")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	require.NoError(t, os.Chmod(path, 0o644))
+
+	s, err := Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	fi, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), fi.Mode().Perm(), "existing state file must be tightened to 0600")
 }
 
 func TestMigrateIsIdempotent(t *testing.T) {

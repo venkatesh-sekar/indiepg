@@ -74,7 +74,13 @@ func verifySessionAt(secret []byte, token string, now time.Time) (*Session, erro
 	if err := json.Unmarshal(payload, &s); err != nil {
 		return nil, core.AuthError("invalid session payload")
 	}
-	if !s.ExpiresAt.IsZero() && !now.Before(s.ExpiresAt) {
+	// Fail closed: a missing (zero) expiry must be rejected rather than treated
+	// as "never expires". Only a token whose expiry is set and strictly in the
+	// future is accepted.
+	if s.ExpiresAt.IsZero() {
+		return nil, core.AuthError("session missing expiry")
+	}
+	if !now.Before(s.ExpiresAt) {
 		return nil, core.AuthError("session expired").WithDetail("expired_at", s.ExpiresAt.UTC().Format(time.RFC3339Nano))
 	}
 	return &s, nil

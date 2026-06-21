@@ -157,6 +157,100 @@ func TestSystemIdentifier_PsqlFailure(t *testing.T) {
 	require.Equal(t, core.CodeExec, core.CodeOf(err))
 }
 
+func TestRedactPasswordLiteral(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"create role",
+			`CREATE ROLE "app" LOGIN PASSWORD 's3cr3t';`,
+			`CREATE ROLE "app" LOGIN PASSWORD <redacted>;`,
+		},
+		{
+			"alter role",
+			`ALTER ROLE "app" PASSWORD 'newpw';`,
+			`ALTER ROLE "app" PASSWORD <redacted>;`,
+		},
+		{
+			"lowercase keyword",
+			`create role "app" login password 'pw';`,
+			`create role "app" login password <redacted>;`,
+		},
+		{
+			"doubled-quote escape in password",
+			`CREATE ROLE "app" LOGIN PASSWORD 'p''; DROP TABLE x; --';`,
+			`CREATE ROLE "app" LOGIN PASSWORD <redacted>;`,
+		},
+		{
+			"E-prefixed escape string",
+			`CREATE ROLE "app" LOGIN PASSWORD E'pa\ss';`,
+			`CREATE ROLE "app" LOGIN PASSWORD <redacted>;`,
+		},
+		{
+			"no password literal is untouched",
+			`CREATE EXTENSION IF NOT EXISTS pg_stat_statements;`,
+			`CREATE EXTENSION IF NOT EXISTS pg_stat_statements;`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, redactPasswordLiteral(tt.in))
+			// The redacted form must never retain the original secret value.
+			require.NotContains(t, redactPasswordLiteral(tt.in), "s3cr3t")
+		})
+	}
+}
+
+func TestStatementHasSecret(t *testing.T) {
+	require.True(t, statementHasSecret(`CREATE ROLE "app" LOGIN PASSWORD 'pw';`))
+	require.True(t, statementHasSecret(`ALTER ROLE "app" PASSWORD E'p\w';`))
+	require.False(t, statementHasSecret(`CREATE EXTENSION IF NOT EXISTS pg_stat_statements;`))
+	require.False(t, statementHasSecret(`SELECT system_identifier::text FROM pg_control_system()`))
+}
+
+// TestRunPsql_MarksSensitiveOnPassword verifies that runPsql flags the exec spec
+// Sensitive when (and only when) the SQL carries a PASSWORD literal, so the
+// Runner redacts the resolved argv instead of logging a cleartext secret.
+func TestRunPsql_MarksSensitiveOnPassword(t *testing.T) {
+	r := exec.NewFakeRunner()
+	m := newManager(r)
+
+	_, err := m.runPsql(context.Background(), "postgres", `CREATE ROLE "app" LOGIN PASSWORD 'topsecret';`)
+	require.NoError(t, err)
+	_, err = m.runPsql(context.Background(), "postgres", `SELECT 1;`)
+	require.NoError(t, err)
+
+	calls := r.Calls()
+	require.Len(t, calls, 2)
+	require.True(t, calls[0].Sensitive, "statement with a PASSWORD literal must be Sensitive")
+	require.False(t, calls[1].Sensitive, "statement without a secret must not be Sensitive")
+}
+
+// TestRunPsql_RedactsPasswordInStderr ensures a psql failure does not leak a
+// PASSWORD literal that psql echoed back in its error text. The stderr is
+// carried as a structured, serializable error detail (it can reach the audit
+// log), so the redaction must land there.
+func TestRunPsql_RedactsPasswordInStderr(t *testing.T) {
+	r := exec.NewFakeRunner()
+	r.On("psql", exec.FakeResponse{
+		ExitCode: 1,
+		Stderr:   `ERROR near CREATE ROLE "app" LOGIN PASSWORD 'topsecret'`,
+		Err:      errFake("syntax error"),
+	})
+	m := newManager(r)
+
+	_, err := m.runPsql(context.Background(), "postgres", `CREATE ROLE "app" LOGIN PASSWORD 'topsecret';`)
+	require.Error(t, err)
+
+	pe, ok := core.AsError(err)
+	require.True(t, ok)
+	stderr, _ := pe.Details["stderr"].(string)
+	require.NotContains(t, stderr, "topsecret")
+	require.Contains(t, stderr, "PASSWORD <redacted>")
+}
+
 // errFake is a tiny error helper for FakeResponse.Err.
 type fakeErr string
 

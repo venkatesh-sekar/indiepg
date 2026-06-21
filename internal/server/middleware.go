@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -10,6 +13,20 @@ import (
 	"github.com/venkatesh-sekar/pgpanel/internal/auth"
 	"github.com/venkatesh-sekar/pgpanel/internal/core"
 )
+
+// trustForwardedProtoEnv, when set truthy, tells the panel it sits behind a
+// trusted TLS-terminating reverse proxy so the X-Forwarded-Proto header may be
+// honored. It is a deliberate, server-side opt-in: an attacker cannot set a
+// process environment variable, so the spoofable header alone never decides the
+// Secure cookie flag. The default (unset) trusts only r.TLS.
+const trustForwardedProtoEnv = "PGPANEL_TRUST_FORWARDED_PROTO"
+
+// csrfHeaderName is a non-simple custom header. A browser cannot attach it to a
+// cross-site form/navigation request without triggering a CORS preflight, so
+// its presence is sufficient proof the request came from our own SPA (which
+// sets it on every XHR). It is the second accepted CSRF signal alongside an
+// Origin/Referer host that matches the bind host.
+const csrfHeaderName = "X-Pgpanel-Csrf"
 
 // sessionCookieName is the name of the signed session cookie. It is host-only,
 // HttpOnly, SameSite=Strict, and Secure-aware so a stolen cookie cannot be read
@@ -36,9 +53,21 @@ func sessionFromContext(ctx context.Context) *auth.Session {
 // the login screen.
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := tokenFromRequest(r)
+		token, src := tokenWithSource(r)
 		if token == "" {
 			writeError(w, core.AuthError("authentication required"))
+			return
+		}
+		// CSRF defense-in-depth: SameSite=Strict on the session cookie is the
+		// primary control, but for cookie-authenticated unsafe methods we also
+		// require a same-origin signal so SameSite is never the single point of
+		// failure. Bearer/API-token clients are immune to CSRF and skipped.
+		if src == tokenSourceCookie && isUnsafeMethod(r.Method) && !s.csrfOriginOK(r) {
+			writeError(w, core.NewSafetyError(
+				"cross-site request",
+				[]string{"same-origin Origin/Referer or " + csrfHeaderName + " header"},
+				"request origin not allowed for this cookie-authenticated action",
+			))
 			return
 		}
 		sess, err := s.auth.VerifyToken(r.Context(), token)
@@ -53,20 +82,99 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
+// isUnsafeMethod reports whether the HTTP method can change server state and so
+// warrants the CSRF backstop. GET/HEAD/OPTIONS are safe by definition.
+func isUnsafeMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+// csrfOriginOK reports whether a cookie-authenticated unsafe request carries an
+// acceptable same-origin signal. It accepts either (a) an Origin or Referer
+// whose host matches the configured bind host, or (b) a non-simple custom
+// header the SPA attaches and a cross-site attacker cannot forge without a
+// preflight. When neither is present the request is rejected.
+func (s *Server) csrfOriginOK(r *http.Request) bool {
+	if r.Header.Get(csrfHeaderName) != "" {
+		return true
+	}
+	want := hostOnly(s.cfg.BindAddr)
+	// An empty/invalid bind host means we cannot establish an expected origin;
+	// fall back to requiring the custom header (already checked above), so an
+	// originless request is rejected rather than blindly allowed.
+	if want == "" {
+		return false
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		return originHostMatches(origin, want)
+	}
+	if ref := r.Header.Get("Referer"); ref != "" {
+		return originHostMatches(ref, want)
+	}
+	// No Origin and no Referer on a state-changing request: treat as untrusted.
+	return false
+}
+
+// originHostMatches parses a URL (Origin or Referer value) and reports whether
+// its host matches want (host comparison only; ports are ignored so a TLS proxy
+// rewriting the port still matches the bind host).
+func originHostMatches(rawURL, want string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(hostOnly(u.Host), want)
+}
+
+// hostOnly returns the host portion of a host:port (or bare host) string,
+// lower-cased. It tolerates values without a port.
+func hostOnly(hostport string) string {
+	if hostport == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(hostport); err == nil {
+		return strings.ToLower(host)
+	}
+	return strings.ToLower(hostport)
+}
+
+// tokenSource identifies where a session token was read from. It lets CSRF
+// defenses apply only to browser (cookie) flows while leaving Bearer/API-token
+// clients, which are immune to CSRF, untouched.
+type tokenSource int
+
+const (
+	tokenSourceNone tokenSource = iota
+	tokenSourceCookie
+	tokenSourceBearer
+)
+
 // tokenFromRequest extracts a session token from the cookie or Authorization
 // header. The cookie takes precedence for browser flows.
 func tokenFromRequest(r *http.Request) string {
+	token, _ := tokenWithSource(r)
+	return token
+}
+
+// tokenWithSource extracts the session token and reports whether it came from
+// the session cookie or the Authorization: Bearer header. The cookie takes
+// precedence, matching browser flows.
+func tokenWithSource(r *http.Request) (string, tokenSource) {
 	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
-		return c.Value
+		return c.Value, tokenSourceCookie
 	}
 	authz := r.Header.Get("Authorization")
 	if authz != "" {
 		const prefix = "Bearer "
 		if len(authz) > len(prefix) && strings.EqualFold(authz[:len(prefix)], prefix) {
-			return strings.TrimSpace(authz[len(prefix):])
+			return strings.TrimSpace(authz[len(prefix):]), tokenSourceBearer
 		}
 	}
-	return ""
+	return "", tokenSourceNone
 }
 
 // setSessionCookie writes the signed session token as a hardened cookie. secure
@@ -98,13 +206,29 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	})
 }
 
-// isSecureRequest reports whether the request arrived over TLS (directly or via
-// a trusted local reverse proxy setting X-Forwarded-Proto).
+// isSecureRequest reports whether the request arrived over TLS. The
+// X-Forwarded-Proto header is spoofable by any client, so it is honored ONLY
+// when the operator has explicitly declared a trusted TLS-terminating proxy via
+// the trustForwardedProtoEnv flag. Otherwise the Secure cookie flag is derived
+// solely from r.TLS, so a direct attacker cannot strip Secure by forging the
+// header (nor set it on plain HTTP to make the cookie unusable).
 func isSecureRequest(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	return trustForwardedProto() && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// trustForwardedProto reports whether the operator has opted into honoring the
+// X-Forwarded-Proto header from a trusted reverse proxy. It is a server-side,
+// non-spoofable signal (a process environment variable), not a request header.
+func trustForwardedProto() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(trustForwardedProtoEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // securityHeaders sets conservative headers for every response. The panel is

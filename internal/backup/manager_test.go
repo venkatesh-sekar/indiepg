@@ -71,6 +71,17 @@ func (f *fakeObjectStore) PutObject(_ context.Context, key string, data []byte) 
 	return nil
 }
 
+func (f *fakeObjectStore) PutObjectIfAbsent(_ context.Context, key string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := f.key(key)
+	if _, exists := f.objects[k]; exists {
+		return identity.ErrPreconditionFailed
+	}
+	f.objects[k] = append([]byte(nil), data...)
+	return nil
+}
+
 func (f *fakeObjectStore) DeleteObject(_ context.Context, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -209,11 +220,86 @@ func TestManagerBackup_NoOwnerDegrades(t *testing.T) {
 	runner.On("info", exec.FakeResponse{Stdout: `[{"name":"main","backup":[]}]`})
 
 	st := newTestStore(t)
+	// testConfig configures no remote target (no bucket/endpoint), so the repo is
+	// explicitly local-only and a nil Owner is allowed to proceed.
 	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Logger: core.Discard()})
 
 	res, err := m.Backup(ctx, TypeFull)
 	require.NoError(t, err)
 	require.True(t, res.OK)
+}
+
+// TestManagerBackup_NilOwnerWithRemoteTargetFailsClosed proves the fail-closed
+// guard: when a remote/S3 target is configured but no Owner is wired, Backup
+// refuses (ownership error) and never invokes pgBackRest, rather than silently
+// writing a shared repo without single-writer protection.
+func TestManagerBackup_NilOwnerWithRemoteTargetFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{Stdout: "should not run"})
+
+	cfg := testConfig()
+	cfg.Backup.Bucket = "my-bucket" // remote target configured
+
+	st := newTestStore(t)
+	m := New(Options{Runner: runner, Store: st, Config: cfg, Logger: core.Discard()})
+
+	_, err := m.Backup(ctx, TypeFull)
+	require.Error(t, err)
+	require.Equal(t, core.CodeOwnership, core.CodeOf(err))
+
+	// pgBackRest must never have been invoked, and no history row written.
+	require.Zero(t, runner.CallCount())
+	recs, err := st.ListBackups(ctx, 10)
+	require.NoError(t, err)
+	require.Empty(t, recs)
+}
+
+// TestManagerBackup_NilOwnerWithEndpointOnlyFailsClosed proves the guard also
+// trips when only an endpoint (no bucket) names a remote target.
+func TestManagerBackup_NilOwnerWithEndpointOnlyFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{Stdout: "should not run"})
+
+	cfg := testConfig()
+	cfg.Backup.Endpoint = "s3.us-west-002.backblazeb2.com"
+
+	m := New(Options{Runner: runner, Config: cfg, Logger: core.Discard()})
+
+	_, err := m.Backup(ctx, TypeFull)
+	require.Error(t, err)
+	require.Equal(t, core.CodeOwnership, core.CodeOf(err))
+	require.Zero(t, runner.CallCount())
+}
+
+// TestManagerBackup_FailureRowPersistedOnCancelledCtx proves the terminal
+// failure history row is written even when the operation ctx is already
+// cancelled (e.g. a shutdown cancelled the backup): the record uses a detached
+// context so the failure is not lost.
+func TestManagerBackup_FailureRowPersistedOnCancelledCtx(t *testing.T) {
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{ExitCode: 50, Err: core.ExecError("pgbackrest failed")})
+
+	st := newTestStore(t)
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	// Cancel the ctx before the run resolves; the terminal record must still land.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := m.Backup(ctx, TypeIncr)
+	require.Error(t, err)
+	require.Equal(t, core.CodeExec, core.CodeOf(err))
+
+	// The fail row is persisted despite the cancelled operation ctx, because the
+	// store write runs on a detached context.
+	recs, err := st.ListBackups(context.Background(), 10)
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	require.Equal(t, "fail", recs[0].Result)
+	require.NotEmpty(t, recs[0].Error)
 }
 
 func TestManagerBackup_InvalidStanza(t *testing.T) {
@@ -244,6 +330,10 @@ func TestManagerRestore_RequiresConfirmation(t *testing.T) {
 func TestManagerRestore_Confirmed(t *testing.T) {
 	ctx := context.Background()
 	runner := exec.NewFakeRunner()
+	// A safety backup is taken before the destructive restore, so the runner must
+	// answer the pre-restore backup + its info refresh as well as the restore.
+	runner.On("backup", exec.FakeResponse{Stdout: "ok"})
+	runner.On("info", exec.FakeResponse{Stdout: sampleInfoJSON})
 	runner.On("restore", exec.FakeResponse{Stdout: "ok"})
 
 	// Repo is unclaimed (empty store) -> Verify returns NotFound, which is fine
@@ -255,14 +345,22 @@ func TestManagerRestore_Confirmed(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, res.OK)
 
-	// Verify the restore command actually ran with --delta.
-	require.Equal(t, 1, runner.CallCount())
-	require.Contains(t, runner.Calls()[0].Args, "--delta")
+	// The safety backup label is surfaced as the operator's recovery point.
+	require.NotEmpty(t, res.Data["safety_backup_label"])
+
+	// Verify the restore command actually ran with --delta. It is the last call,
+	// after the safety backup + info refresh.
+	calls := runner.Calls()
+	restoreCall := calls[len(calls)-1]
+	require.Contains(t, restoreCall.Args, "restore")
+	require.Contains(t, restoreCall.Args, "--delta")
 }
 
 func TestManagerRestore_PITRConfirmed(t *testing.T) {
 	ctx := context.Background()
 	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{Stdout: "ok"})
+	runner.On("info", exec.FakeResponse{Stdout: sampleInfoJSON})
 	runner.On("restore", exec.FakeResponse{Stdout: "ok"})
 	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
 	m := New(Options{Runner: runner, Config: testConfig(), Owner: owner, Logger: core.Discard()})
@@ -271,6 +369,70 @@ func TestManagerRestore_PITRConfirmed(t *testing.T) {
 	res, err := m.Restore(ctx, &RecoveryTarget{Time: &tm}, false, "main")
 	require.NoError(t, err)
 	require.Equal(t, true, res.Data["pitr"])
+}
+
+// TestManagerRestore_TakesSafetyBackupFirst proves the Safety DNA: before the
+// destructive restore overwrites the live cluster, a full safety backup runs and
+// is recorded in history, and the restore command runs strictly after it.
+func TestManagerRestore_TakesSafetyBackupFirst(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{Stdout: "ok"})
+	runner.On("info", exec.FakeResponse{Stdout: sampleInfoJSON})
+	runner.On("restore", exec.FakeResponse{Stdout: "ok"})
+
+	st := newTestStore(t)
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	res, err := m.Restore(ctx, nil, false, "main")
+	require.NoError(t, err)
+	require.True(t, res.OK)
+	require.NotEmpty(t, res.Data["safety_backup_label"])
+
+	// The safety backup must have been written to history as a full backup.
+	recs, err := st.ListBackups(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	require.Equal(t, "success", recs[0].Result)
+	require.Equal(t, "full", recs[0].BackupType)
+
+	// The backup command must precede the restore command in call order.
+	var backupIdx, restoreIdx = -1, -1
+	for i, c := range runner.Calls() {
+		joined := strings.Join(c.Args, " ")
+		if strings.Contains(joined, "backup") && backupIdx == -1 {
+			backupIdx = i
+		}
+		if strings.Contains(joined, "restore") {
+			restoreIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, backupIdx, 0)
+	require.GreaterOrEqual(t, restoreIdx, 0)
+	require.Less(t, backupIdx, restoreIdx, "safety backup must run before the restore")
+}
+
+// TestManagerRestore_SafetyBackupFailureHardStops proves that if the pre-restore
+// safety backup fails, the restore is refused (HARD STOP) and pgBackRest restore
+// is never invoked — the live cluster is left untouched.
+func TestManagerRestore_SafetyBackupFailureHardStops(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{ExitCode: 50, Err: core.ExecError("pgbackrest backup failed")})
+	runner.On("restore", exec.FakeResponse{Stdout: "should not run"})
+
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: runner, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	_, err := m.Restore(ctx, nil, false, "main")
+	require.Error(t, err)
+	require.Equal(t, core.CodeSafety, core.CodeOf(err))
+
+	// Restore must never have been invoked.
+	for _, c := range runner.Calls() {
+		require.NotContains(t, c.Args, "restore")
+	}
 }
 
 func TestManagerRestore_ForeignOwnerHardStop(t *testing.T) {

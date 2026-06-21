@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -72,10 +73,27 @@ func TestToAPIError(t *testing.T) {
 		require.True(t, ae.Owner.Adoptable)
 	})
 
-	t.Run("plain error normalizes to internal", func(t *testing.T) {
-		ae, status := toAPIError(errors.New("boom"))
+	t.Run("plain error normalizes to internal without leaking text", func(t *testing.T) {
+		secret := "dial tcp 10.0.0.7:5432: connection refused (password=hunter2)"
+		ae, status := toAPIError(errors.New(secret))
 		require.Equal(t, http.StatusInternalServerError, status)
 		require.Equal(t, core.CodeInternal, ae.Code)
+		// The fallback must be safe-by-default: a fixed generic message, never
+		// the raw error text, and no hint/details that could carry sensitive
+		// internals to the client.
+		require.Equal(t, "internal server error", ae.Message)
+		require.NotContains(t, ae.Message, "hunter2")
+		require.NotContains(t, ae.Message, "10.0.0.7")
+		require.Empty(t, ae.Hint)
+		require.Nil(t, ae.Details)
+	})
+
+	t.Run("wrapped non-panel error does not leak through the chain", func(t *testing.T) {
+		secret := "/var/lib/pgpanel/secret.key permission denied"
+		ae, _ := toAPIError(fmt.Errorf("loading config: %w", errors.New(secret)))
+		require.Equal(t, core.CodeInternal, ae.Code)
+		require.Equal(t, "internal server error", ae.Message)
+		require.NotContains(t, ae.Message, "secret.key")
 	})
 
 	t.Run("nil error", func(t *testing.T) {
@@ -96,6 +114,23 @@ func TestWriteErrorRendersJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, core.CodeNotFound, got.Code)
 	require.Equal(t, "missing thing", got.Message)
+}
+
+func TestWriteErrorDoesNotLeakRawText(t *testing.T) {
+	rec := httptest.NewRecorder()
+	secret := "pq: role \"app\" password authentication failed for connection postgres://app:s3cr3t@db:5432"
+	writeError(rec, errors.New(secret))
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+
+	body := rec.Body.String()
+	require.NotContains(t, body, "s3cr3t")
+	require.NotContains(t, body, "password authentication failed")
+
+	var got apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, core.CodeInternal, got.Code)
+	require.Equal(t, "internal server error", got.Message)
 }
 
 func TestWriteData(t *testing.T) {

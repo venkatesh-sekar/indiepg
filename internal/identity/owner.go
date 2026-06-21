@@ -92,10 +92,55 @@ func (o *Owner) writeMarker(ctx context.Context, repoPrefix string, m OwnershipM
 	return nil
 }
 
+// writeMarkerIfAbsent conditionally creates the marker, returning
+// ErrPreconditionFailed (unwrapped, so callers can errors.Is it) when another
+// writer already created one. Any other transport error is wrapped as internal.
+func (o *Owner) writeMarkerIfAbsent(ctx context.Context, repoPrefix string, m OwnershipMarker) error {
+	data, err := marshalMarker(m)
+	if err != nil {
+		return err
+	}
+	err = o.os.PutObjectIfAbsent(ctx, markerKey(repoPrefix), data)
+	if err == nil {
+		return nil
+	}
+	if isPreconditionFailed(err) {
+		return err
+	}
+	return core.InternalError("write ownership marker for %q", repoPrefix).Wrap(err)
+}
+
+// systemIDMismatchError builds the HARD STOP for a "different cluster, same
+// repo" collision: the marker is mine by instance id, but the stored Postgres
+// system identifier differs from ours. Both ids are named so the operator can
+// tell which cluster wrote the repo. It is reported as a CodeOwnership error so
+// callers treat it like any other single-writer conflict and never proceed.
+func (o *Owner) systemIDMismatchError(repoPrefix string, stored OwnershipMarker, now time.Time) *core.OwnershipError {
+	resource := markerKey(repoPrefix)
+	lastSeen := stored.LastSeen.UTC().Format(time.RFC3339Nano)
+	msg := "s3 repo %q is marked as owned by this panel %q but its stored postgres system id %q does not match this cluster's %q — a different Postgres cluster wrote this repository; two clusters must never share a backup repository or both will be corrupted; use a different bucket/prefix"
+	return core.NewOwnershipError(
+		resource, stored.InstanceID, stored.Hostname, lastSeen, false,
+		msg, resource, stored.InstanceID, stored.PGSystemID, o.id.PGSystemID,
+	)
+}
+
+// systemIDConflicts reports whether the stored PGSystemID and ours are both
+// non-empty and differ. An empty stored id (e.g. an older marker written before
+// the system id was known) is not a conflict; it is filled in on the next write.
+func (o *Owner) systemIDConflicts(stored OwnershipMarker) bool {
+	return stored.PGSystemID != "" && o.id.PGSystemID != "" && stored.PGSystemID != o.id.PGSystemID
+}
+
 // Claim writes the marker if the repo is unclaimed or already mine, and returns
 // the resulting marker. If a non-stale foreign owner holds the repo it returns a
 // *core.OwnershipError (HARD STOP) and writes nothing. A stale foreign owner is
 // also refused here — adoption is a separate, explicitly-confirmed action.
+//
+// The fresh-claim path is a conditional create (PutObjectIfAbsent), so two
+// panels racing to claim the same unclaimed repo cannot both win: at most one
+// If-None-Match:* create succeeds, and the loser re-reads the now-present marker
+// and treats it as a foreign owner (HARD STOP) or as mine.
 func (o *Owner) Claim(ctx context.Context, repoPrefix string) (*OwnershipMarker, error) {
 	now := o.now()
 	existing, err := o.readMarker(ctx, repoPrefix)
@@ -103,7 +148,7 @@ func (o *Owner) Claim(ctx context.Context, repoPrefix string) (*OwnershipMarker,
 		return nil, err
 	}
 
-	// Unclaimed → claim it fresh.
+	// Unclaimed → claim it fresh via a conditional create that closes the race.
 	if existing == nil {
 		marker := OwnershipMarker{
 			InstanceID: o.id.InstanceID,
@@ -112,19 +157,50 @@ func (o *Owner) Claim(ctx context.Context, repoPrefix string) (*OwnershipMarker,
 			ClaimedAt:  now,
 			LastSeen:   now,
 		}
-		if err := o.writeMarker(ctx, repoPrefix, marker); err != nil {
+		err := o.writeMarkerIfAbsent(ctx, repoPrefix, marker)
+		if err == nil {
+			o.log.InfoCtx(ctx, "claimed s3 repo ownership",
+				"repo_prefix", repoPrefix, "instance_id", o.id.InstanceID)
+			return &marker, nil
+		}
+		if !isPreconditionFailed(err) {
 			return nil, err
 		}
-		o.log.InfoCtx(ctx, "claimed s3 repo ownership",
+		// Lost the create race: another writer claimed it between our read and
+		// our conditional write. Re-read and resolve against the winner.
+		o.log.Warn("lost s3 repo claim race; re-reading marker",
 			"repo_prefix", repoPrefix, "instance_id", o.id.InstanceID)
-		return &marker, nil
+		existing, err = o.readMarker(ctx, repoPrefix)
+		if err != nil {
+			return nil, err
+		}
+		if existing == nil {
+			// Vanished again (raced delete); surface as a transient conflict
+			// rather than silently re-creating into a possible corruption.
+			return nil, core.ConflictError("s3 repo %q changed under a concurrent claim; retry", markerKey(repoPrefix))
+		}
+		// Fall through to the mine/foreign resolution below.
 	}
 
-	// Already mine → refresh the heartbeat and proceed.
+	// Already mine → confirm the cluster matches, then refresh the heartbeat.
 	if o.isMine(*existing) {
+		// "Different cluster, same repo" guard: if the stored Postgres system id
+		// differs from ours, HARD STOP and do NOT overwrite the stored id.
+		if o.systemIDConflicts(*existing) {
+			oe := o.systemIDMismatchError(repoPrefix, *existing, now)
+			o.log.Warn("refused to claim repo with mismatched postgres system id",
+				"repo_prefix", repoPrefix,
+				"stored_pg_system_id", existing.PGSystemID,
+				"our_pg_system_id", o.id.PGSystemID)
+			return nil, oe
+		}
 		marker := *existing
 		marker.Hostname = o.id.Hostname
-		marker.PGSystemID = o.id.PGSystemID
+		// Preserve a previously-stored system id; only fill it when blank so we
+		// never silently overwrite the cluster identity recorded in the repo.
+		if marker.PGSystemID == "" {
+			marker.PGSystemID = o.id.PGSystemID
+		}
 		marker.LastSeen = now
 		if existing.ClaimedAt.IsZero() {
 			marker.ClaimedAt = now
@@ -161,6 +237,11 @@ func (o *Owner) Verify(ctx context.Context, repoPrefix string) (*OwnershipMarker
 	if !o.isMine(*existing) {
 		return nil, o.foreignError(repoPrefix, *existing, now)
 	}
+	// Mine by instance id, but a mismatched stored cluster identity is still a
+	// HARD STOP — a different Postgres cluster wrote this repo under our id.
+	if o.systemIDConflicts(*existing) {
+		return nil, o.systemIDMismatchError(repoPrefix, *existing, now)
+	}
 	return existing, nil
 }
 
@@ -180,6 +261,11 @@ func (o *Owner) Heartbeat(ctx context.Context, repoPrefix string) error {
 	}
 	if !o.isMine(*existing) {
 		return o.foreignError(repoPrefix, *existing, now)
+	}
+	// Mine by instance id, but a mismatched stored cluster identity is a HARD
+	// STOP: heartbeating would keep a corrupted "wrong cluster" claim alive.
+	if o.systemIDConflicts(*existing) {
+		return o.systemIDMismatchError(repoPrefix, *existing, now)
 	}
 
 	marker := *existing

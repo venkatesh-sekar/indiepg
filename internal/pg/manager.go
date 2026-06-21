@@ -17,6 +17,7 @@ package pg
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -157,7 +158,10 @@ func (m *Manager) Provision(ctx context.Context) (core.Result, error) {
 		if _, err := m.runPsql(ctx, defaultConnectDatabase, stmt); err != nil {
 			return core.Result{}, err
 		}
-		steps = append(steps, stmt)
+		// Record the redacted form: any PASSWORD '...' literal is masked before
+		// it is persisted into the audit log / dry-run display so a secret never
+		// lands in panel state, even though provision SQL today carries none.
+		steps = append(steps, redactPasswordLiteral(stmt))
 	}
 
 	result := core.Ok("Postgres provisioned").
@@ -231,16 +235,47 @@ func (m *Manager) SystemIdentifier(ctx context.Context) (string, error) {
 // runPsql runs a single SQL statement as the postgres OS superuser via psql over
 // the local socket, returning trimmed stdout. -tAqX yields tuples-only,
 // unaligned, quiet output with no startup file, ideal for scraping a scalar.
+//
+// The statement travels in the -c argument, which is the resolved argv the
+// Runner would otherwise log; when the SQL carries a secret (a PASSWORD '...'
+// literal, e.g. CREATE/ALTER ROLE ... PASSWORD) the spec is marked Sensitive so
+// the Runner never logs the cleartext password and RunResult.Command is elided.
+// Connecting as the postgres OS user over the unix socket is peer-authenticated,
+// so no PGPASSWORD/connection secret is inlined here; the only secret risk is a
+// PASSWORD literal inside the statement itself, which redaction handles.
 func (m *Manager) runPsql(ctx context.Context, database, sql string) (string, error) {
 	res, err := m.runner.Run(ctx, exec.RunSpec{
-		Name:    "psql",
-		AsUser:  "postgres",
-		Args:    []string{"-v", "ON_ERROR_STOP=1", "-tAqX", "-d", database, "-c", sql},
-		Timeout: commandTimeout,
+		Name:      "psql",
+		AsUser:    "postgres",
+		Args:      []string{"-v", "ON_ERROR_STOP=1", "-tAqX", "-d", database, "-c", sql},
+		Timeout:   commandTimeout,
+		Sensitive: statementHasSecret(sql),
 	})
 	if err != nil {
+		// Redact the stderr too: psql can echo the failing statement (and thus a
+		// PASSWORD literal) back in its error text.
 		return "", core.ExecError("pg: psql failed").
-			WithDetail("stderr", res.Stderr).Wrap(err)
+			WithDetail("stderr", redactPasswordLiteral(res.Stderr)).Wrap(err)
 	}
 	return res.Stdout, nil
+}
+
+// passwordLiteralRe matches a SQL PASSWORD literal: the PASSWORD keyword (any
+// case) followed by an optional E string-escape prefix and a single-quoted
+// literal whose body may contain doubled ” escapes. It deliberately does not
+// span newlines so it only consumes the literal itself.
+var passwordLiteralRe = regexp.MustCompile(`(?i)(PASSWORD\s+)E?'(?:[^']|'')*'`)
+
+// statementHasSecret reports whether sql contains a PASSWORD literal, i.e. a
+// value that must not be logged or persisted in cleartext.
+func statementHasSecret(sql string) bool {
+	return passwordLiteralRe.MatchString(sql)
+}
+
+// redactPasswordLiteral rewrites every PASSWORD '...' literal in sql to
+// PASSWORD <redacted> so the statement is safe to echo or persist. The PASSWORD
+// keyword (with its original spacing) is preserved; only the secret value is
+// masked.
+func redactPasswordLiteral(sql string) string {
+	return passwordLiteralRe.ReplaceAllString(sql, "${1}<redacted>")
 }

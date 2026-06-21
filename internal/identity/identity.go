@@ -22,6 +22,7 @@ package identity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"time"
@@ -57,6 +58,17 @@ func (m OwnershipMarker) IsStale(now time.Time) bool {
 	return now.Sub(m.LastSeen) > StaleAfter
 }
 
+// ErrPreconditionFailed is the sentinel an ObjectStore returns from
+// PutObjectIfAbsent when the object already exists, i.e. the conditional create
+// lost the race. It maps to an S3 "If-None-Match: *" precondition failure (HTTP
+// 412), which S3, Cloudflare R2, MinIO and Backblaze B2 all support.
+//
+// It is matched by identity (errors.Is(err, ErrPreconditionFailed)), not by
+// error code, so a generic CodeConflict from elsewhere is not mistaken for a
+// lost conditional create. Implementations may return it directly or wrap it
+// with %w. The helper isPreconditionFailed wraps the errors.Is check.
+var ErrPreconditionFailed = errors.New("object already exists (conditional create precondition failed)")
+
 // ObjectStore is the minimal S3 surface the marker logic needs. The real
 // implementation in internal/backup adapts minio-go; tests use a fake.
 type ObjectStore interface {
@@ -64,6 +76,13 @@ type ObjectStore interface {
 	// when the key is absent.
 	GetObject(ctx context.Context, key string) ([]byte, error)
 	PutObject(ctx context.Context, key string, data []byte) error
+	// PutObjectIfAbsent atomically creates the object only if no object exists
+	// at key, returning ErrPreconditionFailed (matchable with errors.Is) when
+	// one already does. It is the conditional-create primitive that closes the
+	// claim TOCTOU race: two panels racing to claim a fresh repo cannot both
+	// win, because at most one If-None-Match:* create succeeds. Implementations
+	// MUST be atomic (no read-then-write) for this guarantee to hold.
+	PutObjectIfAbsent(ctx context.Context, key string, data []byte) error
 	DeleteObject(ctx context.Context, key string) error
 }
 
@@ -155,6 +174,12 @@ func markerKey(repoPrefix string) string {
 // isNotFound reports whether err is (or wraps) a CodeNotFound panel error.
 func isNotFound(err error) bool {
 	return err != nil && core.CodeOf(err) == core.CodeNotFound
+}
+
+// isPreconditionFailed reports whether err is (or wraps) ErrPreconditionFailed,
+// i.e. a conditional-create lost the race to another writer.
+func isPreconditionFailed(err error) bool {
+	return errors.Is(err, ErrPreconditionFailed)
 }
 
 // marshalMarker serializes a marker to indented JSON with a trailing newline,

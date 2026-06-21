@@ -10,15 +10,18 @@
 //     handed to a job is the one passed to Start, cancelled when Start's ctx is
 //     cancelled or Stop is called.
 //   - Job errors are logged, never fatal — a failing backup must not take the
-//     whole panel down. Panics inside a job are recovered (via cron's Recover
-//     chain) so one misbehaving job cannot crash the loop either.
+//     whole panel down. Panics inside a job are recovered in the job wrapper
+//     (with cron's Recover chain kept as a backstop) so one misbehaving job
+//     cannot crash the loop either.
 //   - An empty spec disables a job (registration is a no-op) so callers can
 //     wire config-driven schedules without branching at every call site.
 package scheduler
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 
 	cron "github.com/robfig/cron/v3"
 
@@ -28,6 +31,38 @@ import (
 // JobFunc is a scheduled unit of work. Returned errors are logged, not fatal,
 // so a single failed run never stops the scheduler or the panel.
 type JobFunc func(ctx context.Context) error
+
+// Clock is the time source the scheduler reads "now" from. It mirrors the small
+// clock idiom used elsewhere in the codebase (auth, identity) so tests can drive
+// time deterministically instead of sleeping against the wall clock.
+//
+// Note: the underlying robfig/cron/v3 (v3.0.1) does not expose a clock seam, so
+// the cron loop itself still fires on the real wall clock. The scheduler clock
+// governs the time-related decisions the scheduler owns directly (and lets tests
+// assert the wiring); it is not a way to virtualize cron tick timing.
+type Clock interface {
+	// Now returns the current time.
+	Now() time.Time
+}
+
+// realClock is the default Clock, backed by the wall clock.
+type realClock struct{}
+
+func (realClock) Now() time.Time { return time.Now() }
+
+// Option configures a Scheduler at construction time.
+type Option func(*Scheduler)
+
+// WithClock overrides the scheduler's time source. The default is a wall-clock
+// clock; tests inject a controllable clock so they do not depend on real time.
+// A nil clock is ignored, keeping the default.
+func WithClock(clk Clock) Option {
+	return func(s *Scheduler) {
+		if clk != nil {
+			s.clock = clk
+		}
+	}
+}
 
 // Job is a registered cron job as seen by callers (no behavior, just metadata).
 type Job struct {
@@ -51,9 +86,15 @@ type registered struct {
 // called from different goroutines. Register may be called before or after
 // Start; cron supports adding entries to an already-running cron.
 type Scheduler struct {
-	log *core.Logger
+	log   *core.Logger
+	clock Clock
 
-	mu      sync.Mutex
+	mu sync.Mutex
+	// icancel cancels the internal context derived in Start. It is what lets a
+	// direct Stop() release the context-watcher goroutine: without it the watcher
+	// would block on the caller's ctx (which may never be cancelled, e.g.
+	// context.Background()) and leak until process exit.
+	icancel context.CancelFunc
 	cron    *cron.Cron
 	jobs    map[string]registered
 	order   []string // registration order, for stable Jobs() output
@@ -64,14 +105,21 @@ type Scheduler struct {
 
 // New constructs a Scheduler. The cron loop is created but not started; call
 // Start to begin firing jobs. A nil logger is tolerated (logging is discarded).
-func New(log *core.Logger) *Scheduler {
+// Options (e.g. WithClock) tune behavior; with none, the wall clock is used.
+func New(log *core.Logger, opts ...Option) *Scheduler {
 	if log == nil {
 		log = core.Discard()
 	}
 	s := &Scheduler{
-		log:  log,
-		jobs: make(map[string]registered),
-		ctx:  context.Background(),
+		log:   log,
+		clock: realClock{},
+		jobs:  make(map[string]registered),
+		ctx:   context.Background(),
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
 	}
 	// Recover wraps every job so a panic is logged and swallowed rather than
 	// crashing the cron goroutine. We route cron's own logging through our
@@ -138,6 +186,16 @@ func (s *Scheduler) Register(name, spec string, fn JobFunc) error {
 // visibility. Panics are handled by the Recover chain installed in New.
 func (s *Scheduler) wrap(name string, fn JobFunc) func() {
 	return func() {
+		// Recover panics in the job itself so a misbehaving job can never crash
+		// the scheduler loop or the panel. This is the authoritative recovery
+		// boundary (cron's Recover chain is kept as belt-and-suspenders), which
+		// also makes the behaviour unit-testable without driving the cron clock.
+		defer func() {
+			if r := recover(); r != nil {
+				s.log.Error("scheduler: job panicked (recovered)", "job", name, "panic", fmt.Sprintf("%v", r))
+			}
+		}()
+
 		ctx := s.currentContext()
 		// Bail out immediately if the scheduler context is already cancelled,
 		// e.g. a tick raced with Stop.
@@ -145,14 +203,17 @@ func (s *Scheduler) wrap(name string, fn JobFunc) func() {
 			s.log.Debug("scheduler: skipping job, context done", "job", name)
 			return
 		}
+		start := s.clock.Now()
 		s.log.Debug("scheduler: job starting", "job", name)
 		if err := fn(ctx); err != nil {
 			// Errors are logged, never fatal: a failed backup or sample must not
 			// stop the loop or the panel.
-			s.log.Error("scheduler: job failed", "job", name, "error", err.Error())
+			s.log.Error("scheduler: job failed", "job", name,
+				"error", err.Error(), "took", s.clock.Now().Sub(start).String())
 			return
 		}
-		s.log.Debug("scheduler: job completed", "job", name)
+		s.log.Debug("scheduler: job completed", "job", name,
+			"took", s.clock.Now().Sub(start).String())
 	}
 }
 
@@ -161,6 +222,11 @@ func (s *Scheduler) wrap(name string, fn JobFunc) func() {
 func (s *Scheduler) currentContext() context.Context {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Default to Background when the scheduler has not been Started yet (or a
+	// job runnable is invoked directly), so jobs never receive a nil context.
+	if s.ctx == nil {
+		return context.Background()
+	}
 	return s.ctx
 }
 
@@ -193,8 +259,16 @@ func (s *Scheduler) Start(ctx context.Context) {
 		s.mu.Unlock()
 		return
 	}
+	// Derive an internal cancellable context from the caller's. The watcher waits
+	// on ictx, which is cancelled either when the caller's ctx is cancelled
+	// (context.WithCancel propagates parent cancellation) or when Stop() calls
+	// icancel directly. This guarantees a direct Stop() releases the watcher even
+	// when the caller passed a context that never cancels (e.g.
+	// context.Background()), closing the goroutine leak.
+	ictx, icancel := context.WithCancel(ctx)
 	s.started = true
 	s.ctx = ctx
+	s.icancel = icancel
 	c := s.cron
 	jobCount := len(s.order)
 	s.mu.Unlock()
@@ -202,10 +276,11 @@ func (s *Scheduler) Start(ctx context.Context) {
 	c.Start()
 	s.log.Info("scheduler: started", "jobs", jobCount)
 
-	// Watch the context: when it is cancelled, stop the cron loop so we honor
-	// "ctx cancellation stops it" without the caller needing to call Stop.
+	// Watch the internal context: when it is done — caller-ctx cancellation or a
+	// direct Stop — stop the cron loop so we honor "ctx cancellation stops it"
+	// without the caller needing to call Stop, and so the watcher always exits.
 	go func() {
-		<-ctx.Done()
+		<-ictx.Done()
 		s.Stop()
 	}()
 }
@@ -222,7 +297,16 @@ func (s *Scheduler) Stop() {
 	s.stopped = true
 	c := s.cron
 	started := s.started
+	icancel := s.icancel
 	s.mu.Unlock()
+
+	// Release the context-watcher goroutine spawned in Start. icancel cancels the
+	// internal context it waits on; without this a direct Stop() (the documented,
+	// complete shutdown path) would leak the watcher whenever the caller's ctx
+	// never cancels. Safe to call when Start was never reached (icancel is nil).
+	if icancel != nil {
+		icancel()
+	}
 
 	if !started {
 		// Never started: nothing is running, mark stopped and return.

@@ -10,6 +10,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
 	"time"
 
 	// Pure-Go SQLite driver, registered as "sqlite".
@@ -28,6 +30,15 @@ type Store struct {
 // connection pragmas and the idempotent schema, and returns a ready Store. Use
 // path ":memory:" for an ephemeral in-memory store in tests.
 func Open(path string) (*Store, error) {
+	// The state file holds the Argon2id password hash and the HMAC session
+	// signing secret, so it must never be created under a permissive process
+	// umask (commonly world-readable). Create the parent dir 0700 and the file
+	// 0600 before handing the path to the driver. The in-memory / empty DSNs
+	// have no backing file to harden, so they are skipped.
+	if err := ensureSecureStateFile(path); err != nil {
+		return nil, err
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, core.InternalError("open sqlite at %q", path).Wrap(err)
@@ -45,6 +56,38 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// ensureSecureStateFile makes the on-disk state file private (0600) and its
+// parent directory 0700 before the SQLite driver opens it, so the password hash
+// and session secret it holds are never exposed under a permissive umask. The
+// ":memory:" and empty DSNs are ephemeral and have no file to harden, so they
+// are no-ops.
+func ensureSecureStateFile(path string) error {
+	if path == "" || path == ":memory:" {
+		return nil
+	}
+
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return core.InternalError("create state dir %q", dir).Wrap(err)
+		}
+	}
+
+	// O_CREATE|O_RDWR with mode 0600 creates the file privately if it does not
+	// yet exist (the mode is masked by umask, so chmod below makes it exact and
+	// also tightens any pre-existing file).
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return core.InternalError("create state file %q", path).Wrap(err)
+	}
+	if err := f.Close(); err != nil {
+		return core.InternalError("close state file %q", path).Wrap(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return core.InternalError("secure state file %q", path).Wrap(err)
+	}
+	return nil
 }
 
 // DB exposes the underlying *sql.DB for advanced callers and tests.

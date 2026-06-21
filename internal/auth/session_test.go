@@ -109,13 +109,19 @@ func TestVerifySessionEmptySecret(t *testing.T) {
 	require.Equal(t, core.CodeAuth, core.CodeOf(err))
 }
 
-func TestVerifySessionZeroExpiryNeverExpires(t *testing.T) {
+func TestVerifySessionZeroExpiryRejected(t *testing.T) {
 	secret := mustSecret(t)
 	s := Session{Subject: "admin", IssuedAt: time.Now()} // zero ExpiresAt
 	token, err := SignSession(secret, s)
 	require.NoError(t, err)
 
-	got, err := verifySessionAt(secret, token, time.Now().Add(1000*time.Hour))
-	require.NoError(t, err)
-	require.Equal(t, "admin", got.Subject)
+	// Fail closed: an unset (zero) expiry must be rejected regardless of the
+	// current time, even when "now" is at the zero time itself.
+	_, err = verifySessionAt(secret, token, time.Now())
+	require.Error(t, err)
+	require.Equal(t, core.CodeAuth, core.CodeOf(err))
+
+	_, err = verifySessionAt(secret, token, time.Time{})
+	require.Error(t, err)
+	require.Equal(t, core.CodeAuth, core.CodeOf(err))
 }

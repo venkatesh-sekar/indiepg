@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/venkatesh-sekar/pgpanel/internal/auth"
 	"github.com/venkatesh-sekar/pgpanel/internal/config"
@@ -14,13 +15,19 @@ import (
 	"github.com/venkatesh-sekar/pgpanel/internal/store"
 )
 
+// stateFileMode is the mode the SQLite state file must carry: owner read/write
+// only. The store hardens the file to this on Open; ResetPassword treats a file
+// that is at-or-tighter-than this and owned by the caller as proof the caller is
+// the panel's operator on the box.
+const stateFileMode os.FileMode = 0o600
+
 // InstallOptions drive first-run install (called by cmd/pgpanel install).
 type InstallOptions struct {
 	Store    *store.Store
 	Logger   *core.Logger
 	Label    string
 	BindAddr string
-	Password string // prompted by caller if empty
+	Password string // generated and printed once if empty
 }
 
 // Install generates the instance identity, provisions Postgres, writes default
@@ -70,25 +77,25 @@ func Install(ctx context.Context, opts InstallOptions) error {
 
 // installCore performs the hermetic part of install: ensure an instance
 // identity exists, persist default configuration (honoring an explicit bind
-// address), and set the admin password. It returns the effective config so the
-// caller can hand it to Postgres provisioning. It performs no shell or network
-// I/O, which makes it directly unit-testable with an in-memory store.
+// address and namespacing the backup prefix by instance id), and set the admin
+// password. It returns the effective config so the caller can hand it to
+// Postgres provisioning. It performs no shell or network I/O, which makes it
+// directly unit-testable with an in-memory store.
+//
+// When password is empty, a strong one is generated and printed once; an
+// explicit password (flag/env) remains supported as an override.
 func installCore(ctx context.Context, st *store.Store, log *core.Logger, label, bindAddr, password string) (config.Config, error) {
-	if strings.TrimSpace(password) == "" {
-		return config.Config{}, core.ValidationError("install: admin password is required").
-			WithHint("supply --password or set one when prompted")
-	}
-
 	// 1) Identity — reuse an existing one (idempotent re-install) or generate.
-	if _, err := identity.Load(ctx, st); err != nil {
+	id, err := identity.Load(ctx, st)
+	if err != nil {
 		if core.CodeOf(err) != core.CodeNotFound {
 			return config.Config{}, err
 		}
 		if label == "" {
 			label = defaultLabel()
 		}
-		if _, gErr := identity.Generate(ctx, st, label, panelVersion()); gErr != nil {
-			return config.Config{}, gErr
+		if id, err = identity.Generate(ctx, st, label, panelVersion()); err != nil {
+			return config.Config{}, err
 		}
 		log.Info("instance identity generated", "label", label)
 	} else {
@@ -96,7 +103,9 @@ func installCore(ctx context.Context, st *store.Store, log *core.Logger, label, 
 	}
 
 	// 2) Config — start from persisted values merged over defaults, then apply
-	// an explicit bind address if provided, validate, and save.
+	// an explicit bind address if provided, namespace the backup prefix by
+	// instance id when a bucket is configured but no explicit prefix was set,
+	// validate, and save.
 	cfg, err := config.Load(ctx, st)
 	if err != nil {
 		// A fresh store has no rows; fall back to defaults rather than failing.
@@ -105,6 +114,15 @@ func installCore(ctx context.Context, st *store.Store, log *core.Logger, label, 
 	if bindAddr != "" {
 		cfg.BindAddr = bindAddr
 	}
+	// Defense layer 1 (design §6): when an S3 bucket is configured and the
+	// operator has not pinned an explicit prefix, namespace the persisted repo
+	// prefix by instance id ("panel/<instance_id>") so two panels on the same
+	// bucket can never collide by construction. The operator-chosen prefix (if
+	// any) is preserved as the base sub-path.
+	if cfg.Backup.Bucket != "" && strings.TrimSpace(cfg.Backup.Prefix) == "" {
+		cfg.Backup.Prefix = id.DefaultPrefix("")
+		log.Info("namespaced backup prefix by instance id", "prefix", cfg.Backup.Prefix)
+	}
 	if err := cfg.Validate(); err != nil {
 		return config.Config{}, err
 	}
@@ -112,20 +130,51 @@ func installCore(ctx context.Context, st *store.Store, log *core.Logger, label, 
 		return config.Config{}, err
 	}
 
-	// 3) Admin password — hash and store via the authenticator.
+	// 3) Admin password — generate-when-empty, then hash and store via the
+	// authenticator. A generated password is shown exactly once: there is no
+	// recovery path other than reset-password, so the operator must save it now.
+	password, generated := resolveAdminPassword(password)
 	authn := auth.New(st, auth.DefaultLockoutPolicy(), defaultSessionTTL)
 	if err := authn.SetPassword(ctx, password); err != nil {
 		return config.Config{}, err
+	}
+	if generated {
+		announceGeneratedPassword(password)
 	}
 	log.Info("admin password set")
 
 	return cfg, nil
 }
 
-// ResetPassword sets a new admin password from an SSH/root context. An empty
-// password is rejected (the caller is expected to have prompted). It requires
-// the panel to have been installed (an auth record must exist), surfacing a
-// CodeNotFound otherwise.
+// resolveAdminPassword returns the admin password to set and whether it was
+// generated. An empty/blank input yields a freshly generated strong password;
+// any explicit value is used as-is so a flag/env override still works.
+func resolveAdminPassword(password string) (resolved string, generated bool) {
+	if strings.TrimSpace(password) == "" {
+		return auth.GeneratePassword(), true
+	}
+	return password, false
+}
+
+// announceGeneratedPassword prints a generated admin password to stdout exactly
+// once, loudly framed so the operator copies it before it is gone. It is never
+// logged (logs may be shipped off-box) — stdout on the install TTY only.
+func announceGeneratedPassword(password string) {
+	const banner = "============================================================"
+	os.Stdout.WriteString("\n" + banner + "\n")
+	os.Stdout.WriteString("GENERATED ADMIN PASSWORD — SAVE THIS NOW:\n\n")
+	os.Stdout.WriteString("    " + password + "\n\n")
+	os.Stdout.WriteString("This is shown only once. There is no recovery other than\n")
+	os.Stdout.WriteString("`pgpanel reset-password` from an SSH/root session on this box.\n")
+	os.Stdout.WriteString(banner + "\n\n")
+}
+
+// ResetPassword sets a new admin password from an SSH/root context. It is the
+// privileged escape hatch the design deliberately keeps off the network, so it
+// enforces a local-operator check: the caller must be root (euid 0) or own the
+// 0600 state DB file. An empty password is rejected (the caller is expected to
+// have prompted). It requires the panel to have been installed (an auth record
+// must exist), surfacing a CodeNotFound otherwise.
 func ResetPassword(ctx context.Context, st *store.Store, log *core.Logger, password string) error {
 	if st == nil {
 		return core.InternalError("reset-password: Store is required")
@@ -135,6 +184,12 @@ func ResetPassword(ctx context.Context, st *store.Store, log *core.Logger, passw
 	}
 	if strings.TrimSpace(password) == "" {
 		return core.ValidationError("reset-password: new password must not be empty")
+	}
+
+	// Enforce the SSH/root-only invariant (design §3, §4.2, §10): the network
+	// API never exposes reset, so the only barrier left is local privilege.
+	if err := authorizeReset(st); err != nil {
+		return err
 	}
 
 	// Ensure the panel is installed; SetPassword on a missing auth row would
@@ -154,6 +209,84 @@ func ResetPassword(ctx context.Context, st *store.Store, log *core.Logger, passw
 	}
 	log.Info("admin password reset")
 	return nil
+}
+
+// authorizeReset enforces that the caller is allowed to reset the admin
+// password: either running as root, or the owner of the 0600 state DB file.
+// It refuses with a CodeSafety error otherwise. An in-memory / file-less store
+// (tests, ephemeral runs) has no on-disk permission boundary to check, so it is
+// exempt — real deployments always back the store with a file.
+func authorizeReset(st *store.Store) error {
+	path, err := stateFilePath(st)
+	if err != nil {
+		return err
+	}
+	if path == "" {
+		// :memory: or shared-cache DSN with no backing file: nothing to own.
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return core.InternalError("reset-password: stat state file %q", path).Wrap(err)
+	}
+	uid, ok := fileOwnerUID(info)
+	if !ok {
+		// Non-POSIX filesystem info; fall back to requiring root.
+		return resetDecision(os.Geteuid(), -1, info.Mode())
+	}
+	return resetDecision(os.Geteuid(), uid, info.Mode())
+}
+
+// resetDecision is the pure authorization rule, split out for testability: a
+// reset is permitted when the caller is root, or when the caller owns a state
+// file whose permission bits are no looser than 0600. groupUID is the file's
+// owner uid (-1 if unknown).
+func resetDecision(euid, ownerUID int, mode os.FileMode) error {
+	if euid == 0 {
+		return nil
+	}
+	if ownerUID >= 0 && ownerUID == euid && mode.Perm()&^stateFileMode == 0 {
+		return nil
+	}
+	return core.NewSafetyError(
+		"reset-password",
+		[]string{"run as root (sudo) or as the owner of the 0600 state file"},
+		"reset-password requires root or ownership of the 0600 state file on this box",
+	)
+}
+
+// stateFilePath returns the on-disk path of the store's main SQLite database,
+// or "" for a file-less store (":memory:"). It uses PRAGMA database_list, which
+// reports an empty file for in-memory databases.
+func stateFilePath(st *store.Store) (string, error) {
+	rows, err := st.DB().Query("PRAGMA database_list")
+	if err != nil {
+		return "", core.InternalError("reset-password: read database list").Wrap(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seq int
+		var name, file string
+		if err := rows.Scan(&seq, &name, &file); err != nil {
+			return "", core.InternalError("reset-password: scan database list").Wrap(err)
+		}
+		if name == "main" {
+			return file, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", core.InternalError("reset-password: iterate database list").Wrap(err)
+	}
+	return "", nil
+}
+
+// fileOwnerUID extracts the owning uid from a FileInfo on POSIX systems. The
+// boolean is false when the underlying syscall info is unavailable.
+func fileOwnerUID(info os.FileInfo) (int, bool) {
+	if sys, ok := info.Sys().(*syscall.Stat_t); ok {
+		return int(sys.Uid), true
+	}
+	return 0, false
 }
 
 // defaultLabel derives a human label from the hostname, falling back to a

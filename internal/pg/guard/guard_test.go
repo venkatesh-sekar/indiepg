@@ -59,7 +59,11 @@ func TestClassify(t *testing.T) {
 		{"delete", "DELETE FROM t WHERE id=2", ClassWrite, false},
 		{"merge", "MERGE INTO t USING s ON t.id=s.id", ClassWrite, false},
 		{"copy from", "COPY t FROM '/tmp/x.csv'", ClassWrite, false},
-		{"copy to is read", "COPY t TO '/tmp/x.csv'", ClassRead, false},
+		{"copy to stdout is read", "COPY t TO STDOUT", ClassRead, false},
+		{"copy query to stdout is read", "COPY (SELECT * FROM t) TO STDOUT", ClassRead, false},
+		{"copy to file is not read", "COPY t TO '/tmp/x.csv'", ClassWrite, false},
+		{"copy to program is not read", "COPY t TO PROGRAM 'cat > /tmp/x'", ClassWrite, false},
+		{"copy from program is write", "COPY t FROM PROGRAM 'curl http://x'", ClassWrite, false},
 		{"with delete is write", "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d", ClassWrite, false},
 		{"with insert is write", "WITH x AS (INSERT INTO t VALUES (1) RETURNING id) SELECT * FROM x", ClassWrite, false},
 
@@ -182,6 +186,97 @@ func TestCheckReadOnlyRejectsUnknown(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, ClassUnknown, cls.Class)
 	require.Equal(t, core.CodeSafety, core.CodeOf(err))
+}
+
+func TestCheckRejectsMultiStatement(t *testing.T) {
+	// Multi-statement input must be rejected in the query box regardless of
+	// read-only mode, with code CodeSafety, and must never be limit-rewritten.
+	for _, ro := range []bool{true, false} {
+		g := New(Options{ReadOnly: ro, AutoLimit: 1000})
+		for _, sql := range []string{
+			"SELECT 1; DROP TABLE x",
+			"SELECT 1; UPDATE accounts SET active=false",
+			"SELECT * FROM t; INSERT INTO audit VALUES (1)",
+			"SELECT 1; SELECT 2", // even two reads are a batch
+			"SELECT 1; -- trailing comment after a semicolon\nSELECT 2",
+		} {
+			out, _, err := g.Check(sql)
+			require.Error(t, err, "expected rejection for %q (readOnly=%v)", sql, ro)
+			require.Equal(t, core.CodeSafety, core.CodeOf(err), "code for %q", sql)
+			// LIMIT must never be appended to a multi-statement string.
+			require.NotContains(t, out, "LIMIT 1000", "no auto-limit for %q", sql)
+		}
+	}
+}
+
+func TestCheckAllowsSingleStatementWithEmbeddedSemicolons(t *testing.T) {
+	g := New(Options{ReadOnly: true, AutoLimit: 1000})
+	tests := []struct {
+		name string
+		sql  string
+	}{
+		// A trailing comment after the (only) statement's semicolon is not a
+		// second statement.
+		{"trailing comment after semicolon", "SELECT 1; -- just a comment\n"},
+		// A semicolon inside a dollar-quoted body stays within one statement.
+		{"dollar-quoted semicolon", "SELECT $x$ a; b; c $x$ AS s"},
+		// A semicolon inside a single-quoted string stays within one statement.
+		{"string semicolon", "SELECT 'a; b' AS s"},
+		// A semicolon inside parentheses is not a top-level separator.
+		{"paren semicolon", "SELECT * FROM (SELECT 1) q"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cls, err := g.Check(tc.sql)
+			require.NoError(t, err, "expected single-statement allow for %q", tc.sql)
+			require.Equal(t, ClassRead, cls.Class)
+		})
+	}
+}
+
+func TestCountStatements(t *testing.T) {
+	cases := []struct {
+		sql  string
+		want int
+	}{
+		{"", 0},
+		{"   ", 0},
+		{";", 0},
+		{";;;", 0},
+		{"SELECT 1", 1},
+		{"SELECT 1;", 1},
+		{"SELECT 1;;", 1},
+		{"SELECT 1; -- comment\n", 1},
+		{"SELECT $x$ a; b $x$", 1},
+		{"SELECT 'a; b'", 1},
+		{"SELECT * FROM (SELECT 1; ) q", 1},
+		{"SELECT 1; DROP TABLE x", 2},
+		{"SELECT 1; SELECT 2; SELECT 3", 3},
+		{"SELECT 1 ;; SELECT 2", 2},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, countStatements(tokenize(trimStatement(tc.sql))), "count for %q", tc.sql)
+	}
+}
+
+func TestCheckRejectsMultiStatementWithCopyToProgram(t *testing.T) {
+	// COPY ... TO PROGRAM is not a read; it must be rejected in read-only mode.
+	g := New(Options{ReadOnly: true, AutoLimit: 1000})
+	for _, sql := range []string{
+		"COPY t TO PROGRAM 'cat > /tmp/x'",
+		"COPY t FROM PROGRAM 'curl http://x'",
+		"COPY t TO '/tmp/x.csv'",
+	} {
+		_, cls, err := g.Check(sql)
+		require.Error(t, err, "expected rejection for %q", sql)
+		require.Equal(t, core.CodeSafety, core.CodeOf(err), "code for %q", sql)
+		require.Equal(t, ClassWrite, cls.Class, "class for %q", sql)
+	}
+
+	// COPY ... TO STDOUT remains a read and is allowed.
+	_, cls, err := g.Check("COPY t TO STDOUT")
+	require.NoError(t, err)
+	require.Equal(t, ClassRead, cls.Class)
 }
 
 func TestCheckNonReadOnlyAllowsEverything(t *testing.T) {

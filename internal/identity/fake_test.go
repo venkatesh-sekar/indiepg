@@ -15,11 +15,13 @@ type fakeObjectStore struct {
 
 	gets    int
 	puts    int
+	putsIf  int
 	deletes int
 
-	getErr func(key string) error // optional override for GetObject
-	putErr error                  // forced error for PutObject
-	delErr error                  // forced error for DeleteObject
+	getErr   func(key string) error // optional override for GetObject
+	putErr   error                  // forced error for PutObject
+	putIfErr error                  // forced transport error for PutObjectIfAbsent
+	delErr   error                  // forced error for DeleteObject
 }
 
 func newFakeObjectStore() *fakeObjectStore {
@@ -50,6 +52,25 @@ func (f *fakeObjectStore) PutObject(_ context.Context, key string, data []byte) 
 	f.puts++
 	if f.putErr != nil {
 		return f.putErr
+	}
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	f.objects[key] = cp
+	return nil
+}
+
+// PutObjectIfAbsent models an atomic conditional create: it returns
+// ErrPreconditionFailed when an object already exists at key, mirroring an S3
+// "If-None-Match: *" precondition failure so the claim race is unit-tested.
+func (f *fakeObjectStore) PutObjectIfAbsent(_ context.Context, key string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.putsIf++
+	if f.putIfErr != nil {
+		return f.putIfErr
+	}
+	if _, exists := f.objects[key]; exists {
+		return ErrPreconditionFailed
 	}
 	cp := make([]byte, len(data))
 	copy(cp, data)

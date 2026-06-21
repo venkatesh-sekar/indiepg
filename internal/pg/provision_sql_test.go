@@ -24,8 +24,21 @@ func TestProvisionSQL(t *testing.T) {
 	require.Contains(t, joined, core.QuoteLiteral(ReadOnlyRole))
 	require.Contains(t, joined, core.QuoteLiteral(AdminRole))
 
-	// read-only enforcement at the DB level.
+	// defense-in-depth GUC remains, but it is no longer the primary control.
 	require.Contains(t, joined, "default_transaction_read_only = on")
+
+	// authoritative boundary: the read-only role is hardened by privilege denial.
+	// CREATE on the public schema is revoked from the role itself (not PUBLIC) so
+	// it holds no latent write capability even if the GUC is flipped off.
+	require.Contains(t, joined,
+		"REVOKE CREATE ON SCHEMA public FROM "+core.QuoteIdent(ReadOnlyRole))
+	// and the read-only role is never a member of the writing admin role.
+	require.Contains(t, joined,
+		"REVOKE "+core.QuoteIdent(AdminRole)+" FROM "+core.QuoteIdent(ReadOnlyRole))
+
+	// hardening is scoped to the role itself; never broaden to PUBLIC (that would
+	// break the operator's own applications).
+	require.NotContains(t, joined, "FROM PUBLIC")
 
 	// admin role is explicitly not a superuser.
 	require.Contains(t, joined, "NOSUPERUSER")
