@@ -24,11 +24,13 @@ func RequireConfirmation(operation, expected, typed string) *SafetyError {
 	if c.OK() {
 		return nil
 	}
-	return NewSafetyError(
+	se := NewSafetyError(
 		operation,
 		[]string{"confirm=" + expected},
 		"%s requires typing %q to confirm", operation, expected,
 	)
+	se.Expected = expected
+	return se
 }
 
 // Result is a small, serializable outcome wrapper for guided actions. Handlers

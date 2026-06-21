@@ -2,6 +2,8 @@ package pg
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -31,12 +33,31 @@ func joinedCall(spec exec.RunSpec) string {
 func TestProvision_HappyPath(t *testing.T) {
 	r := exec.NewFakeRunner()
 	r.On("system_identifier", exec.FakeResponse{}) // unused here
+
+	// Provision configures pg_hba.conf socket auth for the panel roles: it asks
+	// Postgres for the hba file path, edits it, and reloads. Point the fake at a
+	// real temp file so ensureSocketAuth can do its (idempotent) edit.
+	hbaFile := filepath.Join(t.TempDir(), "pg_hba.conf")
+	require.NoError(t, os.WriteFile(hbaFile, []byte("local   all   all   peer\n"), 0o640))
+	r.On("hba_file", exec.FakeResponse{Stdout: hbaFile})
+	r.On("pg_reload_conf", exec.FakeResponse{})
+
 	m := newManager(r)
 
 	res, err := m.Provision(context.Background())
 	require.NoError(t, err)
 	require.True(t, res.OK)
 	require.NotEmpty(t, res.Statements)
+
+	// The managed trust block must have been written ahead of the default rule.
+	hbaContent, err := os.ReadFile(hbaFile)
+	require.NoError(t, err)
+	require.Contains(t, string(hbaContent), "indiepg managed")
+	require.Contains(t, string(hbaContent), ReadOnlyRole+"   trust")
+	require.Contains(t, string(hbaContent), AdminRole+"   trust")
+	require.True(t, strings.Index(string(hbaContent), "indiepg managed") <
+		strings.Index(string(hbaContent), "local   all   all   peer"),
+		"managed block must precede the default peer rule")
 
 	calls := r.Calls()
 	require.NotEmpty(t, calls)

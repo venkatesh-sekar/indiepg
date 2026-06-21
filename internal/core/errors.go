@@ -143,6 +143,10 @@ type SafetyError struct {
 	Err           *Error
 	Operation     string   // the blocked operation, e.g. "drop database"
 	RequiredFlags []string // what is needed to proceed
+	// Expected is the exact value the operator must type to confirm a typed-name
+	// confirmation (set by RequireConfirmation). Empty for safety errors that are
+	// not typed-name confirmations.
+	Expected string
 }
 
 func (e *SafetyError) Error() string { return e.Err.Error() }

@@ -47,6 +47,47 @@ func (s *Server) buildRouter() http.Handler {
 			pr.Put("/config", s.handleUpdateConfig)
 
 			pr.Get("/audit", s.handleListAudit)
+
+			// Dashboard (host + Postgres telemetry snapshot).
+			pr.Get("/dashboard", s.handleDashboard)
+
+			// Query box (read-only, guard-enforced).
+			pr.Post("/query", s.handleQuery)
+
+			// Databases.
+			pr.Get("/databases", s.handleListDatabases)
+			pr.Post("/databases", s.handleCreateDatabase)
+			pr.Post("/databases/new-app", s.handleNewApp)
+			pr.Delete("/databases/{name}", s.handleDropDatabase)
+
+			// Roles & grants.
+			pr.Get("/roles", s.handleListRoles)
+			pr.Post("/roles", s.handleCreateRole)
+			pr.Post("/roles/readonly", s.handleCreateReadonlyUser)
+			pr.Post("/roles/{role}/rotate", s.handleRotatePassword)
+			pr.Delete("/roles/{role}", s.handleDropRole)
+			pr.Post("/grants", s.handleGrant)
+			pr.Delete("/grants", s.handleRevoke)
+
+			// Backups & restore.
+			pr.Get("/backups", s.handleListBackups)
+			pr.Post("/backups/run", s.handleRunBackup)
+			pr.Post("/backups/restore", s.handleRestore)
+			pr.Post("/backups/restore-test", s.handleRestoreTest)
+
+			// Alerts (rules + notification channels).
+			pr.Get("/alerts", s.handleGetAlerts)
+			pr.Put("/alerts/rules", s.handleSaveAlertRule)
+			pr.Delete("/alerts/rules/{id}", s.handleDeleteAlertRule)
+			pr.Put("/alerts/channels", s.handleSaveAlertChannel)
+			pr.Post("/alerts/channels/test", s.handleTestAlertChannel)
+
+			// Migration (coordination endpoints; data movement not yet implemented).
+			pr.Post("/migrate/sessions", s.handleCreateMigrationSession)
+			pr.Get("/migrate/sessions/{code}", s.handleGetMigrationSession)
+			pr.Delete("/migrate/sessions/{code}", s.handleCancelMigrationSession)
+			pr.Post("/migrate/single-db", s.handleMigrateSingleDB)
+			pr.Post("/migrate/cluster", s.handleMigrateCluster)
 		})
 	})
 

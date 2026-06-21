@@ -74,7 +74,13 @@ interface RequestOptions {
 }
 
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    // Non-simple custom header the server's CSRF backstop accepts as a
+    // same-origin signal. A cross-site attacker cannot set it without a
+    // preflight that the same-origin policy blocks.
+    "X-Indiepg-Csrf": "1",
+  };
   const init: RequestInit = {
     method: opts.method ?? "GET",
     credentials: "same-origin",
@@ -115,6 +121,12 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     throw new ApiError(resp.status, body);
   }
 
+  // The server wraps successful payloads as {"data": ...} (see respond.go
+  // writeData). Unwrap so callers receive the bare typed value. Error bodies
+  // are NOT wrapped and are handled above before we reach here.
+  if (parsed && typeof parsed === "object" && "data" in (parsed as object)) {
+    return (parsed as { data: T }).data;
+  }
   return parsed as T;
 }
 
@@ -152,13 +164,13 @@ function codeForStatus(status: number): ErrorCode {
 export const api = {
   // session ----------------------------------------------------------------
   session(): Promise<SessionInfo> {
-    return request<SessionInfo>("/session");
+    return request<SessionInfo>("/auth/status");
   },
   login(password: string): Promise<SessionInfo> {
-    return request<SessionInfo>("/login", { method: "POST", body: { password } });
+    return request<SessionInfo>("/auth/login", { method: "POST", body: { password } });
   },
   logout(): Promise<void> {
-    return request<void>("/logout", { method: "POST" });
+    return request<void>("/auth/logout", { method: "POST" });
   },
   instance(): Promise<InstanceInfo> {
     return request<InstanceInfo>("/instance");

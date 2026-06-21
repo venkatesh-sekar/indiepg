@@ -164,6 +164,16 @@ func (m *Manager) Provision(ctx context.Context) (core.Result, error) {
 		steps = append(steps, redactPasswordLiteral(stmt))
 	}
 
+	// 5. Make the panel's dedicated roles connectable over the local socket.
+	// They have no OS user (peer fails) and no password by design, so add a
+	// tightly scoped trust rule for them to pg_hba.conf and reload. Without this
+	// the panel cannot connect to the Postgres it just provisioned.
+	if changed, err := m.EnsureSocketAuth(ctx); err != nil {
+		return core.Result{}, err
+	} else if changed {
+		steps = append(steps, "configured pg_hba.conf socket auth for "+ReadOnlyRole+" and "+AdminRole+"; reloaded config")
+	}
+
 	result := core.Ok("Postgres provisioned").
 		WithData("roles", []string{ReadOnlyRole, AdminRole}).
 		WithData("service", serviceName).

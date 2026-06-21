@@ -17,8 +17,12 @@ import (
 	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/auth"
+	"github.com/venkatesh-sekar/indiepg/internal/backup"
 	"github.com/venkatesh-sekar/indiepg/internal/config"
 	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/exec"
+	"github.com/venkatesh-sekar/indiepg/internal/pg"
+	"github.com/venkatesh-sekar/indiepg/internal/pg/guard"
 	"github.com/venkatesh-sekar/indiepg/internal/server/web"
 	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
@@ -45,6 +49,16 @@ type Server struct {
 	log   *core.Logger
 	auth  *auth.Authenticator
 
+	// Feature managers, constructed from cfg+store in newServer. pg owns the
+	// Postgres connection pools (read-only + privileged) used by the query box,
+	// schema/role/database browsing, and guided admin actions; guard is the
+	// read-only SQL gate for the query box; backups drives pgBackRest; sampler
+	// produces the dashboard telemetry snapshot.
+	pg      *pg.Manager
+	guard   *guard.Guard
+	backups *backup.Manager
+	sampler *pg.Sampler
+
 	sessionTTL time.Duration
 	spa        http.Handler
 	handler    http.Handler
@@ -69,17 +83,53 @@ func New(opts Options) (*Server, error) {
 
 	authn := auth.New(opts.Store, auth.DefaultLockoutPolicy(), defaultSessionTTL)
 
-	return newServer(opts.Config, opts.Store, log, authn, dist, defaultSessionTTL)
+	srv, err := newServer(opts.Config, opts.Store, log, authn, dist, defaultSessionTTL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Best-effort connect to the managed Postgres so the query box, browsing,
+	// admin actions, and dashboard work immediately. A failure here is not fatal:
+	// the panel still serves login and config, and database features return a
+	// typed "not connected" error until Postgres is reachable.
+	connectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Self-heal pg_hba.conf so the panel's dedicated roles can authenticate over
+	// the local socket. Idempotent (a no-op once the rule is present), so an
+	// existing install is fixed by a binary upgrade + restart without re-running
+	// install. Best-effort: a failure (e.g. Postgres down, not root) just leaves
+	// Connect to fail with a clear warning.
+	if _, herr := srv.pg.EnsureSocketAuth(connectCtx); herr != nil {
+		log.Warn("could not configure pg_hba.conf socket auth; database features may be unavailable", "err", herr)
+	}
+
+	if cerr := srv.pg.Connect(connectCtx); cerr != nil {
+		log.Warn("postgres not connected at startup; database features unavailable until reachable", "err", cerr)
+	}
+
+	return srv, nil
 }
 
 // newServer is the unexported builder used by New and by tests to inject a
 // pre-wired authenticator and SPA filesystem.
 func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth.Authenticator, dist fs.FS, ttl time.Duration) (*Server, error) {
+	// Feature managers share one OS command runner. These are pure constructors
+	// with no IO until first use, so they are safe to build here (tests that call
+	// newServer get a Manager that is simply never Connect-ed).
+	runner := exec.NewOSRunner(log, false)
+	pgmgr := pg.New(pg.Options{Runner: runner, Config: cfg, Logger: log})
+
 	s := &Server{
-		cfg:        cfg,
-		store:      st,
-		log:        log,
-		auth:       authn,
+		cfg:     cfg,
+		store:   st,
+		log:     log,
+		auth:    authn,
+		pg:      pgmgr,
+		guard:   guard.New(guard.Options{ReadOnly: true, AutoLimit: cfg.QueryLimit}),
+		backups: backup.New(backup.Options{Runner: runner, Store: st, Config: cfg, Logger: log}),
+		sampler: pg.NewSampler(pgmgr),
+
 		sessionTTL: ttl,
 		spa:        newSPAHandler(dist),
 	}

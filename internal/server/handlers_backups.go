@@ -1,0 +1,228 @@
+package server
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/venkatesh-sekar/indiepg/internal/backup"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
+)
+
+// backupHistoryResponse is the read-only history payload for the backups page:
+// persisted run records plus restore-test results, newest first.
+type backupHistoryResponse struct {
+	Backups      []backupRecordResponse      `json:"backups"`
+	RestoreTests []restoreTestRecordResponse `json:"restore_tests"`
+}
+
+// backupRecordResponse mirrors store.BackupRecord on the wire.
+type backupRecordResponse struct {
+	ID            int64      `json:"id"`
+	Label         string     `json:"label"`
+	BackupType    string     `json:"backup_type"`
+	StartedAt     time.Time  `json:"started_at"`
+	StoppedAt     *time.Time `json:"stopped_at"`
+	SizeBytes     int64      `json:"size_bytes"`
+	DatabaseBytes int64      `json:"database_bytes"`
+	RepoBytes     int64      `json:"repo_bytes"`
+	WALStart      string     `json:"wal_start"`
+	WALStop       string     `json:"wal_stop"`
+	Result        string     `json:"result"`
+	RepoPath      string     `json:"repo_path"`
+	Error         string     `json:"error"`
+}
+
+// restoreTestRecordResponse mirrors store.RestoreTestRecord on the wire.
+type restoreTestRecordResponse struct {
+	ID           int64     `json:"id"`
+	TestedAt     time.Time `json:"tested_at"`
+	SourceLabel  string    `json:"source_label"`
+	VerifiedRows int64     `json:"verified_rows"`
+	Result       string    `json:"result"`
+	DurationMS   int64     `json:"duration_ms"`
+	Detail       string    `json:"detail"`
+}
+
+// runBackupRequest selects which pgBackRest backup type to run.
+type runBackupRequest struct {
+	Type string `json:"type"`
+}
+
+// restoreRequest drives a guarded restore. Target is optional (nil => recover to
+// latest WAL). Confirm carries the typed-name confirmation the foundation
+// requires before overwriting the live cluster.
+type restoreRequest struct {
+	Target  *restoreTargetRequest `json:"target"`
+	Delta   bool                  `json:"delta"`
+	Confirm string                `json:"confirm"`
+}
+
+// restoreTargetRequest is the optional point-in-time-recovery target. Exactly
+// one of time/xid/lsn/name selects where recovery stops (validated downstream);
+// all empty means recover to the latest available WAL.
+type restoreTargetRequest struct {
+	Time   string `json:"time"`
+	XID    string `json:"xid"`
+	LSN    string `json:"lsn"`
+	Name   string `json:"name"`
+	Action string `json:"action"`
+}
+
+// handleListBackups returns the persisted backup run history and restore-test
+// results. It is read-only and does not audit. The live pgBackRest repo view is
+// intentionally not consulted here so the page renders even when pgbackrest or
+// the stanza is unavailable.
+func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	backups, err := s.store.ListBackups(ctx, 50)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	tests, err := s.store.ListRestoreTests(ctx, 50)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	resp := backupHistoryResponse{
+		Backups:      mapBackupRecords(backups),
+		RestoreTests: mapRestoreTestRecords(tests),
+	}
+	writeData(w, http.StatusOK, resp)
+}
+
+// handleRunBackup runs a pgBackRest backup of the requested type. This is
+// synchronous and may run long, which is acceptable for v1.
+func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req runBackupRequest
+	if err := decodeJSON(r, &req, maxBodyBytes); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	t, err := backup.ParseType(req.Type)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	res, err := s.backups.Backup(ctx, t)
+	if err != nil {
+		s.audit(ctx, "run_backup", req.Type, "failure", "backup run failed", core.CodeOf(err))
+		writeError(w, err)
+		return
+	}
+
+	s.audit(ctx, "run_backup", req.Type, "success", "backup run completed", "")
+	writeData(w, http.StatusOK, res)
+}
+
+// handleRestore performs a guarded restore. The foundation method takes a
+// pre-restore safety backup and requires typed-name confirmation before
+// overwriting the live cluster; the request supplies that confirmation and an
+// optional point-in-time-recovery target.
+func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req restoreRequest
+	if err := decodeJSON(r, &req, maxBodyBytes); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	target, err := buildRecoveryTarget(req.Target)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	res, err := s.backups.Restore(ctx, target, req.Delta, req.Confirm)
+	if err != nil {
+		s.audit(ctx, "restore", "stanza", "failure", "restore failed", core.CodeOf(err))
+		writeError(w, err)
+		return
+	}
+
+	s.audit(ctx, "restore", "stanza", "success", "restore completed", "")
+	writeData(w, http.StatusOK, res)
+}
+
+// handleRestoreTest is a placeholder for automated restore verification. The
+// backend persists restore-test history but has no execution path yet, so this
+// returns a typed internal error rather than faking a success.
+func (s *Server) handleRestoreTest(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	err := core.InternalError("restore-test execution is not available in this build").
+		WithHint("restore-test history is shown; automated restore verification is not yet implemented")
+	s.audit(ctx, "restore_test", "stanza", "failure", "restore-test execution unavailable", core.CodeOf(err))
+	writeError(w, err)
+}
+
+// buildRecoveryTarget converts the optional request target into a
+// *backup.RecoveryTarget. A nil request yields a nil target (recover to latest).
+// A non-empty time is parsed as RFC3339 into a *time.Time.
+func buildRecoveryTarget(req *restoreTargetRequest) (*backup.RecoveryTarget, error) {
+	if req == nil {
+		return nil, nil
+	}
+	target := &backup.RecoveryTarget{
+		XID:    req.XID,
+		LSN:    req.LSN,
+		Name:   req.Name,
+		Action: req.Action,
+	}
+	if req.Time != "" {
+		t, err := time.Parse(time.RFC3339, req.Time)
+		if err != nil {
+			return nil, core.ValidationError("invalid target time %q (want RFC3339)", req.Time)
+		}
+		target.Time = &t
+	}
+	return target, nil
+}
+
+// mapBackupRecords maps store records to the wire shape, normalizing nil to [].
+func mapBackupRecords(in []store.BackupRecord) []backupRecordResponse {
+	out := make([]backupRecordResponse, 0, len(in))
+	for _, b := range in {
+		out = append(out, backupRecordResponse{
+			ID:            b.ID,
+			Label:         b.Label,
+			BackupType:    b.BackupType,
+			StartedAt:     b.StartedAt,
+			StoppedAt:     b.StoppedAt,
+			SizeBytes:     b.SizeBytes,
+			DatabaseBytes: b.DatabaseBytes,
+			RepoBytes:     b.RepoBytes,
+			WALStart:      b.WALStart,
+			WALStop:       b.WALStop,
+			Result:        b.Result,
+			RepoPath:      b.RepoPath,
+			Error:         b.Error,
+		})
+	}
+	return out
+}
+
+// mapRestoreTestRecords maps store records to the wire shape, normalizing nil to [].
+func mapRestoreTestRecords(in []store.RestoreTestRecord) []restoreTestRecordResponse {
+	out := make([]restoreTestRecordResponse, 0, len(in))
+	for _, t := range in {
+		out = append(out, restoreTestRecordResponse{
+			ID:           t.ID,
+			TestedAt:     t.TestedAt,
+			SourceLabel:  t.SourceLabel,
+			VerifiedRows: t.VerifiedRows,
+			Result:       t.Result,
+			DurationMS:   t.DurationMS,
+			Detail:       t.Detail,
+		})
+	}
+	return out
+}

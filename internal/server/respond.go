@@ -26,9 +26,11 @@ type apiError struct {
 	Hint    string         `json:"hint,omitempty"`
 	Details map[string]any `json:"details,omitempty"`
 	// Operation and RequiredFlags are populated for safety errors so the SPA
-	// knows what confirmation is required to proceed.
+	// knows what confirmation is required to proceed. Expected carries the exact
+	// value the operator must type for a typed-name confirmation.
 	Operation     string   `json:"operation,omitempty"`
 	RequiredFlags []string `json:"required_flags,omitempty"`
+	Expected      string   `json:"expected,omitempty"`
 	// Ownership fields are populated for ownership conflicts (HARD STOP) so the
 	// SPA can render the actionable "owned by panel X" message and an Adopt
 	// affordance when the owner looks abandoned.
@@ -128,6 +130,7 @@ func toAPIError(err error) (apiError, int) {
 	if errors.As(err, &se) {
 		out.Operation = se.Operation
 		out.RequiredFlags = se.RequiredFlags
+		out.Expected = se.Expected
 	}
 
 	var oe *core.OwnershipError

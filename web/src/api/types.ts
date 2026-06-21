@@ -28,8 +28,17 @@ export interface ApiErrorBody {
   details?: Record<string, unknown>;
   /** Present on safety errors: the operator must type this to confirm. */
   expected?: string;
+  /** Present on safety errors: the blocked operation, e.g. "drop database orders". */
+  operation?: string;
   /** Present on safety errors: the flags/inputs the operation requires. */
   required_flags?: string[];
+  /** Present on ownership errors (HARD STOP): the conflicting owner. */
+  owner?: {
+    owner_id: string;
+    owner_host: string;
+    last_seen: string;
+    adoptable: boolean;
+  };
 }
 
 /** core.Result — the standard success envelope for actions. */
