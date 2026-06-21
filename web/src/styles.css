@@ -1336,3 +1336,60 @@ fieldset.field legend {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- Migration view -------------------------------------------------------- */
+
+/* Grouped source-connection inputs. Override the default 3-column .field-row so
+   the two-input rows (host/port, user/password) split evenly. */
+.source-fields {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin: 8px 0;
+}
+
+.source-fields .field-row {
+  grid-template-columns: 1fr 1fr;
+}
+
+/* Receive/Send toggle for the cross-panel session. */
+.segmented {
+  display: inline-flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin: 4px 0 12px;
+}
+
+.segmented .seg {
+  font: inherit;
+  cursor: pointer;
+  padding: 7px 16px;
+  border: none;
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.segmented .seg + .seg {
+  border-left: 1px solid var(--border);
+}
+
+.segmented .seg.active {
+  background: var(--primary-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Live direct-job progress block. */
+.job-running {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+@media (max-width: 640px) {
+  .source-fields .field-row {
+    grid-template-columns: 1fr;
+  }
+}

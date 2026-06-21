@@ -83,20 +83,22 @@ func TestReconciledRoutesRequireAuth(t *testing.T) {
 	}
 }
 
-// TestMigrateEndpointsTypedUnavailable verifies the migration endpoints exist
-// (no 404) and return an honest typed error rather than pretending to work.
-func TestMigrateEndpointsTypedUnavailable(t *testing.T) {
+// TestMigrateSessionsRequiresS3WithoutTarget verifies the ssh-less handshake is
+// the ONLY migration endpoint that reports "requires S3" — and only when no S3
+// target is configured (the test server has none). The honest CodeInternal error
+// carries the actionable hint pointing at direct pull.
+func TestMigrateSessionsRequiresS3WithoutTarget(t *testing.T) {
 	srv, _ := newTestServer(t)
 	token := login(t, srv, testPassword)
 
-	for _, path := range []string{"/api/migrate/single-db", "/api/migrate/cluster", "/api/migrate/sessions"} {
-		rec := authedRequest(t, srv, http.MethodPost, path, token, map[string]any{})
-		require.Equal(t, http.StatusInternalServerError, rec.Code)
-		var ae apiError
-		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
-		require.Equal(t, core.CodeInternal, ae.Code)
-		require.Contains(t, strings.ToLower(ae.Message), "not available")
-	}
+	rec := authedRequest(t, srv, http.MethodPost, "/api/migrate/sessions", token,
+		map[string]any{"database": "appdb"})
+	require.Equal(t, http.StatusInternalServerError, rec.Code, "body: %s", rec.Body.String())
+	var ae apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeInternal, ae.Code)
+	require.Contains(t, strings.ToLower(ae.Message), "requires s3")
+	require.Contains(t, strings.ToLower(ae.Hint), "direct pull")
 }
 
 // TestAlertsRuleRoundTrip exercises the alerts rule CRUD path end-to-end through

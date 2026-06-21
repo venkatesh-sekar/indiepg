@@ -76,6 +76,31 @@ type AlertRecord struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
+// MigrationRecord is the local-store source of truth for one database-migration
+// job — direct-pull (single-db/cluster) or ssh-less handshake. Source passwords
+// are NEVER stored here; SourceSummary holds only a redacted "user@host:port/db".
+// RowCountsSrc/RowCountsTgt are JSON objects mapping "schema.table" -> count.
+type MigrationRecord struct {
+	ID             int64      `json:"id"`
+	Mode           string     `json:"mode"`
+	Role           string     `json:"role"`
+	Status         string     `json:"status"`
+	Phase          string     `json:"phase"`
+	SourceSummary  string     `json:"source_summary"`
+	TargetDatabase string     `json:"target_database"`
+	Overwrite      bool       `json:"overwrite"`
+	Code           string     `json:"code"`
+	ProgressDone   int64      `json:"progress_done"`
+	ProgressTotal  int64      `json:"progress_total"`
+	BytesTotal     int64      `json:"bytes_total"`
+	Error          string     `json:"error"`
+	RowCountsSrc   string     `json:"row_counts_src"`
+	RowCountsTgt   string     `json:"row_counts_tgt"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	FinishedAt     *time.Time `json:"finished_at,omitempty"`
+}
+
 // TelemetrySample is one buffered metric sample for the in-panel dashboard.
 // Labels is a JSON object string.
 type TelemetrySample struct {

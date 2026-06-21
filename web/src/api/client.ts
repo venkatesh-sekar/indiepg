@@ -22,10 +22,13 @@ import type {
   DatabaseInfo,
   DropRequest,
   ErrorCode,
+  ExportSessionRequest,
   GrantRequest,
   InstanceInfo,
   LoginResult,
+  MigrationRecord,
   MigrationSession,
+  MigrationStarted,
   NewAppRequest,
   QueryResult,
   Result,
@@ -279,6 +282,23 @@ export const api = {
   },
 
   // migration --------------------------------------------------------------
+  // Direct pull (needs no S3): starts a background job and returns its id to poll.
+  migrateSingleDB(req: SingleDBMigrationRequest): Promise<MigrationStarted> {
+    return request<MigrationStarted>("/migrate/single-db", { method: "POST", body: req });
+  },
+  migrateCluster(req: ClusterMigrationRequest): Promise<MigrationStarted> {
+    return request<MigrationStarted>("/migrate/cluster", { method: "POST", body: req });
+  },
+  // Job history + per-job polling (the panel's source of truth for every mode).
+  listMigrations(signal?: AbortSignal): Promise<MigrationRecord[]> {
+    return request<{ migrations: MigrationRecord[] }>("/migrate", { signal }).then(
+      (r) => r.migrations ?? [],
+    );
+  },
+  getMigration(id: number, signal?: AbortSignal): Promise<MigrationRecord> {
+    return request<MigrationRecord>(`/migrate/${id}`, { signal });
+  },
+  // Cross-panel ssh-less handshake (requires S3 on both panels).
   createSession(req: CreateSessionRequest): Promise<MigrationSession> {
     return request<MigrationSession>("/migrate/sessions", { method: "POST", body: req });
   },
@@ -287,16 +307,16 @@ export const api = {
       signal,
     });
   },
+  exportToSession(code: string, req: ExportSessionRequest): Promise<MigrationStarted> {
+    return request<MigrationStarted>(
+      `/migrate/sessions/${encodeURIComponent(code)}/export`,
+      { method: "POST", body: req },
+    );
+  },
   cancelSession(code: string): Promise<void> {
     return request<void>(`/migrate/sessions/${encodeURIComponent(code)}`, {
       method: "DELETE",
     });
-  },
-  migrateSingleDB(req: SingleDBMigrationRequest): Promise<Result> {
-    return request<Result>("/migrate/single-db", { method: "POST", body: req });
-  },
-  migrateCluster(req: ClusterMigrationRequest): Promise<Result> {
-    return request<Result>("/migrate/cluster", { method: "POST", body: req });
   },
 };
 

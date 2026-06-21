@@ -48,6 +48,14 @@ func NewService(os ObjectStore, runner exec.Runner, log *core.Logger) *Service {
 	return &Service{os: os, runner: runner, log: log, now: time.Now}
 }
 
+// ObjectStore returns the underlying S3 object store the Service coordinates
+// over. The server passes it to the Orchestrator so the ssh-less SOURCE/TARGET
+// workers can upload/download the dump through the same client the session
+// documents use. It is never nil on a Service built by NewService.
+func (s *Service) ObjectStore() ObjectStore {
+	return s.os
+}
+
 // SessionKey returns the S3 key of the coordinating document for a code:
 // pg-migrations/sessions/<code>/session.json.
 func SessionKey(code string) string {

@@ -430,21 +430,93 @@ export interface MigrationVerification {
   diffs: RowCountDiff[];
 }
 
+/** A user-supplied source Postgres connection for a direct pull (or an ssh-less
+ *  export). The password is sent once to start the job and is never persisted,
+ *  logged, or echoed back — only the redacted "user@host:port/db" summary is. */
+export interface SourceConn {
+  host: string;
+  port?: string;
+  user?: string;
+  password?: string;
+  database?: string;
+  sslmode?: string;
+}
+
+/** The fixed phrase an operator must type to authorize a destructive
+ *  whole-cluster overwrite (mirrors the server's clusterOverwriteConfirm). */
+export const CLUSTER_OVERWRITE_CONFIRM = "OVERWRITE";
+
+/** POST /api/migrate/sessions — create the ssh-less TARGET session. The server
+ *  uses its own default TTL. */
 export interface CreateSessionRequest {
   database: string;
-  /** Time-to-live in seconds for the migration session. */
-  ttl_seconds: number;
 }
 
+/** POST /api/migrate/single-db — direct pull of one database. Needs no S3. */
 export interface SingleDBMigrationRequest {
-  database: string;
-  source_host: string;
-  transport: "s3" | "ssh";
-  /** Required when overwriting an existing target database. */
+  source: SourceConn;
+  target_database: string;
+  overwrite: boolean;
+  /** When overwrite is true, must equal target_database to authorize the drop. */
   confirm: string;
 }
 
+/** POST /api/migrate/cluster — direct pull of every non-template database plus
+ *  globals (roles/grants). Needs no S3. */
 export interface ClusterMigrationRequest {
-  source_host: string;
+  source: SourceConn;
+  overwrite: boolean;
+  exclude?: string[];
+  /** When overwrite is true, must equal CLUSTER_OVERWRITE_CONFIRM. */
   confirm: string;
+}
+
+/** POST /api/migrate/sessions/{code}/export — join a session as the SOURCE and
+ *  push the named database to the shared bucket. */
+export interface ExportSessionRequest {
+  source: SourceConn;
+  database: string;
+}
+
+/** The immediate response to starting an async migration job: the local record
+ *  id to poll via GET /api/migrate/{id}, plus the initial status. */
+export interface MigrationStarted {
+  id: number;
+  status: MigrationStatus;
+}
+
+/** Finer step within a status, surfaced for progress. Empty in terminal states. */
+export type MigrationPhase =
+  | ""
+  | "validating"
+  | "dumping"
+  | "uploading"
+  | "downloading"
+  | "restoring"
+  | "verifying";
+
+/** A migration job record — this panel's source of truth, polled by the UI.
+ *  Mirrors the server's migrationResponse (store.MigrationRecord on the wire). */
+export interface MigrationRecord {
+  id: number;
+  mode: MigrationMode;
+  /** "direct" | "target" | "source". */
+  role: string;
+  status: MigrationStatus;
+  phase: MigrationPhase;
+  /** Redacted "user@host:port/db" — never a password. */
+  source_summary: string;
+  target_database: string;
+  overwrite: boolean;
+  /** Set for ssh-less jobs; empty for direct pulls. */
+  code: string;
+  progress_done: number;
+  progress_total: number;
+  bytes_total: number;
+  error: string;
+  row_counts_src: Record<string, number>;
+  row_counts_tgt: Record<string, number>;
+  created_at: string;
+  updated_at: string;
+  finished_at?: string | null;
 }

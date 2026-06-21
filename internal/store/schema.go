@@ -101,6 +101,32 @@ var schemaStatements = []string{
 		labels      TEXT    NOT NULL DEFAULT '{}'
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_telemetry_metric_ts ON telemetry_buffer (metric, ts)`,
+
+	// migrations — the source of truth for this panel's database-migration jobs
+	// (direct-pull single-db/cluster + ssh-less handshake). The S3 session doc is
+	// only the cross-panel channel; status/phase/progress/errors/rowcounts live
+	// here so the UI can poll a single local store.
+	`CREATE TABLE IF NOT EXISTS migrations (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		mode            TEXT    NOT NULL,
+		role            TEXT    NOT NULL DEFAULT '',
+		status          TEXT    NOT NULL,
+		phase           TEXT    NOT NULL DEFAULT '',
+		source_summary  TEXT    NOT NULL DEFAULT '',
+		target_database TEXT    NOT NULL DEFAULT '',
+		overwrite       INTEGER NOT NULL DEFAULT 0,
+		code            TEXT    NOT NULL DEFAULT '',
+		progress_done   INTEGER NOT NULL DEFAULT 0,
+		progress_total  INTEGER NOT NULL DEFAULT 0,
+		bytes_total     INTEGER NOT NULL DEFAULT 0,
+		error           TEXT    NOT NULL DEFAULT '',
+		row_counts_src  TEXT    NOT NULL DEFAULT '{}',
+		row_counts_tgt  TEXT    NOT NULL DEFAULT '{}',
+		created_at      TEXT    NOT NULL,
+		updated_at      TEXT    NOT NULL,
+		finished_at     TEXT
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_migrations_created ON migrations (created_at)`,
 }
 
 // connectionPragmas are PRAGMA statements applied to the connection on Open.

@@ -82,12 +82,19 @@ func (s *Server) buildRouter() http.Handler {
 			pr.Put("/alerts/channels", s.handleSaveAlertChannel)
 			pr.Post("/alerts/channels/test", s.handleTestAlertChannel)
 
-			// Migration (coordination endpoints; data movement not yet implemented).
-			pr.Post("/migrate/sessions", s.handleCreateMigrationSession)
-			pr.Get("/migrate/sessions/{code}", s.handleGetMigrationSession)
-			pr.Delete("/migrate/sessions/{code}", s.handleCancelMigrationSession)
+			// Migration. Two modes share one local-store job engine the UI polls:
+			//   - Direct pull (single-db/cluster): pg_dump/pg_restore against a
+			//     user-supplied source into this panel's Postgres. Needs NO S3.
+			//   - ssh-less handshake (sessions): two panels coordinate via a shared
+			//     S3 bucket. The session endpoints are the ONLY ones that require S3.
+			pr.Get("/migrate", s.handleListMigrations)
+			pr.Get("/migrate/{id}", s.handleGetMigration)
 			pr.Post("/migrate/single-db", s.handleMigrateSingleDB)
 			pr.Post("/migrate/cluster", s.handleMigrateCluster)
+			pr.Post("/migrate/sessions", s.handleCreateMigrationSession)
+			pr.Get("/migrate/sessions/{code}", s.handleGetMigrationSession)
+			pr.Post("/migrate/sessions/{code}/export", s.handleExportMigrationSession)
+			pr.Delete("/migrate/sessions/{code}", s.handleCancelMigrationSession)
 		})
 	})
 
