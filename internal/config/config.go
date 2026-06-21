@@ -37,6 +37,10 @@ type S3Target struct {
 	AccessKey string `json:"access_key"` // access key id
 	SecretKey string `json:"-"`          // secret access key (never serialized)
 	UseSSL    bool   `json:"use_ssl"`    // TLS to the endpoint
+	// CipherPass, when set, enables aes-256-cbc repository encryption. It is a
+	// secret (never serialized) and must be preserved to restore the repo — losing
+	// it makes every encrypted backup unrecoverable.
+	CipherPass string `json:"-"`
 }
 
 // Schedules holds cron expressions (robfig/cron syntax) for periodic jobs. An

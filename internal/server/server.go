@@ -108,7 +108,53 @@ func New(opts Options) (*Server, error) {
 		log.Warn("postgres not connected at startup; database features unavailable until reachable", "err", cerr)
 	}
 
+	// Self-heal the pgBackRest config from the persisted S3 settings so an
+	// upgrade/restart re-applies a backup target configured in a prior run. Best
+	// effort: a failure (Postgres down, not root, bad credentials) only logs —
+	// the panel still serves, and a later config save re-attempts it.
+	if _, berr := srv.ensureBackupConfigured(connectCtx, srv.cfg); berr != nil {
+		log.Warn("could not configure pgBackRest from stored settings; backups may be unavailable until fixed", "err", berr)
+	}
+
 	return srv, nil
+}
+
+// ensureBackupConfigured renders and installs the pgBackRest config (and runs
+// stanza-create on change) from cfg, when an S3/remote target is configured. It
+// is a no-op (false, nil) when no remote target is set — a local-only or
+// unconfigured panel has nothing to provision. The Postgres data directory and
+// port are discovered live, so Postgres must be reachable; an error there is
+// returned to the caller, which decides whether it is fatal.
+func (s *Server) ensureBackupConfigured(ctx context.Context, cfg config.Config) (bool, error) {
+	if cfg.Backup.Bucket == "" && cfg.Backup.Endpoint == "" {
+		return false, nil
+	}
+
+	dataDir, err := s.pg.DataDirectory(ctx)
+	if err != nil {
+		return false, core.InternalError("server: discover Postgres data directory for backup config").Wrap(err)
+	}
+	port, err := s.pg.Port(ctx)
+	if err != nil {
+		return false, core.InternalError("server: discover Postgres port for backup config").Wrap(err)
+	}
+
+	params := backup.ConfigParams{
+		Stanza:        cfg.Stanza,
+		Endpoint:      cfg.Backup.Endpoint,
+		Region:        cfg.Backup.Region,
+		Bucket:        cfg.Backup.Bucket,
+		Prefix:        cfg.Backup.Prefix,
+		AccessKey:     cfg.Backup.AccessKey,
+		SecretKey:     cfg.Backup.SecretKey,
+		UseSSL:        cfg.Backup.UseSSL,
+		RetentionDays: cfg.RetentionDays,
+		CipherPass:    cfg.Backup.CipherPass,
+		PGDataDir:     dataDir,
+		PGPort:        port,
+		PGSocketDir:   cfg.PGSocketDir,
+	}
+	return s.backups.EnsureConfigured(ctx, params)
 }
 
 // newServer is the unexported builder used by New and by tests to inject a

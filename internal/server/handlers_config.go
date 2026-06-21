@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // handleGetConfig returns the current panel configuration. The S3 secret key is
@@ -18,6 +19,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, map[string]any{
 		"config":               cfg,
 		"backup_secret_is_set": cfg.Backup.SecretKey != "",
+		"backup_cipher_is_set": cfg.Backup.CipherPass != "",
 	})
 }
 
@@ -45,6 +47,8 @@ type backupTargetUpdate struct {
 	AccessKey *string `json:"access_key,omitempty"`
 	SecretKey *string `json:"secret_key,omitempty"`
 	UseSSL    *bool   `json:"use_ssl,omitempty"`
+	// CipherPass enables repo encryption; write-only, like SecretKey.
+	CipherPass *string `json:"cipher_pass,omitempty"`
 }
 
 // schedulesUpdate mirrors the editable cron expressions.
@@ -88,12 +92,36 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	s.audit(ctx, "update_config", "config", "success", "panel configuration updated", "")
 
-	// Reload so the response reflects exactly what was persisted (secret stays
-	// redacted via the json:"-" tag).
-	writeData(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"config":               cfg,
 		"backup_secret_is_set": cfg.Backup.SecretKey != "",
-	})
+		"backup_cipher_is_set": cfg.Backup.CipherPass != "",
+	}
+
+	// If a backup target is configured, (re)render the pgBackRest config and
+	// initialize the stanza. The config is already saved, so a provisioning
+	// failure does NOT fail the request — it is surfaced as a non-fatal warning so
+	// the operator can fix the underlying cause (Postgres down, bad credentials)
+	// and re-save. Never echo secrets in the warning (typed errors are curated).
+	if changed, perr := s.ensureBackupConfigured(ctx, cfg); perr != nil {
+		s.audit(ctx, "configure_backup", "pgbackrest", "failure", "configure pgBackRest failed", core.CodeOf(perr))
+		ae, _ := toAPIError(perr)
+		resp["backup_configured"] = false
+		resp["backup_warning"] = ae.Message
+		if ae.Hint != "" {
+			resp["backup_hint"] = ae.Hint
+		}
+		s.log.Warn("pgBackRest configuration failed after config save", "err", perr)
+	} else {
+		resp["backup_configured"] = true
+		if changed {
+			s.audit(ctx, "configure_backup", "pgbackrest", "success", "pgBackRest configured", "")
+		}
+	}
+
+	// Reload so the response reflects exactly what was persisted (secrets stay
+	// redacted via the json:"-" tags).
+	writeData(w, http.StatusOK, resp)
 }
 
 // applyConfigUpdate overlays the provided pointer fields onto cfg. Nil pointers
@@ -113,9 +141,13 @@ func applyConfigUpdate(cfg *config.Config, req updateConfigRequest) {
 		setIf(&cfg.Backup.Prefix, b.Prefix)
 		setIf(&cfg.Backup.AccessKey, b.AccessKey)
 		setIfBool(&cfg.Backup.UseSSL, b.UseSSL)
-		// Write-only secret: only overwrite when a non-empty value is given.
+		// Write-only secrets: only overwrite when a non-empty value is given, so a
+		// round-tripped (redacted) form never clears the stored value.
 		if b.SecretKey != nil && *b.SecretKey != "" {
 			cfg.Backup.SecretKey = *b.SecretKey
+		}
+		if b.CipherPass != nil && *b.CipherPass != "" {
+			cfg.Backup.CipherPass = *b.CipherPass
 		}
 	}
 

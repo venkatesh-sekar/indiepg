@@ -25,6 +25,10 @@ type Manager struct {
 	cfg    config.Config
 	owner  *identity.Owner
 	log    *core.Logger
+	// confDir is the directory holding the managed pgbackrest.conf. It defaults
+	// to /etc/pgbackrest and is overridable (tests) so the config-writing path is
+	// exercisable without touching the real system directory.
+	confDir string
 }
 
 // Options configure a Manager. Owner may be nil only for an explicitly
@@ -38,6 +42,9 @@ type Options struct {
 	Config config.Config
 	Owner  *identity.Owner // claims/heartbeats the repo before writing
 	Logger *core.Logger
+	// ConfDir overrides where the managed pgbackrest.conf is written. Empty uses
+	// the default /etc/pgbackrest. Intended for tests.
+	ConfDir string
 }
 
 // New builds a Manager from Options. A nil logger is replaced with a discard
@@ -47,12 +54,17 @@ func New(opts Options) *Manager {
 	if log == nil {
 		log = core.Discard()
 	}
+	confDir := opts.ConfDir
+	if confDir == "" {
+		confDir = defaultConfDir
+	}
 	return &Manager{
-		runner: opts.Runner,
-		store:  opts.Store,
-		cfg:    opts.Config,
-		owner:  opts.Owner,
-		log:    log,
+		runner:  opts.Runner,
+		store:   opts.Store,
+		cfg:     opts.Config,
+		owner:   opts.Owner,
+		log:     log,
+		confDir: confDir,
 	}
 }
 
