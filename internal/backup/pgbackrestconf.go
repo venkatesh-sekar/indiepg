@@ -29,7 +29,7 @@ type ConfigParams struct {
 	Stanza string
 
 	// S3 destination. A non-empty Bucket selects an S3 repo; otherwise the repo
-	// is local (posix) at defaultLocalRepoPath.
+	// is local (posix) at LocalRepoPath (defaultLocalRepoPath when empty).
 	Endpoint  string
 	Region    string
 	Bucket    string
@@ -50,6 +50,21 @@ type ConfigParams struct {
 	PGDataDir   string
 	PGPort      string
 	PGSocketDir string
+
+	// LocalRepoPath overrides the on-disk repo path for a local (posix) repo.
+	// Empty uses defaultLocalRepoPath. Production leaves this empty; it exists so
+	// the repo-directory provisioning is exercisable without touching the real
+	// /var/lib/pgbackrest.
+	LocalRepoPath string
+}
+
+// localRepoPath resolves the on-disk repo path for a local (posix) repo,
+// defaulting to defaultLocalRepoPath when unset.
+func (p ConfigParams) localRepoPath() string {
+	if strings.TrimSpace(p.LocalRepoPath) != "" {
+		return p.LocalRepoPath
+	}
+	return defaultLocalRepoPath
 }
 
 // RemoteConfigured reports whether an S3 destination is set (bucket or
@@ -104,7 +119,7 @@ func RenderConfig(p ConfigParams) (string, error) {
 		}
 	} else {
 		global.set("repo1-type", "posix")
-		global.set("repo1-path", defaultLocalRepoPath)
+		global.set("repo1-path", p.localRepoPath())
 	}
 
 	if p.RetentionDays > 0 {

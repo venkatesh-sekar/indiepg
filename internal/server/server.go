@@ -121,16 +121,14 @@ func New(opts Options) (*Server, error) {
 }
 
 // ensureBackupConfigured renders and installs the pgBackRest config (and runs
-// stanza-create on change) from cfg, when an S3/remote target is configured. It
-// is a no-op (false, nil) when no remote target is set — a local-only or
-// unconfigured panel has nothing to provision. The Postgres data directory and
-// port are discovered live, so Postgres must be reachable; an error there is
-// returned to the caller, which decides whether it is fatal.
+// stanza-create on change) from cfg, for BOTH local and S3 repos. A local-only
+// repo still needs the managed config (the [stanza] section with pg1-path) and
+// an initialized repository, or `pgbackrest backup` fails with "backup command
+// requires option: pg1-path". The Postgres data directory and port are discovered
+// live, so Postgres must be reachable; an error there is returned to the caller,
+// which decides whether it is fatal. The render is deterministic, so an unchanged
+// config is a cheap no-op that does not re-run stanza-create.
 func (s *Server) ensureBackupConfigured(ctx context.Context, cfg config.Config) (bool, error) {
-	if cfg.Backup.Bucket == "" && cfg.Backup.Endpoint == "" {
-		return false, nil
-	}
-
 	dataDir, err := s.pg.DataDirectory(ctx)
 	if err != nil {
 		return false, core.InternalError("server: discover Postgres data directory for backup config").Wrap(err)

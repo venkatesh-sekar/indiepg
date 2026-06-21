@@ -25,6 +25,10 @@ const (
 	confFileMode os.FileMode = 0o600
 	// confDirMode is the managed directory mode (no secrets in the dir itself).
 	confDirMode os.FileMode = 0o755
+	// localRepoDirMode is the mode for a local (posix) pgBackRest repository
+	// directory. It holds backup data, so it is owner-only (the postgres user):
+	// no group/other access.
+	localRepoDirMode os.FileMode = 0o700
 	// stanzaCreateTimeout bounds the stanza-create call, which reaches the repo.
 	stanzaCreateTimeout = 2 * time.Minute
 )
@@ -78,6 +82,14 @@ func (m *Manager) EnsureConfigured(ctx context.Context, p ConfigParams) (bool, e
 	}
 
 	if err := m.writeConfigFile(path, []byte(desired)); err != nil {
+		return false, err
+	}
+
+	// A local (posix) repo lives under a directory the postgres user must own and
+	// write. The Debian pgBackRest package does not create /var/lib/pgbackrest, and
+	// its parent (/var/lib) is root-owned, so without this stanza-create/backup —
+	// which run as the postgres user — fail to create the repo. No-op for S3.
+	if err := m.ensureLocalRepoDir(p); err != nil {
 		return false, err
 	}
 
@@ -139,6 +151,28 @@ func (m *Manager) writeConfigFile(path string, data []byte) error {
 		return core.InternalError("backup: install config %q", path).Wrap(err)
 	}
 	return nil
+}
+
+// ensureLocalRepoDir creates the local (posix) repository directory and hands it
+// to the pgBackRest OS user so the non-root backup process can write the repo. It
+// is a no-op for a remote (S3) repo, which has no on-disk repository. Under root a
+// failed chown is fatal (a root-owned dir the postgres user cannot write would
+// silently break every local backup); off-root the chown is best-effort, matching
+// chownToPGUser.
+func (m *Manager) ensureLocalRepoDir(p ConfigParams) error {
+	if p.RemoteConfigured() {
+		return nil
+	}
+	dir := p.localRepoPath()
+	if err := os.MkdirAll(dir, localRepoDirMode); err != nil {
+		return core.InternalError("backup: create local repo dir %q", dir).Wrap(err)
+	}
+	// Tighten the mode explicitly: MkdirAll honors umask, so the created dir may be
+	// looser than intended. The repo holds backup data — keep it owner-only.
+	if err := os.Chmod(dir, localRepoDirMode); err != nil {
+		return core.InternalError("backup: chmod local repo dir %q", dir).Wrap(err)
+	}
+	return chownToPGUser(dir)
 }
 
 // chownToPGUser hands the file to the pgBackRest OS user so the (non-root)

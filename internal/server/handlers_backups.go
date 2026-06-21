@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/backup"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
 	"github.com/venkatesh-sekar/indiepg/internal/core"
 	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
@@ -107,6 +108,23 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 
 	t, err := backup.ParseType(req.Type)
 	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	// Self-heal the pgBackRest config before running: a backup has an implicit
+	// prerequisite (a managed config with the stanza's pg1-path, and an
+	// initialized repo) that nothing else on this path guarantees — e.g. a panel
+	// that started before Postgres was reachable never wrote it. Provision it now
+	// from the persisted config so the operator gets a clear, actionable error
+	// here instead of pgBackRest's cryptic "requires option: pg1-path".
+	cfg, err := config.Load(ctx, s.store)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if _, err := s.ensureBackupConfigured(ctx, cfg); err != nil {
+		s.audit(ctx, "run_backup", req.Type, "failure", "configure pgBackRest before backup failed", core.CodeOf(err))
 		writeError(w, err)
 		return
 	}

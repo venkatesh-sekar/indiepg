@@ -47,6 +47,47 @@ func TestEnsureConfigured_WritesFileAndCreatesStanza(t *testing.T) {
 	require.Contains(t, calls[0].Args, "--stanza=main")
 }
 
+// baseLocalParams is a local (posix) repo config: no S3 target, with the repo
+// directory redirected into a temp dir so provisioning is exercisable off-root.
+func baseLocalParams(repoDir string) ConfigParams {
+	p := baseS3Params()
+	p.Endpoint = ""
+	p.Region = ""
+	p.Bucket = ""
+	p.AccessKey = ""
+	p.SecretKey = ""
+	p.LocalRepoPath = repoDir
+	return p
+}
+
+// TestEnsureConfigured_LocalCreatesRepoDir is the regression test for a local
+// backup failing with "backup command requires option: pg1-path": a local repo
+// must get both a managed config (with pg1-path) AND an initialized repo
+// directory the postgres user can write.
+func TestEnsureConfigured_LocalCreatesRepoDir(t *testing.T) {
+	runner := exec.NewFakeRunner().On("stanza-create", exec.FakeResponse{Stdout: "ok"})
+	m := newProvisionManager(t, runner)
+
+	repoDir := filepath.Join(t.TempDir(), "pgbackrest-repo")
+	changed, err := m.EnsureConfigured(context.Background(), baseLocalParams(repoDir))
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	// The config names the local repo and carries the stanza's pg1-path.
+	data, err := os.ReadFile(m.ConfigPath())
+	require.NoError(t, err)
+	require.Contains(t, string(data), "repo1-type=posix")
+	require.Contains(t, string(data), "repo1-path="+repoDir)
+	require.Contains(t, string(data), "pg1-path=/var/lib/postgresql/16/main")
+
+	// The repo directory exists, owner-only, and stanza-create ran.
+	info, err := os.Stat(repoDir)
+	require.NoError(t, err)
+	require.True(t, info.IsDir())
+	require.Equal(t, localRepoDirMode, info.Mode().Perm(), "local repo dir must be 0700")
+	require.Contains(t, runner.Calls()[0].Args, "stanza-create")
+}
+
 func TestEnsureConfigured_IdempotentNoRewriteNoStanzaCreate(t *testing.T) {
 	runner := exec.NewFakeRunner().On("stanza-create", exec.FakeResponse{Stdout: "ok"})
 	m := newProvisionManager(t, runner)
