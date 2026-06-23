@@ -158,6 +158,90 @@ func TestProtectedEndpointWithCookie(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestLogoutInvalidatesSessionServerSide(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// tokenLives reports whether token still authenticates a protected request.
+	tokenLives := func(token string) bool {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		srv.Handler().ServeHTTP(rec, r)
+		return rec.Code == http.StatusOK
+	}
+	doLogout := func(setup func(*http.Request)) int {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+		setup(r)
+		srv.Handler().ServeHTTP(rec, r)
+		return rec.Code
+	}
+
+	token := login(t, srv, testPassword)
+	require.True(t, tokenLives(token))
+
+	// An authenticated logout (cookie flow with the SPA's CSRF header) rotates
+	// the signing secret, so the token a client still holds is dead server-side.
+	require.Equal(t, http.StatusOK, doLogout(func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+		r.Header.Set(csrfHeaderName, "1")
+	}))
+	require.False(t, tokenLives(token), "token must be invalid after authenticated logout")
+}
+
+func TestLogoutWithBearerInvalidatesSession(t *testing.T) {
+	srv, _ := newTestServer(t)
+	token := login(t, srv, testPassword)
+
+	// A Bearer logout is CSRF-immune and skips the origin check, so a valid
+	// Bearer token alone proves the live session and rotates the secret.
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	srv.Handler().ServeHTTP(rec, r)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// The token is dead server-side after the Bearer-authenticated logout.
+	rec = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	srv.Handler().ServeHTTP(rec, r)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestLogoutWithoutProofDoesNotInvalidate(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	tokenLives := func(token string) bool {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		srv.Handler().ServeHTTP(rec, r)
+		return rec.Code == http.StatusOK
+	}
+	doLogout := func(setup func(*http.Request)) int {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+		setup(r)
+		srv.Handler().ServeHTTP(rec, r)
+		return rec.Code
+	}
+
+	token := login(t, srv, testPassword)
+
+	// An anonymous logout clears any cookie but must not rotate the secret —
+	// otherwise the public endpoint is an unauthenticated force-logout (DoS).
+	require.Equal(t, http.StatusOK, doLogout(func(*http.Request) {}))
+	require.True(t, tokenLives(token), "anonymous logout must not kill live sessions")
+
+	// A cookie logout lacking a same-origin/CSRF signal also must not rotate, so
+	// a cross-site request cannot force the admin to re-authenticate.
+	require.Equal(t, http.StatusOK, doLogout(func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	}))
+	require.True(t, tokenLives(token), "cookie logout without CSRF signal must not rotate")
+}
+
 func TestTamperedTokenRejected(t *testing.T) {
 	srv, _ := newTestServer(t)
 	token := login(t, srv, testPassword)

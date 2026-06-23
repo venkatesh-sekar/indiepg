@@ -136,6 +136,19 @@ func (a *Authenticator) issueToken(secret []byte, now time.Time) (string, error)
 	return token, nil
 }
 
+// Logout invalidates every session token issued for this account by rotating
+// the server-side session-signing secret. After Logout, previously issued
+// tokens (including any copy a thief may hold) fail verification. For a
+// single-admin panel this is the strongest, simplest server-side invalidation:
+// "log out" ends the session everywhere rather than only clearing one cookie.
+func (a *Authenticator) Logout(ctx context.Context) error {
+	secret, err := NewSessionSecret()
+	if err != nil {
+		return err
+	}
+	return a.st.RotateSessionSecret(ctx, secret)
+}
+
 // VerifyToken validates token against the stored session secret and returns the
 // decoded Session. Returns *core.Error CodeAuth on tamper/expiry, or whatever
 // the store returns if auth is uninitialized.

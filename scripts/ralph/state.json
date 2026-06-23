@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "iteration": 3,
-  "commits_total": 3,
+  "iteration": 4,
+  "commits_total": 4,
   "current_band": "1-security",
-  "last_item": "Wire the verify gate into the loop reality (make verify / verify-web / fmt-check)",
-  "last_result": "done — verified full web gate green from fresh npm ci (deterministic build, tree clean); made the gate executable via make verify/verify-web/fmt-check; AGENTS.md updated; reviewer's blocking finding (fmt-check swallowed gofmt's non-zero exit) fixed; make verify green",
-  "notes": "Foundation band (band 0) complete. Now in band 1 (security). Next: pick the highest-risk security item — audit session auth (HttpOnly/SameSite/Secure cookies, expiry/rotation, server-side logout invalidation) in internal/auth, with tests per property.",
+  "last_item": "Audit session auth — close the server-side logout invalidation gap",
+  "last_result": "done — logout now rotates the HMAC session secret to invalidate all issued tokens, gated by logoutAuthorized (valid token + CSRF check for cookie flows) so the public endpoint can't be abused as an unauthenticated force-logout/DoS; store/auth/server tests cover each property; reviewer found no blocking issues (added Bearer-logout test it suggested); all gates green",
+  "notes": "Session-auth audit item done (cookie hardening/expiry/rotation were already present+tested; added server-side logout invalidation). Next band-1 items: CSRF coverage proof on every state-changing endpoint (note: requireAuth already enforces a CSRF origin/header check for cookie unsafe methods — likely an audit+test iteration), then DB-level read-only role enforcement, secrets-at-rest (0600 + log-scrubbing), and login brute-force lockout (lockout exists in internal/auth — verify the throttle is end-to-end tested).",
   "north_star": "An indie hacker can stand up and run a rock-solid Postgres entirely from the indiepg UI, on best defaults, with safe optional overrides."
 }

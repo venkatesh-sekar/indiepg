@@ -5,6 +5,26 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1 (security) · logout invalidates session server-side
+Closed the "logout invalidates server-side" half of the session-auth audit
+item. The cookie hardening (HttpOnly/SameSite=Strict/Secure-aware), expiry, and
+per-login rotation were already implemented and tested; the real gap was that
+`handleLogout` only cleared the cookie while the stateless HMAC token stayed
+valid until expiry (12h default) — a copied/stolen token survived logout. Now
+logout rotates the server-side HMAC signing secret (`auth.Logout` →
+`store.RotateSessionSecret`), instantly invalidating every issued token (for a
+single-admin panel, the strongest + simplest invalidation, no schema change).
+Because `/api/auth/logout` is public, rotation fires only when the caller proves
+a live session: `logoutAuthorized` requires a valid token AND, for cookie flows,
+the same CSRF origin check requireAuth uses — so an unauthenticated/cross-site
+caller cannot force-invalidate the admin (DoS). Anonymous logout still clears
+the cookie idempotently. Tests: store rotate (preserves hash/lockout, rejects
+empty, NotFound before init), authenticator Logout (old token dies, fresh login
+works), and handler-level proofs that authenticated cookie+CSRF and Bearer
+logouts rotate while anonymous / cookie-without-CSRF do not. Reviewed by
+feature-dev:code-reviewer (no blocking findings; added the Bearer-logout test
+and a clarifying comment it suggested). All gates green.
+
 ## 2026-06-24 · band 0 (foundation) · executable verify gate
 Closed the last foundation item: verified the web gate is green from a fresh
 `npm ci` (typecheck/build/test all pass) and confirmed the build is

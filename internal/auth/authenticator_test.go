@@ -265,6 +265,41 @@ func TestVerifyTokenRejectsForeignToken(t *testing.T) {
 	require.Equal(t, core.CodeAuth, core.CodeOf(err))
 }
 
+func TestLogoutInvalidatesIssuedTokens(t *testing.T) {
+	a, _, _ := newAuthWithClock(t, DefaultLockoutPolicy(), "pw")
+	ctx := context.Background()
+
+	token, err := a.Authenticate(ctx, "pw")
+	require.NoError(t, err)
+	// Sanity: the token is valid before logout.
+	_, err = a.VerifyToken(ctx, token)
+	require.NoError(t, err)
+
+	require.NoError(t, a.Logout(ctx))
+
+	// After logout the previously issued token no longer verifies (its signature
+	// is checked against the rotated secret), and the failure presents as auth.
+	_, err = a.VerifyToken(ctx, token)
+	require.Error(t, err)
+	require.Equal(t, core.CodeAuth, core.CodeOf(err))
+
+	// A fresh login still works and yields a token that verifies under the new
+	// secret — logout invalidates sessions without breaking the account.
+	token2, err := a.Authenticate(ctx, "pw")
+	require.NoError(t, err)
+	require.NotEqual(t, token, token2)
+	_, err = a.VerifyToken(ctx, token2)
+	require.NoError(t, err)
+}
+
+func TestLogoutUninitialized(t *testing.T) {
+	st := newTestStore(t)
+	a := New(st, DefaultLockoutPolicy(), time.Hour)
+	err := a.Logout(context.Background())
+	require.Error(t, err)
+	require.Equal(t, core.CodeNotFound, core.CodeOf(err))
+}
+
 func TestNewNormalizesTTLAndPolicy(t *testing.T) {
 	st := newTestStore(t)
 	a := New(st, LockoutPolicy{}, 0)

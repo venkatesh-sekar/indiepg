@@ -148,6 +148,31 @@ func TestAuthRoundTrip(t *testing.T) {
 	require.Nil(t, rec.LockedUntil)
 }
 
+func TestRotateSessionSecret(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	// Rotating before init must report the missing auth row, not silently no-op.
+	require.Equal(t, core.CodeNotFound, core.CodeOf(s.RotateSessionSecret(ctx, []byte("x"))))
+
+	require.NoError(t, s.InitAuth(ctx, "argon2-hash", []byte("original-secret")))
+	require.NoError(t, s.SetLockout(ctx, 2, nil))
+
+	require.NoError(t, s.RotateSessionSecret(ctx, []byte("rotated-secret")))
+	rec, err := s.GetAuth(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []byte("rotated-secret"), rec.SessionSecret)
+	// Password hash and failure counters must be preserved by a rotation.
+	require.Equal(t, "argon2-hash", rec.PasswordHash)
+	require.Equal(t, 2, rec.FailedAttempts)
+
+	// An empty secret is rejected so signing/verification cannot degrade.
+	require.Equal(t, core.CodeValidation, core.CodeOf(s.RotateSessionSecret(ctx, nil)))
+	rec, err = s.GetAuth(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []byte("rotated-secret"), rec.SessionSecret)
+}
+
 func TestAuditAppendAndList(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

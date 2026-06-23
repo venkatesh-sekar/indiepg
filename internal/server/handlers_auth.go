@@ -51,12 +51,42 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleLogout clears the session cookie. It is intentionally idempotent and
-// does not require a valid session (a logout from an expired session must still
-// clear the stale cookie).
+// handleLogout clears the session cookie and, when the caller proves it holds
+// the live session, invalidates that session server-side by rotating the
+// signing secret so the just-used token can never be replayed. It stays public
+// and idempotent for cookie-clearing — a logout from an expired or absent
+// session still clears the stale cookie — but only an authenticated caller (and,
+// for cookie flows, one passing the CSRF origin check) triggers the rotation,
+// so the public endpoint cannot be abused to force-invalidate the admin (DoS).
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if s.logoutAuthorized(r) {
+		if err := s.auth.Logout(r.Context()); err != nil {
+			writeError(w, err)
+			return
+		}
+		s.audit(r.Context(), "logout", "auth", "success", "admin logged out", "")
+	}
 	clearSessionCookie(w, isSecureRequest(r))
 	writeData(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// logoutAuthorized reports whether a logout request proves it comes from the
+// live session holder and so may invalidate the session server-side. A cookie
+// flow must additionally pass the CSRF origin check (a Bearer flow is immune to
+// CSRF). A missing, expired, tampered, or cross-origin credential returns false:
+// the cookie is still cleared, but no server-side rotation occurs. Logout is
+// always POST, so requireAuth's isUnsafeMethod guard is implicit here — the CSRF
+// check applies to every cookie-sourced call.
+func (s *Server) logoutAuthorized(r *http.Request) bool {
+	token, src := tokenWithSource(r)
+	if token == "" {
+		return false
+	}
+	if src == tokenSourceCookie && !s.csrfOriginOK(r) {
+		return false
+	}
+	_, err := s.auth.VerifyToken(r.Context(), token)
+	return err == nil
 }
 
 // authStatusResponse reports whether the caller is authenticated and, when an

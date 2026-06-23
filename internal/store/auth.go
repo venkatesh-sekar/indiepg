@@ -72,6 +72,28 @@ func (s *Store) SetPasswordHash(ctx context.Context, passwordHash string) error 
 	return nil
 }
 
+// RotateSessionSecret replaces the HMAC session-signing secret, instantly
+// invalidating every previously issued session token (their signatures no
+// longer verify). Password hash and lockout state are left untouched. It is the
+// server-side half of logout: after rotation, a copied or stolen token cannot
+// be replayed. A non-empty secret is required so signing/verification cannot
+// silently degrade.
+func (s *Store) RotateSessionSecret(ctx context.Context, sessionSecret []byte) error {
+	if len(sessionSecret) == 0 {
+		return core.ValidationError("session secret must not be empty")
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE auth SET session_secret = ?, updated_at = ? WHERE id = 1`,
+		sessionSecret, nowRFC3339())
+	if err != nil {
+		return core.InternalError("rotate session secret").Wrap(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return core.NotFoundError("admin auth not initialized")
+	}
+	return nil
+}
+
 // SetLockout records the failed-attempt counter and optional lockout deadline.
 // A nil lockedUntil clears the lockout.
 func (s *Store) SetLockout(ctx context.Context, failedAttempts int, lockedUntil *time.Time) error {
