@@ -8,7 +8,7 @@ runs thin (auditing the panel against the north star is itself a valid iteration
 Format: `- [ ] (band) item — acceptance: how we know it's done`
 
 ## 0 · Foundation
-- [ ] (0) Add vitest + React Testing Library to `web/`; wire `npm test`; add one real test for an existing component — acceptance: `cd web && npm test` runs green in CI-less mode; `package.json` has a `test` script.
+- [x] (0) Add vitest + React Testing Library to `web/`; wire `npm test`; add one real test for an existing component — done 2026-06-24: vitest run + RTL/jsdom, config in vite.config.ts, `ui.tsx` component test (6 tests green).
 - [ ] (0) Add root `AGENTS.md` capturing build/test/run commands + conventions (read-only role, confirm-on-risky, best-defaults) so every iteration is consistent — acceptance: file exists, references `make` targets and DEFAULTS.md.
 - [ ] (0) Wire the web verify gate into the loop reality: ensure `npm run typecheck && npm run build` pass clean from a fresh `npm ci` — acceptance: documented in AGENTS.md, both commands green.
 
