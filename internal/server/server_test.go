@@ -110,6 +110,76 @@ func TestLoginRejectsBadPassword(t *testing.T) {
 	require.Equal(t, core.CodeAuth, ae.Code)
 }
 
+// TestLoginLockoutThrottlesAfterMaxAttempts proves the brute-force lockout is
+// wired end-to-end through the HTTP login handler — not just the authenticator.
+// After the policy's max consecutive failures the handler stops returning 401
+// and starts returning 429 CodeLocked, and from then on even the *correct*
+// password is throttled, so an attacker who finally guesses it still cannot get
+// in until the lock expires. The public auth-status endpoint surfaces the state.
+func TestLoginLockoutThrottlesAfterMaxAttempts(t *testing.T) {
+	const maxAttempts = 3
+
+	st, err := store.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+
+	policy := auth.LockoutPolicy{MaxAttempts: maxAttempts, Window: 15 * time.Minute, LockFor: 15 * time.Minute}
+	authn := auth.New(st, policy, defaultSessionTTL)
+	require.NoError(t, authn.SetPassword(context.Background(), testPassword))
+
+	srv, err := newServer(config.Default(), st, core.Discard(), authn, testDist(), defaultSessionTTL)
+	require.NoError(t, err)
+
+	postLogin := func(password string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(loginRequest{Password: password})
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+		srv.Handler().ServeHTTP(rec, r)
+		return rec
+	}
+
+	// Captured before any request so the lock deadline (now+LockFor) is provably
+	// after it by a 15-minute margin — a flake-proof "deadline is in the future"
+	// check that never races wall-clock.
+	beforeAttempts := time.Now()
+
+	// The first N-1 wrong guesses are plain credential failures (401 CodeAuth).
+	for i := 1; i < maxAttempts; i++ {
+		rec := postLogin("wrong")
+		require.Equal(t, http.StatusUnauthorized, rec.Code, "attempt %d should be a plain auth failure", i)
+		var ae apiError
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+		require.Equal(t, core.CodeAuth, ae.Code)
+	}
+
+	// The Nth wrong guess trips the lockout: 429 CodeLocked.
+	rec := postLogin("wrong")
+	require.Equal(t, http.StatusTooManyRequests, rec.Code, "the Nth failure must trip the lockout")
+	var ae apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeLocked, ae.Code)
+
+	// Crucially, the correct password is now ALSO throttled — the lockout is not
+	// bypassable by finally guessing right.
+	rec = postLogin(testPassword)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code, "correct password must stay locked out")
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeLocked, ae.Code)
+
+	// The public auth-status endpoint surfaces the locked state with a deadline,
+	// so the SPA can tell the operator to wait rather than show a generic error.
+	statusRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(statusRec, httptest.NewRequest(http.MethodGet, "/api/auth/status", nil))
+	require.Equal(t, http.StatusOK, statusRec.Code)
+	var env struct {
+		Data authStatusResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(statusRec.Body.Bytes(), &env))
+	require.True(t, env.Data.Locked, "auth status must report locked")
+	require.NotNil(t, env.Data.LockedUntil)
+	require.True(t, env.Data.LockedUntil.After(beforeAttempts), "lock deadline must be in the future")
+}
+
 func TestLoginRejectsMissingPassword(t *testing.T) {
 	srv, _ := newTestServer(t)
 	body, _ := json.Marshal(loginRequest{})

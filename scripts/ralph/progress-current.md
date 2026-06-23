@@ -5,6 +5,26 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1 (security) · login brute-force lockout proven end-to-end (HTTP)
+Closed the last open band-1 item. The lockout policy + read-modify-write were
+already fully built and unit-tested in `internal/auth` (LockoutPolicy default
+5/15min/15min, `recordFailure`, sliding window, unlock-after-LockFor, success
+resets). The genuine gap was that nothing proved the throttle is wired through
+the *HTTP login handler* — the security claim in `handlers_auth.go` ("Lockout
+returns CodeLocked (HTTP 429)") was untested at the boundary. Added
+`TestLoginLockoutThrottlesAfterMaxAttempts` (server_test.go): drives real
+`POST /api/auth/login` requests through `srv.Handler()` with a tight 3-attempt
+policy and asserts (a) the first N-1 wrong guesses → 401 CodeAuth, (b) the Nth
+wrong guess → 429 CodeLocked, (c) the *correct* password is then ALSO 429 —
+proving lockout is checked before password verification and can't be bypassed by
+finally guessing right, and (d) the public `GET /api/auth/status` surfaces
+`locked: true` + a future `locked_until`. Time assertion is flake-proof
+(compares the deadline to a timestamp captured before the requests, 15-min
+margin — no wall-clock race). Reviewed (no correctness issues; adopted the
+reviewer's de-flake suggestion). Band 1 security complete → next band is 1.5
+(data durability).
+
+
 ## 2026-06-24 · band 1 (security) · secrets never logged (log-scrubbing half of secrets-at-rest)
 The state DB file `0600`/dir `0700` hardening and its mode test already existed,
 so this closed the remaining "never logged" half. Inventoried every
