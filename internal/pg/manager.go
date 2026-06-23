@@ -17,6 +17,7 @@ package pg
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -192,10 +193,22 @@ func (m *Manager) Provision(ctx context.Context) (core.Result, error) {
 	if !socketAuthChanged {
 		socketAuth = "already-present"
 	}
+	// Surface the host-sized best-default tuning for this box (Mixed profile)
+	// so the operator can see what Postgres should be sized to for their RAM/CPU.
+	// This is informational only — it is NOT applied here; applying the
+	// restart-requiring settings (shared_buffers, max_connections) is a separate
+	// step that must funnel through restartWithRollback. Computing it never
+	// touches Postgres, so it cannot fail provisioning.
+	tuning, _ := detectHostTuning(ProfileMixed)
+	steps = append(steps, fmt.Sprintf(
+		"computed host-sized tuning recommendation (%dMB RAM, %d CPU, %s profile) — not yet applied",
+		tuning.MemoryMB, tuning.CPUCount, tuning.Profile))
+
 	result := core.Ok("Postgres provisioned").
 		WithData("roles", []string{ReadOnlyRole, AdminRole}).
 		WithData("service", serviceName).
 		WithData("socket_auth", socketAuth).
+		WithData("recommended_tuning", tuning.SettingsMap()).
 		WithStatements(steps...)
 	return result, nil
 }

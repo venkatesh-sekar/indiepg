@@ -5,6 +5,34 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2.5 (resource & config safety) · host-sized tuning: pure sizing function
+Closed the last open band-2.5 item. Added `RecommendTuning(memoryMB, cpuCount,
+profile)` in `internal/pg/tuning.go` — a pure, deterministic function that sizes
+the five core Postgres settings (shared_buffers, effective_cache_size, work_mem,
+maintenance_work_mem, max_connections) from detected RAM/CPU, faithfully porting
+the `sm` CLI tuning math (DEFAULTS.md / tuning.py `_calculate_max_connections`).
+Workload profile is selectable (`WorkloadProfile` + `ParseWorkloadProfile`, empty
+→ Mixed default, unknown → ValidationError so a typo can't silently mis-size).
+Per-profile shared_buffers pct (oltp .25 / mixed .30 / olap .40), work_mem
+(oltp 64 / mixed 128 / olap clamp(RAM/32,128,1024)), maintenance_work_mem
+(olap min(RAM/4,4096) / else min(RAM/8,2048)), and the RAM-derived clamped
+max_connections all match the source. Total + panic-free on degenerate inputs
+(neg/zero RAM → 0, cpu<1 → 1, unknown profile → Mixed fallback).
+
+Why it's not dead code: wired into `Provision` (`detectHostTuning` via the
+existing `readMemInfo` + `runtime.NumCPU`, 4GB fallback like `sm`) to SURFACE the
+host-sized best-default in the result (`recommended_tuning` Data map + a step
+note) — best-defaults transparency for the operator. Deliberately INFORMATIONAL
+ONLY, labeled "not yet applied": computing it never touches Postgres so it can't
+fail provisioning. APPLYING the restart-requiring settings (shared_buffers,
+max_connections) is the separately-scoped next step and MUST funnel through the
+`restartWithRollback` self-healing primitive (iter 26). Acceptance met: table
+test of the sizing function against sample RAM values (1GB–128GB × all three
+profiles) with hand-computed expected values, plus profile-ordering, floor/ceil
+clamp, degenerate-input, ParseWorkloadProfile, and SettingsMap tests. Go gate
+green; web untouched. Reviewed (feature-dev:code-reviewer): math faithful, no
+blocking issues; addressed the one cosmetic comment-clarity nit.
+
 ## 2026-06-24 · band 2.5 (resource & config safety) · connection-saturation alert: add a CRITICAL escalation tier
 Closed the last band-2.5 alert item. The WARNING tier `connections-near-max`
 (`pg.connections_percent` >= 85%, For 2m) already shipped — the prior iteration's
