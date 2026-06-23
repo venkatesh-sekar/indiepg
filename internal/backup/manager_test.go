@@ -213,6 +213,37 @@ func TestManagerBackup_ForeignOwnerHardStop(t *testing.T) {
 	require.Empty(t, recs)
 }
 
+// TestManagerBackup_ConcurrentSkipsWithoutFailRow proves the process-local
+// single-flight guard: a backup attempted while another is in flight is a clean,
+// typed skip (CodeConflict) — pgBackRest is never invoked and NO failure row is
+// recorded, so an overlap (e.g. a manual backup during a scheduled one) can never
+// raise a false backup-failed alert.
+func TestManagerBackup_ConcurrentSkipsWithoutFailRow(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{Stdout: "should not run"})
+
+	st := newTestStore(t)
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	// Simulate a backup already in flight by holding the single-flight guard.
+	m.backupMu.Lock()
+	defer m.backupMu.Unlock()
+
+	_, err := m.Backup(ctx, TypeIncr)
+	require.Error(t, err)
+	require.Equal(t, core.CodeConflict, core.CodeOf(err))
+
+	// No pgBackRest invocation and no history row — the overlap left no trace.
+	for _, c := range runner.Calls() {
+		require.NotContains(t, c.Args, "backup")
+	}
+	recs, lerr := st.ListBackups(ctx, 10)
+	require.NoError(t, lerr)
+	require.Empty(t, recs)
+}
+
 func TestManagerBackup_NoOwnerDegrades(t *testing.T) {
 	ctx := context.Background()
 	runner := exec.NewFakeRunner()

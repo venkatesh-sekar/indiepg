@@ -35,6 +35,15 @@ type Manager struct {
 	mu    sync.RWMutex
 	cfg   config.Config
 	owner *identity.Owner
+
+	// backupMu is a process-local single-flight guard for repo-writing backups.
+	// pgBackRest already takes its own on-disk lock, but a second concurrent
+	// attempt would lose that lock and be recorded as a FAILED backup — tripping
+	// the critical backup-failed alert on what is really just an overlap (a manual
+	// backup during a scheduled one, or a long full overlapping the next
+	// incremental). Held via TryLock so an overlap becomes a clean, typed skip
+	// (CodeConflict) with no failure row, never a false alarm.
+	backupMu sync.Mutex
 }
 
 // config returns the current configuration snapshot under the read lock.
@@ -135,6 +144,16 @@ func (m *Manager) Backup(ctx context.Context, t Type) (core.Result, error) {
 	if _, err := ParseType(string(t)); err != nil {
 		return core.Result{}, err
 	}
+
+	// Process-local single-flight: an overlapping backup is a benign SKIP, not a
+	// failure. Without this, a manual backup launched during a scheduled one (or a
+	// long full overlapping the next incremental) would collide on pgBackRest's own
+	// lock, be recorded as a "fail" row, and raise a false backup-failed alert.
+	if !m.backupMu.TryLock() {
+		return core.Result{}, core.ConflictError("a backup is already running; skipping this %s backup", t).
+			WithHint("backups run one at a time; the in-progress backup will finish on its own")
+	}
+	defer m.backupMu.Unlock()
 
 	// Single-writer ownership: claim (or verify mine), then heartbeat. A foreign
 	// non-stale owner returns *core.OwnershipError and stops us cold.

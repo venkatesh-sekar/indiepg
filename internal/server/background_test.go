@@ -51,6 +51,38 @@ func TestSeedDefaultAlertRulesIsIdempotentAndPreservesEdits(t *testing.T) {
 	}
 }
 
+// TestStartBackgroundJobsRegistersScheduledBackups proves the runtime actually
+// schedules full + incremental backups (the alert loop alone made the gap loud;
+// this is the fix that makes a left-alone box back itself up). It also confirms
+// the telemetry/alert loop stays registered alongside them.
+func TestStartBackgroundJobsRegistersScheduledBackups(t *testing.T) {
+	srv, _ := newTestServer(t)
+	srv.startBackgroundJobs(context.Background())
+	defer srv.stopBackgroundJobs()
+
+	names := map[string]bool{}
+	for _, j := range srv.sched.Jobs() {
+		names[j.Name] = true
+	}
+	require.True(t, names[fullBackupJob], "full backup must be scheduled so a left-alone box still backs up")
+	require.True(t, names[incrementalBackupJob], "incremental backup must be scheduled")
+	require.True(t, names[telemetrySampleJob], "telemetry/alert loop must remain scheduled")
+}
+
+// TestStartBackgroundJobsEmptyScheduleDisablesBackup proves an empty schedule
+// disables that backup job (the operator's explicit opt-out) rather than erroring
+// or scheduling a broken job.
+func TestStartBackgroundJobsEmptyScheduleDisablesBackup(t *testing.T) {
+	srv, _ := newTestServer(t)
+	srv.cfg.Schedules.FullBackup = ""
+	srv.startBackgroundJobs(context.Background())
+	defer srv.stopBackgroundJobs()
+
+	for _, j := range srv.sched.Jobs() {
+		require.NotEqual(t, fullBackupJob, j.Name, "an empty schedule must not register the job")
+	}
+}
+
 // TestRunTelemetryCycleFiresAndDispatches drives one full cycle end-to-end: a
 // breaching snapshot is sampled, the engine fires the backup-failed rule, and the
 // firing event is delivered to a configured webhook channel. This is the proof

@@ -5,6 +5,30 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · wire scheduled backups + overlap guard
+The biggest data-loss gap: the scheduler was instantiated but only ran the
+telemetry/alert loop, so **scheduled backups had never run** — a box left alone
+made zero backups (only `POST /backups/run` did). Fixed: `startBackgroundJobs`
+now registers `full-backup` + `incremental-backup` cron jobs from
+`cfg.Schedules` (defaults: weekly full, daily incremental). Each
+`scheduledBackup(type)` self-heals the pgBackRest config (same `config.Load`→
+`ensureBackupConfigured` prereq the manual button runs) then calls
+`backups.Backup`. An empty spec is the operator's opt-out → job not registered,
+with a loud Warn (never a silent gap). Closed the overlap risk the backlog note
+flagged: the Owner guard is cross-PANEL only (repo markers) and does NOT stop two
+concurrent `Backup()` calls in one process — they'd collide on pgBackRest's own
+on-disk lock and the loser would be recorded as a `fail` row → false critical
+`backup-failed` alert. Added a process-local single-flight guard
+(`Manager.backupMu` via `TryLock`): an overlap returns a typed `CodeConflict`
+SKIP with NO history row, and the scheduled job swallows `CodeConflict` (Info
+log, returns nil) so the scheduler never logs a spurious failure. No reentrancy —
+`Restore`→`takeSafetyBackup`→`Backup` doesn't hold `backupMu`, so the nested
+safety backup acquires it; a restore during an active backup safely HARD-STOPs.
+Tests: manager concurrent-skip (no fail row, pgBackRest never invoked); server
+jobs-registered + empty-schedule-disabled. Reviewed: no blocking issues. Full Go
+gate green (gofmt/vet/test/build); web untouched. RestoreTest/Digest left for
+their own items (restore-test execution is still a stub; no digest builder).
+
 ## 2026-06-24 · band 1.5 (data durability) · wire the dormant telemetry + alert loop
 Closed the capstone: the whole alert subsystem (collector, engine, rules,
 notifiers) was built and unit-tested but NEVER RAN — nothing in `indiepg serve`

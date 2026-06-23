@@ -5,12 +5,23 @@ import (
 	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/alert"
+	"github.com/venkatesh-sekar/indiepg/internal/backup"
+	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 	"github.com/venkatesh-sekar/indiepg/internal/scheduler"
 )
 
-// telemetrySampleJob is the scheduler job name for the combined telemetry
-// sampling + alert evaluation loop.
-const telemetrySampleJob = "telemetry-sample"
+// Scheduler job names.
+const (
+	// telemetrySampleJob is the combined telemetry sampling + alert evaluation loop.
+	telemetrySampleJob = "telemetry-sample"
+	// fullBackupJob / incrementalBackupJob are the scheduled pgBackRest backups.
+	// Without these registered, the panel only ever backs up when an operator
+	// clicks "Run backup" — a box left alone makes zero backups, the single
+	// biggest data-loss gap for the north star ("never lose data").
+	fullBackupJob        = "full-backup"
+	incrementalBackupJob = "incremental-backup"
+)
 
 // seedTimeout bounds the one-shot default-rule seed at startup so a slow or hung
 // store can never delay the server from accepting its first connection. Mirrors
@@ -47,7 +58,58 @@ func (s *Server) startBackgroundJobs(ctx context.Context) {
 		s.log.Warn("telemetry sampling schedule is empty; the alert loop is disabled and no alerts will fire")
 	}
 
+	// Scheduled backups: a left-alone box must protect its own data. Full and
+	// incremental run on the configured cadence (defaults: weekly full, daily
+	// incremental). Their schedules never overlap, and the Manager's single-flight
+	// guard turns any accidental overlap (e.g. a long full or a manual run) into a
+	// benign skip rather than a false-failure alert.
+	s.registerBackupJob(fullBackupJob, s.cfg.Schedules.FullBackup, backup.TypeFull)
+	s.registerBackupJob(incrementalBackupJob, s.cfg.Schedules.IncrementalBackup, backup.TypeIncr)
+
 	s.sched.Start(ctx)
+}
+
+// registerBackupJob registers a scheduled backup of the given type, logging an
+// error on a bad spec (the job simply will not run) and a loud warning on an
+// empty spec (the operator has turned automatic backups of this type OFF — never
+// a silent gap, since it is a data-loss risk).
+func (s *Server) registerBackupJob(name, spec string, t backup.Type) {
+	if err := s.sched.Register(name, spec, s.scheduledBackup(t)); err != nil {
+		s.log.Error("could not schedule backup; it will not run automatically", "job", name, "spec", spec, "err", err)
+		return
+	}
+	if spec == "" {
+		s.log.Warn("scheduled backup is disabled (empty schedule); no automatic backups of this type will run", "job", name)
+	}
+}
+
+// scheduledBackup builds the JobFunc the scheduler runs for a backup of type t.
+// It self-heals the pgBackRest config first (a panel that started before Postgres
+// was reachable, or before a backup target was saved, may never have written it),
+// then runs the backup. An overlap with another in-flight backup returns
+// CodeConflict from the Manager's single-flight guard; that is a benign skip, not
+// a failure, so it is logged and swallowed — returning it would make the scheduler
+// log a spurious error and must never be mistaken for a backup failure.
+func (s *Server) scheduledBackup(t backup.Type) scheduler.JobFunc {
+	return func(ctx context.Context) error {
+		cfg, err := config.Load(ctx, s.store)
+		if err != nil {
+			return err
+		}
+		if _, err := s.ensureBackupConfigured(ctx, cfg); err != nil {
+			return err
+		}
+		res, err := s.backups.Backup(ctx, t)
+		if err != nil {
+			if core.CodeOf(err) == core.CodeConflict {
+				s.log.Info("scheduled backup skipped; another backup is already running", "type", string(t))
+				return nil
+			}
+			return err
+		}
+		s.log.Info("scheduled backup completed", "type", string(t), "message", res.Message)
+		return nil
+	}
 }
 
 // stopBackgroundJobs halts the background loop, blocking until any in-flight cycle
