@@ -5,6 +5,33 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1 (security) · prove read-only role can't write at the DB level
+Closed the "verify read-only role is enforced at the DB level" backlog item.
+The query box runs through `ExecuteRead` on a pool connected as `indiepg_readonly`,
+and the design claims a UI/guard bypass still can't write because the boundary is
+DB-level privilege denial (not just the resettable `default_transaction_read_only`
+GUC). That claim had a unit test over the provisioning *SQL* but no end-to-end
+proof against a real server. Added `TestReadOnlyRole_DBLevelWriteDenial`
+(integration-tagged, skips without `INDIEPG_TEST_SOCKET`): admin creates+seeds a
+table granting the read-only role SELECT only, then (a) a write via the real
+`ExecuteRead` path is refused by the read-only-transaction default (defense in
+depth), and (b) with the GUC flipped OFF on a real read-pool connection, every
+write against operator data (INSERT/UPDATE/DELETE/DROP) is STILL refused with
+`42501` insufficient_privilege — proving privilege denial is the authoritative
+boundary. Proven green against a throwaway PG14 cluster and verified non-vacuous
+(granting the role write makes it fail at the 42501 assertion).
+
+While making the test comprehensive it surfaced a real residual: `provisionSQL`'s
+`REVOKE CREATE ON SCHEMA public FROM indiepg_readonly` does NOT remove the CREATE
+the role inherits via `PUBLIC` on PG <= 14, so with the GUC off the role can still
+create+own+write scratch tables in `public`. Rather than bundle a risky
+privilege-model change, I scoped the test to operator-data writes (the core
+"a SELECT can't become a DELETE" guarantee) and filed the CREATE-via-PUBLIC fix as
+a tracked band-1 backlog item. Reviewer (code-reviewer subagent) flagged that the
+original `ExecuteRead` write loop wasn't diagnostic and that the privilege check
+should cover every write variant — both addressed in the restructure. All gates
+green; test-only change, no `web/` touch.
+
 ## 2026-06-24 · band 1 (security) · CSRF proof on every state-changing endpoint
 Closed the "confirm CSRF on every state-changing endpoint" backlog item. The
 CSRF gate is centralized in `requireAuth` (cookie + unsafe method must carry a

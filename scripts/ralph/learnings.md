@@ -17,4 +17,21 @@ the top, prune stale entries. One line each. Newest at the bottom of each group.
   from the `sm` CLI at /primary01/git/server-management/src/sm/).
 
 ## Gotchas
-- (none yet)
+- `REVOKE CREATE ON SCHEMA public FROM <role>` does NOT remove CREATE the role
+  inherits via the `PUBLIC` pseudo-role (PG <= 14 grants public.CREATE to PUBLIC
+  by default). To truly deny a role object creation you must revoke from PUBLIC
+  (and re-grant to the roles that need it). Bit the read-only-role hardening.
+- DB-level role/privilege behavior can only be proven against a real Postgres.
+  Pattern: integration-tagged test, `//go:build integration`, skips unless
+  `INDIEPG_TEST_SOCKET` is set. To prove green locally, stand up a throwaway
+  cluster: `initdb -A trust -U postgres` + `pg_ctl -o "-c listen_addresses=''
+  -c unix_socket_directories=<dir>" start`, apply provisionSQL's role stmts via
+  `psql`, point `INDIEPG_TEST_SOCKET` at the socket dir. Binaries in
+  `/usr/lib/postgresql/14/bin`. The loop's `go test ./...` does NOT pass
+  `-tags integration`, so these never run in the normal gate (by design).
+- `go` here is a snap; the command sandbox blocks snap-confine
+  (`cap_dac_override` missing). Run go/psql/pg_ctl with the sandbox disabled.
+- Distinguish the two read-only refusal SQLSTATEs: `25006`
+  (read_only_sql_transaction = the defense-in-depth GUC fired) vs `42501`
+  (insufficient_privilege = the authoritative privilege-denial boundary). Assert
+  42501 with the GUC off to prove the boundary isn't merely the resettable GUC.

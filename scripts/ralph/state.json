@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "iteration": 5,
-  "commits_total": 5,
+  "iteration": 6,
+  "commits_total": 6,
   "current_band": "1-security",
-  "last_item": "Confirm CSRF protection on every state-changing endpoint",
-  "last_result": "done — added TestEveryStateChangingEndpointRejectsCSRF, which chi.Walks the real route table and asserts every unsafe-method route rejects a forged cross-origin cookie request (409/CodeSafety), except a documented exempt set (login/logout) that self-checks against registered routes so a new mutating route outside requireAuth fails the test; reviewer found no blocking issues; all gates green; test-only change",
-  "notes": "CSRF coverage proven across the whole route table (requireAuth is the central gate; new test is a regression guard for routes added outside it). Remaining band-1 items: DB-level read-only role enforcement (test a write through the read-only role fails at Postgres), secrets-at-rest (DB file 0600 + log-scrubbing test), and login brute-force lockout (lockout exists in internal/auth — verify the throttle is end-to-end tested via the login handler).",
+  "last_item": "Verify the read-only role is enforced at the DB level",
+  "last_result": "done — added TestReadOnlyRole_DBLevelWriteDenial (integration-tagged): with the read-only role granted SELECT only, a write via the real ExecuteRead path is refused by the read-only-transaction default, and with that GUC flipped off on a real read-pool connection every operator-data write (INSERT/UPDATE/DELETE/DROP) is STILL refused with 42501 insufficient_privilege — proving privilege denial, not the resettable GUC, is the authoritative boundary. Proven green against a throwaway PG14 cluster and verified non-vacuous. Reviewer findings (non-diagnostic ExecuteRead loop; cover every write variant) addressed in the restructure. Test surfaced a real residual filed as a new band-1 item.",
+  "notes": "Read-only DB-level write denial proven end-to-end for operator data. Residual filed: provisionSQL's REVOKE CREATE ON SCHEMA public FROM the role does NOT strip CREATE inherited via PUBLIC on PG<=14, so the role can still create+write its own scratch tables in public when the GUC is off — next band-1 item. Remaining band-1: that CREATE-via-PUBLIC fix; secrets-at-rest (DB file 0600 + log-scrubbing test); login brute-force lockout (verify the throttle is end-to-end tested via the login handler). Integration tests need a real PG and don't run in the normal gate; go/psql are snap-sandboxed (run with sandbox disabled).",
   "north_star": "An indie hacker can stand up and run a rock-solid Postgres entirely from the indiepg UI, on best defaults, with safe optional overrides."
 }
