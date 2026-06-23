@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { ResultBadge, ErrorNotice } from "./ui";
+import { ResultBadge, ErrorNotice, StaleBanner } from "./ui";
 import { ApiError } from "@/api/client";
 
 describe("ResultBadge", () => {
@@ -46,5 +46,37 @@ describe("ErrorNotice", () => {
     expect(screen.getByText("Something went wrong")).toBeInTheDocument();
     expect(screen.getByText("boom")).toBeInTheDocument();
     expect(document.querySelector(".callout-hint")).toBeNull();
+  });
+});
+
+describe("StaleBanner", () => {
+  it("announces that live updates paused, keeps a warn tone, and shows the cause", () => {
+    const err = new ApiError(0, {
+      code: "internal",
+      message: "Could not reach the panel. Check your connection.",
+    });
+    render(<StaleBanner error={err} />);
+
+    // role=alert so the freeze is announced, not silent.
+    const alert = screen.getByRole("alert");
+    expect(alert).toBeInTheDocument();
+    // warn (not danger) — the cached data is still useful, this is a soft stall.
+    expect(alert).toHaveClass("callout-warn");
+    expect(screen.getByText("Live updates paused")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Could not reach the panel\. Check your connection\./),
+    ).toBeInTheDocument();
+  });
+
+  it("includes the hint when the error carries one", () => {
+    const err = new ApiError(401, {
+      code: "auth",
+      message: "Session expired",
+      hint: "Sign in again to resume live updates",
+    });
+    render(<StaleBanner error={err} />);
+    expect(
+      screen.getByText("Sign in again to resume live updates"),
+    ).toBeInTheDocument();
   });
 });

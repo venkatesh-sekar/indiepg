@@ -19,6 +19,7 @@ import {
   PageHeader,
   ResultBadge,
   Spinner,
+  StaleBanner,
   StatCard,
 } from "@/components/ui";
 import type { DashboardData } from "@/api/types";
@@ -54,6 +55,10 @@ export function Dashboard() {
           )
         }
       />
+
+      {/* error here means a refresh failed while we still hold cached data —
+          the first-load failure path already returned <ErrorNotice> above. */}
+      {error ? <StaleBanner error={error} /> : null}
 
       {!health_ok && health_reasons && health_reasons.length > 0 ? (
         <Callout tone="warn" title="Things to look at">

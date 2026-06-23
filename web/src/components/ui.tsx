@@ -137,6 +137,27 @@ export function EmptyState({
   );
 }
 
+/**
+ * Surfaced by a polling view when it still shows cached data but the most
+ * recent background refresh FAILED. Without it, a poll that starts erroring
+ * after the first successful load silently freezes the screen on stale data
+ * (views gate ErrorNotice on `!data`), so a "Healthy" badge or live stats could
+ * keep showing while the box is actually unreachable. Non-disruptive (warn,
+ * keeps the data visible) but honest about the stall.
+ */
+export function StaleBanner({ error }: { error: ApiError | Error }) {
+  const isApi = error instanceof ApiError;
+  return (
+    <div className="callout callout-warn" role="alert">
+      <strong className="callout-title">Live updates paused</strong>
+      <div>
+        Showing the last values received — the latest refresh failed: {error.message}
+      </div>
+      {isApi && error.hint ? <div className="callout-hint">{error.hint}</div> : null}
+    </div>
+  );
+}
+
 /** Renders an ApiError in a friendly way, including its hint when present. */
 export function ErrorNotice({ error }: { error: ApiError | Error }) {
   const isApi = error instanceof ApiError;

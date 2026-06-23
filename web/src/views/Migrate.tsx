@@ -24,6 +24,7 @@ import {
   ErrorNotice,
   PageHeader,
   Spinner,
+  StaleBanner,
 } from "@/components/ui";
 import {
   CLUSTER_OVERWRITE_CONFIRM,
@@ -492,6 +493,9 @@ function DirectJobProgress({ id, onReset }: { id: number; onReset: () => void })
       }
     >
       {error && !job ? <ErrorNotice error={error} /> : null}
+      {/* Poll failed while a job is on screen — don't leave a frozen spinner
+          looking like progress; say the status check stalled. */}
+      {error && job && !terminal ? <StaleBanner error={error} /> : null}
       {!job ? (
         <Spinner label="Starting…" />
       ) : job.status === "failed" ? (
@@ -690,6 +694,9 @@ function SessionProgress({ code, onReset }: { code: string; onReset: () => void 
       }
     >
       {error && !session ? <S3OrError error={error} /> : null}
+      {/* Poll failed while a live session is on screen — surface the stall so a
+          frozen stepper can't look like the handshake is still progressing. */}
+      {error && session && !terminal ? <StaleBanner error={error} /> : null}
 
       <div className="session-code-block">
         <span className="muted">On the source server&apos;s panel, choose “Send from here” and enter:</span>

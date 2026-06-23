@@ -5,6 +5,30 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2 (stability) · polling views: surface a failed background refresh instead of silently freezing
+Closed part of the last open band-2 item "audit every web API call for explicit
+error + loading + empty states (no silent failures)." Audited all data-fetch surfaces:
+`useAsync`/`usePolling` consumers (Dashboard, RolesDatabases, Backups, Alerts, Settings,
+Migrate) and local-state forms all had loading + error + empty states EXCEPT one real
+gap in the `usePolling` consumers. `usePolling` retains the last good `data` and only
+sets `error` on a failed poll, but the three consumers gated their error UI on `!data`
+(`error && !data ? <ErrorNotice>`). So a poll that started FAILING after the first
+successful load was silently swallowed — the Dashboard kept showing a frozen "● Healthy"
+badge and "refreshes every 5s" while the box was actually unreachable, and the two
+Migrate progress views (`DirectJobProgress`, `SessionProgress`) kept a spinner/stepper
+that looked like progress. For a Postgres admin panel that is the "never be confused"
+risk. Added a reusable `StaleBanner` (warn tone, `role="alert"`, keeps the cached data
+visible but says "Live updates paused — the latest refresh failed: <message>" + hint),
+and surfaced it whenever `error` is present alongside cached data: Dashboard always,
+the two Migrate pollers only while `!terminal` (a post-completion poll blip must not
+alarm). Tests: 2 unit tests for `StaleBanner` (warn tone, alert role, message, hint)
+and a Dashboard view test (mocks `usePolling`) proving the banner shows on error+data,
+hides on a clean poll, and that the first-load failure still renders the full
+`ErrorNotice` (no banner). Proven non-vacuous (removing the Dashboard wiring fails the
+banner test). Web gate green (typecheck/build/42 tests); Go gates untouched + green.
+Reviewed (feature-dev:code-reviewer): caught that `SessionProgress` was a third polling
+surface with the same defect — fixed it before commit (no other blocking findings).
+
 ## 2026-06-24 · band 2 (stability) · provisioning is idempotent — prove a re-run is a safe no-op + report "already done"
 Closed the band-2 item "re-running setup on an already-provisioned box is safe and
 reports already done." The provisioning flow was already idempotent (apt install /
