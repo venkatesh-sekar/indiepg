@@ -326,6 +326,63 @@ func TestEngineFiresOnFailedBackup(t *testing.T) {
 	require.Equal(t, StateResolved, events[0].State)
 }
 
+// TestDiskHeadroomEarlyWarningTier proves the shipped disk rules form a two-tier
+// escalation: "disk-headroom-low" is a Warning that fires WELL BEFORE the
+// "disk-almost-full" Critical, giving the operator runway to act before a slow
+// fill becomes an emergency that can stop Postgres. It verifies the tier ordering
+// and that the early warning actually fires (after its For window) at a disk
+// level that does NOT yet breach the critical threshold.
+func TestDiskHeadroomEarlyWarningTier(t *testing.T) {
+	var warn, crit Rule
+	for _, r := range DefaultRules() {
+		switch r.ID {
+		case "disk-headroom-low":
+			warn = r
+		case "disk-almost-full":
+			crit = r
+		}
+	}
+	require.Equal(t, "disk-headroom-low", warn.ID, "default rule set must include the early-warning tier")
+	require.Equal(t, "disk-almost-full", crit.ID, "default rule set must include the critical tier")
+
+	// Tier shape: the warning must be lower-severity and trip at a strictly lower
+	// threshold than the critical, so it is a genuine early warning.
+	require.Equal(t, SeverityWarning, warn.Severity)
+	require.Equal(t, SeverityCritical, crit.Severity)
+	require.Equal(t, MetricDiskPercent, warn.Metric)
+	require.Equal(t, MetricDiskPercent, crit.Metric)
+	require.Less(t, warn.Threshold, crit.Threshold, "the warning must fire before the critical threshold")
+
+	// Non-vacuous firing: at a disk level between the two thresholds, the early
+	// warning fires (once sustained past its For window) while the critical does
+	// not. Use 85% (80 <= 85 < 90).
+	st := newTestStore(t)
+	eng := NewEngine(st, nil)
+	saveRule(t, st, warn)
+	saveRule(t, st, crit)
+
+	// 85GiB used of 100GiB == 85% disk.
+	snap85 := telemetry.Snapshot{DiskUsedBytes: 85, DiskTotalBytes: 100, MaxConnections: 100}
+	base := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+
+	// First breach: within the warning's For window, nothing fires yet.
+	events, err := eng.Evaluate(context.Background(), snap85, base)
+	require.NoError(t, err)
+	require.Empty(t, events)
+
+	// Sustained past the 5-minute For window: only the warning fires; the
+	// critical stays quiet because 85% < 90%.
+	events, err = eng.Evaluate(context.Background(), snap85, base.Add(6*time.Minute))
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, "disk-headroom-low", events[0].Rule.ID)
+	require.Equal(t, StateFiring, events[0].State)
+
+	critRec, err := st.GetAlert(context.Background(), "disk-almost-full")
+	require.NoError(t, err)
+	require.Equal(t, string(StateOK), critRec.State, "critical tier must not fire below its threshold")
+}
+
 func TestEngineMalformedRuleSkippedNotFatal(t *testing.T) {
 	st := newTestStore(t)
 	eng := NewEngine(st, nil)

@@ -5,6 +5,29 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2.5 (resource & config safety) · early-warning disk headroom alert (warn well before the volume fills)
+First band-2.5 item. The panel already shipped a CRITICAL `disk-almost-full` rule
+at 90% on `host.disk_percent` (a statfs of the Postgres data/WAL volume), but 90%
+is the emergency, not an early warning — by then a slow fill is nearly out of
+runway and can stop Postgres. Added a second, lower tier: `disk-headroom-low`
+(WARNING, `>= 80%`, `For: 5m`, `Cooldown: 1h`) to `alert.DefaultRules()`, mirroring
+the existing two-tier `backup-stale` + `backup-failed` pattern. Lower threshold +
+calmer cadence than the critical tier: the 5-minute `For` window ignores a transient
+bump (e.g. a deep restore-test's scratch copy landing on the same volume), and the
+1h cooldown re-reminds without a firehose; above 90% both tiers are independently
+active (intended escalation). No new metric or wiring needed — `MetricDiskPercent`
+and the seed/evaluate loop already exist; the seed in `background.go` inserts only
+missing rule IDs so an upgrading panel gets the new rule without clobbering operator
+edits. Tests: updated `TestDefaultRules` want-list, plus a new
+`TestDiskHeadroomEarlyWarningTier` proving the tier ordering (warning lower-severity
+and lower-threshold than critical) AND non-vacuous firing — at 85% disk the warning
+fires after its For window while the critical stays OK. Proven non-vacuous (bumping
+the warning threshold to 95% fails the ordering assertion). Go gate green
+(gofmt/vet/test/build, sandbox-disabled per snap); web/ untouched. Reviewed
+(feature-dev:code-reviewer): no blocking issues; fixed one misleading inline comment
+it flagged (said "both tiers fire once disk crosses 90%" — corrected to reflect the
+80% warning threshold). Confirmed no other test asserts a hardcoded default-rule count.
+
 ## 2026-06-24 · band 2 (stability) · polling views: surface a failed background refresh instead of silently freezing
 Closed part of the last open band-2 item "audit every web API call for explicit
 error + loading + empty states (no silent failures)." Audited all data-fetch surfaces:

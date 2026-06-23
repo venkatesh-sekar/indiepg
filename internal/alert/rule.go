@@ -181,8 +181,9 @@ func RuleFromRecord(rec store.AlertRecord) (Rule, error) {
 }
 
 // DefaultRules returns the smart out-of-the-box rules every panel ships with:
-// Postgres down, disk almost full, no recent backup, connections near max, and
-// replication lag high. These match the design's "smart defaults" (§5.8).
+// Postgres down, disk headroom low (early warning) escalating to disk almost
+// full, no recent backup, connections near max, and replication lag high. These
+// match the design's "smart defaults" (§5.8).
 func DefaultRules() []Rule {
 	return []Rule{
 		{
@@ -194,6 +195,26 @@ func DefaultRules() []Rule {
 			Severity:  SeverityCritical,
 			For:       1 * time.Minute,
 			Cooldown:  15 * time.Minute,
+			Enabled:   true,
+		},
+		{
+			// Early warning: give the operator runway to act (prune WAL, grow the
+			// volume, archive data) WELL BEFORE the disk-almost-full critical below
+			// turns a slow fill into an emergency that can stop Postgres. Lower
+			// threshold + calmer cadence than the critical tier: a 5-minute For
+			// window ignores a transient bump (e.g. a deep restore-test's scratch
+			// copy on the same volume), and the 1h cooldown re-reminds without a
+			// firehose. The warning fires at 80%; above 90% both tiers are
+			// independently active — intended escalation, mirroring the
+			// backup-stale + backup-failed pair.
+			ID:        "disk-headroom-low",
+			Name:      "Disk headroom low",
+			Metric:    MetricDiskPercent,
+			Op:        OpGTE,
+			Threshold: 80,
+			Severity:  SeverityWarning,
+			For:       5 * time.Minute,
+			Cooldown:  1 * time.Hour,
 			Enabled:   true,
 		},
 		{

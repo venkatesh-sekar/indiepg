@@ -147,7 +147,7 @@ func TestDefaultRules(t *testing.T) {
 	}
 
 	// The smart defaults the design calls out must be present.
-	for _, want := range []string{"pg-down", "disk-almost-full", "backup-stale", "backup-failed", "connections-near-max", "replication-lag-high"} {
+	for _, want := range []string{"pg-down", "disk-headroom-low", "disk-almost-full", "backup-stale", "backup-failed", "connections-near-max", "replication-lag-high"} {
 		require.True(t, ids[want], "missing smart default rule %q", want)
 	}
 
