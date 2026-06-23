@@ -172,15 +172,30 @@ func (m *Manager) Provision(ctx context.Context) (core.Result, error) {
 	// They have no OS user (peer fails) and no password by design, so add a
 	// tightly scoped trust rule for them to pg_hba.conf and reload. Without this
 	// the panel cannot connect to the Postgres it just provisioned.
-	if changed, err := m.EnsureSocketAuth(ctx); err != nil {
+	socketAuthChanged, err := m.EnsureSocketAuth(ctx)
+	if err != nil {
 		return core.Result{}, err
-	} else if changed {
+	}
+	if socketAuthChanged {
 		steps = append(steps, "configured pg_hba.conf socket auth for "+ReadOnlyRole+" and "+AdminRole+"; reloaded config")
 	}
 
+	// Re-running Provision on an already-set-up box is safe: every step above is
+	// idempotent (apt install / `systemctl enable --now` are no-ops when already
+	// done, and provisionSQL guards every statement with DO/IF NOT EXISTS). The
+	// one step that mutates on-disk state — pg_hba.conf — reports whether it
+	// actually changed anything, so the operator can tell a fresh provision from a
+	// re-run that found nothing to do (north star: never be confused). We only
+	// claim "already present" for the step we can honestly detect; the message
+	// does not assert the whole provision was a no-op.
+	socketAuth := "configured"
+	if !socketAuthChanged {
+		socketAuth = "already-present"
+	}
 	result := core.Ok("Postgres provisioned").
 		WithData("roles", []string{ReadOnlyRole, AdminRole}).
 		WithData("service", serviceName).
+		WithData("socket_auth", socketAuth).
 		WithStatements(steps...)
 	return result, nil
 }

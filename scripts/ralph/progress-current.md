@@ -5,6 +5,27 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2 (stability) · provisioning is idempotent — prove a re-run is a safe no-op + report "already done"
+Closed the band-2 item "re-running setup on an already-provisioned box is safe and
+reports already done." The provisioning flow was already idempotent (apt install /
+`systemctl enable --now` are no-ops when done; `provisionSQL` guards every statement
+with DO/IF NOT EXISTS), but two gaps remained: nothing PROVED a second run is a no-op,
+and `Provision` always returned "Postgres provisioned" — giving an operator re-running
+`indiepg install` no signal it was already set up (north star: never be confused).
+The only step that mutates on-disk state is `EnsureSocketAuth` (pg_hba.conf), and it
+already returns a `changed` bool. Surfaced that honestly: `Provision` now adds
+`socket_auth: "configured"|"already-present"` to its result data, and install.go logs
+it. Deliberately scoped the claim to the one step we can truthfully detect — the
+message does NOT assert the whole provision was a no-op (apt could have upgraded a
+package). Added `TestProvision_SecondRunIsIdempotentNoOp`: two `Provision` calls share
+one FakeRunner + one persistent real pg_hba.conf; asserts the second run succeeds,
+the managed block appears EXACTLY ONCE (a duplicate would corrupt auth), no extra
+`pg_reload_conf` is issued, and `socket_auth` flips to `already-present`. Proven
+non-vacuous (breaking `injectHBARules` idempotency fails the test). Reviewed
+(feature-dev:code-reviewer): no blocking issues — confirmed the test is non-vacuous
+and the "already-present" claim is honest. Band-2 remaining: audit every web API call
+for explicit error+loading+empty states.
+
 ## 2026-06-24 · band 2 (stability) · prove read-pool statement_timeout is enforced by Postgres
 First band-2 item. The query box's runaway-query guard has two halves: auto-LIMIT
 (already thoroughly unit-tested in `internal/pg/guard`) and `statement_timeout` on

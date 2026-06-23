@@ -91,7 +91,7 @@ func Install(ctx context.Context, opts InstallOptions) error {
 		showGeneratedPassword()
 		return err
 	}
-	log.Info("postgres provisioned", "message", res.Message)
+	log.Info("postgres provisioned", "message", res.Message, "socket_auth", res.Data["socket_auth"])
 
 	// Record the cluster system identifier so ownership checks can detect a
 	// different cluster pointed at the same repo.

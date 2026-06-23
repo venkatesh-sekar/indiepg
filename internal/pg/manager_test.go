@@ -84,6 +84,65 @@ func TestProvision_HappyPath(t *testing.T) {
 	}
 }
 
+// TestProvision_SecondRunIsIdempotentNoOp proves re-running Provision on an
+// already-provisioned box is safe: it succeeds, does not duplicate the managed
+// pg_hba.conf block (the one step that mutates on-disk state), skips the reload
+// when nothing changed, and reports the socket-auth step as "already-present"
+// rather than claiming it re-did the work.
+func TestProvision_SecondRunIsIdempotentNoOp(t *testing.T) {
+	r := exec.NewFakeRunner()
+
+	// A single persistent hba file shared across both runs, so the second run
+	// sees the managed block the first run wrote — the real idempotency check.
+	hbaFile := filepath.Join(t.TempDir(), "pg_hba.conf")
+	require.NoError(t, os.WriteFile(hbaFile, []byte("local   all   all   peer\n"), 0o640))
+	r.On("hba_file", exec.FakeResponse{Stdout: hbaFile})
+	r.On("pg_reload_conf", exec.FakeResponse{})
+
+	m := newManager(r)
+
+	// First provision: fresh box. Socket auth is configured and the reload fires.
+	first, err := m.Provision(context.Background())
+	require.NoError(t, err)
+	require.True(t, first.OK)
+	require.Equal(t, "configured", first.Data["socket_auth"])
+	require.Contains(t, strings.Join(first.Statements, "\n"), "configured pg_hba.conf socket auth")
+
+	reloadsAfterFirst := countReloads(r.Calls())
+	require.Equal(t, 1, reloadsAfterFirst, "first run reloads after writing the managed block")
+
+	// Second provision: already-provisioned box. It must succeed and be a no-op
+	// for the stateful step.
+	second, err := m.Provision(context.Background())
+	require.NoError(t, err)
+	require.True(t, second.OK)
+	require.Equal(t, "already-present", second.Data["socket_auth"])
+	require.NotContains(t, strings.Join(second.Statements, "\n"), "configured pg_hba.conf socket auth",
+		"a re-run must not claim it re-configured socket auth")
+
+	// The managed block exists exactly once — the second run did not stack a
+	// duplicate (which would corrupt pg_hba.conf authentication).
+	hbaContent, err := os.ReadFile(hbaFile)
+	require.NoError(t, err)
+	require.Equal(t, 1, strings.Count(string(hbaContent), "indiepg managed (socket auth"),
+		"the managed block must appear exactly once after two provisions")
+
+	// No extra reload was issued on the no-op run.
+	require.Equal(t, reloadsAfterFirst, countReloads(r.Calls()),
+		"a no-op re-run must not reload Postgres config")
+}
+
+// countReloads counts pg_reload_conf invocations in the recorded calls.
+func countReloads(calls []exec.RunSpec) int {
+	n := 0
+	for _, c := range calls {
+		if strings.Contains(strings.Join(c.Args, " "), "pg_reload_conf") {
+			n++
+		}
+	}
+	return n
+}
+
 func TestProvision_AptInstallFailureStops(t *testing.T) {
 	r := exec.NewFakeRunner()
 	r.On("install", exec.FakeResponse{ExitCode: 100, Err: errFake("dpkg lock")})
