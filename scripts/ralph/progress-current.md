@@ -5,6 +5,32 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1 (security) · close the read-only CREATE-via-PUBLIC residual
+Closed the last DB-level write vector for `indiepg_readonly`. On PG <= 14 the
+`public` schema grants CREATE to the `PUBLIC` pseudo-role, which every role
+inherits — so the old `REVOKE CREATE ON SCHEMA public FROM indiepg_readonly` was
+a no-op against it, and the role could still `CREATE` (and thus own/write)
+scratch objects once it reset its own `default_transaction_read_only` GUC.
+`provisionSQL` now `REVOKE CREATE ON SCHEMA public FROM PUBLIC` and re-`GRANT`s
+CREATE to `indiepg_admin` so guided actions still create objects. This is scoped
+to the panel-managed `postgres` database (the only DB `provisionSQL` ever runs
+against); operator app DBs are intentionally untouched — an accepted app-DB-only
+limitation that never reaches operator *data* (writes to existing tables stay
+privilege-denied). USAGE is left intact, preserving the read-only SELECT path.
+
+Extended `TestReadOnlyRole_DBLevelWriteDenial` to assert a `CREATE TABLE` by the
+read-only role is now denied with `42501` even with the GUC off, and that admin
+CREATE still works in `postgres`. Proven green against a throwaway PG14 cluster
+and verified non-vacuous (under the OLD SQL the read-only `CREATE TABLE`
+succeeds). The code-reviewer also caught a real in-passing regression: the
+`ALTER ROLE` (re-provision) branch had dropped `NOINHERIT`, so a second
+`Provision` would silently leave the read-only role `INHERIT` — contradicting
+this function's own documented privilege-denial invariant. Restored `NOINHERIT`
+on the ALTER path and added a unit assertion; confirmed `rolinherit=f` survives a
+double-provision. Reviewer's second note (admin-CREATE test only covers the
+`postgres` DB) is by design — provisionSQL never touches app DBs — and the test
+comment now says so plainly rather than overstating.
+
 ## 2026-06-24 · band 0 (priority-0 fix) · de-flake the auth tampered-key test
 A failing test anywhere is always priority 0, so this iteration fixed it before
 resuming band-1 work. `go test ./...` flaked ~10% (3/30 runs) on

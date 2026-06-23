@@ -88,15 +88,17 @@ func TestReadOnlyRole_DBLevelWriteDenial(t *testing.T) {
 	require.NoError(t, err, "the role may reset its own session GUC")
 
 	// Writes against the operator's data — read, modify, delete, and drop — are
-	// all denied for lack of privilege. (Object CREATION in a public schema is a
-	// distinct, separately-tracked residual on PG <= 14, where the schema grants
-	// CREATE to PUBLIC; see the band-1 backlog item. It is not exercised here
-	// because closing it is a deliberate, larger change to provisionSQL.)
+	// all denied for lack of privilege. Object CREATION in the public schema is
+	// also denied: provisionSQL revokes CREATE from the PUBLIC pseudo-role in the
+	// panel-managed `postgres` database, so the read-only role cannot create (and
+	// thus own/write) scratch objects even with its GUC off (PG <= 14 would
+	// otherwise inherit CREATE via PUBLIC).
 	writes := []string{
 		"INSERT INTO " + table + " (id, note) VALUES (3, 'z')",
 		"UPDATE " + table + " SET note = 'y' WHERE id = 1",
 		"DELETE FROM " + table + " WHERE id = 1",
 		"DROP TABLE " + table,
+		"CREATE TABLE public.indiepg_ro_scratch (id int)",
 	}
 	for _, w := range writes {
 		_, werr := conn.Exec(ctx, w)
@@ -106,6 +108,18 @@ func TestReadOnlyRole_DBLevelWriteDenial(t *testing.T) {
 		require.Equal(t, "42501", pgErr.Code,
 			"write must be denied for lack of privilege (42501), not merely the read-only GUC: %s", w)
 	}
+
+	// Revoking CREATE from PUBLIC must NOT break the admin role in the database we
+	// revoked it in: the same provisioning step re-grants CREATE to admin in this
+	// (panel-managed `postgres`) DB, so guided object creation still works here.
+	// Operator app DBs are intentionally untouched by provisionSQL, so their
+	// public-schema CREATE is unaffected and not exercised here.
+	const adminTable = "public.indiepg_admin_create_probe"
+	_, err = priv.Exec(ctx, "DROP TABLE IF EXISTS "+adminTable)
+	require.NoError(t, err)
+	_, err = priv.Exec(ctx, "CREATE TABLE "+adminTable+" (id int)")
+	require.NoError(t, err, "admin object creation must still work after REVOKE CREATE FROM PUBLIC")
+	defer func() { _, _ = priv.Exec(context.Background(), "DROP TABLE IF EXISTS "+adminTable) }()
 
 	// The probe table and its seed row must survive — every write above failed.
 	rows, err = m.ExecuteRead(ctx, "SELECT count(*) AS n FROM "+table)

@@ -20,7 +20,17 @@ the top, prune stale entries. One line each. Newest at the bottom of each group.
 - `REVOKE CREATE ON SCHEMA public FROM <role>` does NOT remove CREATE the role
   inherits via the `PUBLIC` pseudo-role (PG <= 14 grants public.CREATE to PUBLIC
   by default). To truly deny a role object creation you must revoke from PUBLIC
-  (and re-grant to the roles that need it). Bit the read-only-role hardening.
+  (and re-grant to the roles that need it). FIXED for indiepg_readonly: provisionSQL
+  now REVOKEs CREATE FROM PUBLIC + GRANTs to indiepg_admin, scoped to the `postgres`
+  DB only (provisionSQL never runs against app DBs — revoking there would break
+  apps). Leave USAGE alone so the SELECT path survives.
+- Idempotent role provisioning via a DO-block IF/ELSE must repeat EVERY desired
+  attribute on the ALTER (else) branch, not just CREATE. Dropping a word (e.g.
+  NOINHERIT) on ALTER means a re-provision silently reverts the role to the PG
+  default for that attribute (INHERIT). Assert security-load-bearing attrs on both
+  paths (e.g. `strings.Count(joined, "NOINHERIT") >= 2`).
+- This shell has an empty `$TMPDIR`; `mktemp -d "$TMPDIR/..."` resolves to `/...`
+  and fails. Use `/tmp` explicitly (or `export TMPDIR=/tmp`) for throwaway clusters.
 - DB-level role/privilege behavior can only be proven against a real Postgres.
   Pattern: integration-tagged test, `//go:build integration`, skips unless
   `INDIEPG_TEST_SOCKET` is set. To prove green locally, stand up a throwaway

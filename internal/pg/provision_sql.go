@@ -20,11 +20,18 @@ import (
 // DEFENSE-IN-DEPTH only (the role can reset it in its own session), never the
 // primary control.
 //
-// Hardening here is scoped strictly to the read-only role itself. We do NOT run
-// REVOKE ... FROM PUBLIC against the operator's user databases, since that would
-// break their apps; we only ensure the read-only role holds no latent write
-// capability (e.g. CREATE on the public schema) it could exploit if the GUC were
-// flipped off.
+// Hardening runs ONLY against the panel-managed `postgres` database (the DB
+// Provision dials). On PostgreSQL <= 14 the public schema grants CREATE to the
+// PUBLIC pseudo-role by default, and that grant is inherited by every role —
+// a per-role REVOKE cannot strip it. So we REVOKE CREATE ON SCHEMA public FROM
+// PUBLIC and re-GRANT it to the admin role, leaving the read-only role with no
+// way to create (and thus own/write) scratch objects even if it flips its GUC
+// off. This is safe precisely because it is scoped to `postgres`: that public
+// schema is panel-managed, not an operator application schema. We never run it
+// against the operator's user databases (where it would break their apps), so a
+// read-only browse of an app DB can in principle still create scratch objects in
+// that app's public schema — an accepted, app-DB-only limitation that never
+// touches operator *data* (writes to existing tables remain privilege-denied).
 //
 // The admin role is a privileged login used solely for guided actions.
 //
@@ -53,7 +60,7 @@ func provisionSQL() ([]string, error) {
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN
     CREATE ROLE %s LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
   ELSE
-    ALTER ROLE %s LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
+    ALTER ROLE %s LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
   END IF;
 END $$;`,
 			core.QuoteLiteral(ReadOnlyRole), roQ, roQ,
@@ -79,15 +86,20 @@ END $$;`,
 		// exploit); this GUC merely turns an accidental write into an early, clear
 		// error before it even reaches a permission check.
 		fmt.Sprintf(`ALTER ROLE %s SET default_transaction_read_only = on;`, roQ),
-		// HARDENING (authoritative boundary): defensively strip any latent write
-		// capability the read-only role might hold so that, even if the GUC above is
-		// flipped off, the role still cannot write. On PostgreSQL <= 14 the public
-		// schema grants CREATE to PUBLIC by default, which would let the read-only
-		// role create (and thus own/write) objects; revoke it from the role itself.
-		// Scoped to the read-only role only — we never REVOKE ... FROM PUBLIC, which
-		// would break the operator's own applications. This runs against the dialed
-		// (postgres) database; the public schema there is panel-managed, not an app
-		// schema, so revoking CREATE from our own role is safe and idempotent.
+		// HARDENING (authoritative boundary): strip the latent CREATE capability the
+		// read-only role inherits via the PUBLIC pseudo-role, so that even if the GUC
+		// above is flipped off the role still cannot create (and thus own/write)
+		// objects. On PostgreSQL <= 14 the public schema grants CREATE to PUBLIC by
+		// default; that is inherited by every role, so a per-role REVOKE is a no-op
+		// against it. We must revoke from PUBLIC — and then re-GRANT to the admin
+		// role so guided actions can still create objects. USAGE is untouched, so the
+		// read-only role keeps the SELECT path. Both statements are idempotent and run
+		// only against the panel-managed `postgres` database (see the doc comment).
+		`REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+		fmt.Sprintf(`GRANT CREATE ON SCHEMA public TO %s;`, adQ),
+		// Belt-and-suspenders: also revoke any CREATE granted directly to the
+		// read-only role. A no-op given the role is never granted CREATE, but it
+		// documents the invariant and is idempotent.
 		fmt.Sprintf(`REVOKE CREATE ON SCHEMA public FROM %s;`, roQ),
 		// Ensure the read-only role is never a member of a writing role. Membership
 		// in a privileged role would let it inherit (or SET ROLE to) write

@@ -28,20 +28,32 @@ func TestProvisionSQL(t *testing.T) {
 	require.Contains(t, joined, "default_transaction_read_only = on")
 
 	// authoritative boundary: the read-only role is hardened by privilege denial.
-	// CREATE on the public schema is revoked from the role itself (not PUBLIC) so
-	// it holds no latent write capability even if the GUC is flipped off.
+	// On PG <= 14 CREATE on public is inherited via the PUBLIC pseudo-role, so the
+	// only way to deny it is to revoke from PUBLIC and re-grant to the admin role.
+	require.Contains(t, joined, "REVOKE CREATE ON SCHEMA public FROM PUBLIC")
+	require.Contains(t, joined,
+		"GRANT CREATE ON SCHEMA public TO "+core.QuoteIdent(AdminRole))
+	// belt-and-suspenders: any direct CREATE grant to the read-only role is revoked.
 	require.Contains(t, joined,
 		"REVOKE CREATE ON SCHEMA public FROM "+core.QuoteIdent(ReadOnlyRole))
 	// and the read-only role is never a member of the writing admin role.
 	require.Contains(t, joined,
 		"REVOKE "+core.QuoteIdent(AdminRole)+" FROM "+core.QuoteIdent(ReadOnlyRole))
 
-	// hardening is scoped to the role itself; never broaden to PUBLIC (that would
-	// break the operator's own applications).
-	require.NotContains(t, joined, "FROM PUBLIC")
+	// The REVOKE ... FROM PUBLIC is scoped (at the call site) to the panel-managed
+	// `postgres` database only; it must always be paired with a re-GRANT to admin
+	// so guided object creation still works. USAGE is never revoked, so the
+	// read-only SELECT path is preserved.
+	require.NotContains(t, joined, "REVOKE USAGE")
 
 	// admin role is explicitly not a superuser.
 	require.Contains(t, joined, "NOSUPERUSER")
+
+	// NOINHERIT is load-bearing for the privilege-denial boundary and must be set
+	// on BOTH the create and the re-provision (ALTER) path for the read-only role,
+	// or a re-run would silently leave it INHERIT.
+	require.GreaterOrEqual(t, strings.Count(joined, "NOINHERIT"), 2,
+		"read-only role must be NOINHERIT on both the CREATE and ALTER paths")
 
 	// idempotent extension + idempotent role creation.
 	require.Contains(t, joined, "CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
