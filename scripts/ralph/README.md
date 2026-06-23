@@ -10,7 +10,7 @@ usability** over new features.
 From the repo root, with a clean tracked tree:
 
 ```bash
-./scripts/ralph/ralph.sh                        # opus, 100 iters, 24h cap
+./scripts/ralph/ralph.sh                        # opus, 500 iters, 24h cap
 ./scripts/ralph/ralph.sh --model sonnet 200     # custom model + max iters
 ./scripts/ralph/ralph.sh --runtime-cap-hours 12 # custom wall-clock cap
 ```

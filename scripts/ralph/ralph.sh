@@ -15,7 +15,7 @@
 #     (b) a cap is hit, or (c) the genuinely-unrecoverable case (HALT.md).
 #
 # Usage:
-#   ./scripts/ralph/ralph.sh                          # opus, 100 iters, 24h cap
+#   ./scripts/ralph/ralph.sh                          # opus, 500 iters, 24h cap
 #   ./scripts/ralph/ralph.sh --model sonnet 200       # custom model + max iters
 #   ./scripts/ralph/ralph.sh --runtime-cap-hours 12   # custom wall-clock cap
 
@@ -23,7 +23,7 @@ set -u  # NOT -e: we handle errors ourselves.
 
 # ---- defaults ----
 MODEL="opus"
-MAX_ITERATIONS=100
+MAX_ITERATIONS=500
 RUNTIME_CAP_HOURS=24
 SLEEP_BETWEEN=2
 # After this many consecutive iterations that produce NO commit, stop and ask
