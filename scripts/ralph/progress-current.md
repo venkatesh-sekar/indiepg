@@ -5,6 +5,24 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1 (security) · CSRF proof on every state-changing endpoint
+Closed the "confirm CSRF on every state-changing endpoint" backlog item. The
+CSRF gate is centralized in `requireAuth` (cookie + unsafe method must carry a
+same-origin Origin/Referer or the `X-Indiepg-Csrf` header, else 409 CodeSafety
+before the handler), and `csrfOriginOK`/the gate were already unit-tested — but
+only against a stand-in handler. The gap was proof that the property holds for
+the *actual wired route table* and a guard against a future mutating route being
+registered outside the protected group. Added `TestEveryStateChangingEndpointRejectsCSRF`:
+it `chi.Walk`s the real router, and for every unsafe-method route (POST/PUT/PATCH/
+DELETE) not on a small documented exempt set (`POST /api/auth/login`, `POST
+/api/auth/logout` — login needs the password; logout gates its rotation
+internally via `logoutAuthorized`), sends a valid-cookie + forged-Origin request
+and asserts 409/CodeSafety. It also asserts every exempt entry maps to a
+registered route, so a renamed/removed route can't leave a stale exemption. A new
+mutating endpoint added outside `requireAuth` will fail the test, forcing a
+conscious CSRF decision. Reviewer (code-reviewer subagent) found no blocking
+issues. All gates green; test-only change, no `web/` touch.
+
 ## 2026-06-24 · band 1 (security) · logout invalidates session server-side
 Closed the "logout invalidates server-side" half of the session-auth audit
 item. The cookie hardening (HttpOnly/SameSite=Strict/Secure-aware), expiry, and

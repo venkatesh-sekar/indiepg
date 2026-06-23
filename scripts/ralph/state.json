@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "iteration": 4,
-  "commits_total": 4,
+  "iteration": 5,
+  "commits_total": 5,
   "current_band": "1-security",
-  "last_item": "Audit session auth — close the server-side logout invalidation gap",
-  "last_result": "done — logout now rotates the HMAC session secret to invalidate all issued tokens, gated by logoutAuthorized (valid token + CSRF check for cookie flows) so the public endpoint can't be abused as an unauthenticated force-logout/DoS; store/auth/server tests cover each property; reviewer found no blocking issues (added Bearer-logout test it suggested); all gates green",
-  "notes": "Session-auth audit item done (cookie hardening/expiry/rotation were already present+tested; added server-side logout invalidation). Next band-1 items: CSRF coverage proof on every state-changing endpoint (note: requireAuth already enforces a CSRF origin/header check for cookie unsafe methods — likely an audit+test iteration), then DB-level read-only role enforcement, secrets-at-rest (0600 + log-scrubbing), and login brute-force lockout (lockout exists in internal/auth — verify the throttle is end-to-end tested).",
+  "last_item": "Confirm CSRF protection on every state-changing endpoint",
+  "last_result": "done — added TestEveryStateChangingEndpointRejectsCSRF, which chi.Walks the real route table and asserts every unsafe-method route rejects a forged cross-origin cookie request (409/CodeSafety), except a documented exempt set (login/logout) that self-checks against registered routes so a new mutating route outside requireAuth fails the test; reviewer found no blocking issues; all gates green; test-only change",
+  "notes": "CSRF coverage proven across the whole route table (requireAuth is the central gate; new test is a regression guard for routes added outside it). Remaining band-1 items: DB-level read-only role enforcement (test a write through the read-only role fails at Postgres), secrets-at-rest (DB file 0600 + log-scrubbing test), and login brute-force lockout (lockout exists in internal/auth — verify the throttle is end-to-end tested via the login handler).",
   "north_star": "An indie hacker can stand up and run a rock-solid Postgres entirely from the indiepg UI, on best defaults, with safe optional overrides."
 }

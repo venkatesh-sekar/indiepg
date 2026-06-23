@@ -2,14 +2,18 @@ package server
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/venkatesh-sekar/indiepg/internal/config"
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 func TestTokenFromRequest(t *testing.T) {
@@ -306,6 +310,80 @@ func TestRequireAuthCSRF(t *testing.T) {
 		protected.ServeHTTP(rec, r)
 		require.Equal(t, http.StatusOK, rec.Code)
 	})
+}
+
+// routeParamPlaceholder fills chi path params ({name}, {code}, ...) with a dummy
+// value so a route pattern can be turned into a concrete request path. The CSRF
+// gate runs before any handler reads the param, so the value is irrelevant.
+var routeParamPlaceholder = regexp.MustCompile(`\{[^}]+\}`)
+
+// csrfExemptUnsafeRoutes are the ONLY state-changing endpoints intentionally not
+// behind requireAuth's CSRF gate, each safe for a documented reason:
+//   - login: a forged request cannot authenticate without the admin password, so
+//     login CSRF has no effect for a single-operator panel.
+//   - logout: public + idempotent for cookie-clearing, but server-side session
+//     invalidation is gated internally by logoutAuthorized (which applies the same
+//     CSRF origin check) — see TestLogoutWithoutProofDoesNotInvalidate.
+//
+// The key is "METHOD path". If a new mutating endpoint is added outside the
+// authenticated group, the walk below will not find it in this set and the test
+// fails — forcing a conscious CSRF decision rather than a silent gap.
+var csrfExemptUnsafeRoutes = map[string]bool{
+	"POST /api/auth/login":  true,
+	"POST /api/auth/logout": true,
+}
+
+// TestEveryStateChangingEndpointRejectsCSRF walks the REAL route table (not a
+// stand-in handler) and asserts that every mutating endpoint either sits behind
+// requireAuth's CSRF gate — a cookie-authenticated request with a forged
+// cross-origin Origin is rejected with the CSRF safety error before reaching the
+// handler — or is on the small, documented exempt list. This proves the property
+// holds for every wired endpoint and guards against a future mutating route being
+// registered outside the protected group.
+func TestEveryStateChangingEndpointRejectsCSRF(t *testing.T) {
+	srv, _ := newTestServer(t)
+	token := login(t, srv, testPassword)
+
+	routes, ok := srv.Handler().(chi.Routes)
+	require.True(t, ok, "router must expose chi.Routes for walking")
+
+	seenExempt := map[string]bool{}
+	var checked int
+
+	err := chi.Walk(routes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if !isUnsafeMethod(method) {
+			return nil
+		}
+		key := method + " " + route
+		if csrfExemptUnsafeRoutes[key] {
+			seenExempt[key] = true
+			return nil
+		}
+
+		path := routeParamPlaceholder.ReplaceAllString(route, "x")
+		r := httptest.NewRequest(method, path, nil)
+		r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+		r.Header.Set("Origin", "https://attacker.example")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, r)
+
+		require.Equalf(t, http.StatusConflict, rec.Code,
+			"%s must reject a forged cross-origin cookie request (got %d: %s)",
+			key, rec.Code, rec.Body.String())
+		var ae apiError
+		require.NoErrorf(t, json.Unmarshal(rec.Body.Bytes(), &ae), "%s response not a JSON error", key)
+		require.Equalf(t, core.CodeSafety, ae.Code, "%s must fail with the CSRF safety code", key)
+		checked++
+		return nil
+	})
+	require.NoError(t, err)
+
+	require.Positive(t, checked, "expected at least one protected mutating endpoint")
+	// Keep the exempt list honest: every exemption must correspond to a real,
+	// currently-registered route (a renamed/removed route must update the list).
+	for key := range csrfExemptUnsafeRoutes {
+		require.Truef(t, seenExempt[key], "exempt route %q is not registered; update csrfExemptUnsafeRoutes", key)
+	}
 }
 
 func TestParseIntQuery(t *testing.T) {
