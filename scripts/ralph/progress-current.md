@@ -5,6 +5,27 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · test-lock the local-only "move backups off-host" nudge
+The off-host nudge already existed (Backups page badge + warn Callout, Settings
+"recommended" copy), but the local-vs-S3 destination logic was computed inline in
+`Backups.tsx` and had **zero test coverage** — a refactor could silently drop the
+"your backups are on this server" warning, the panel's main push toward durable,
+off-server backups. Closed the acceptance gap ("covered by a test"): extracted the
+inline logic into an exported pure `backupDestination(backup, loaded)` returning a
+`loading | local | s3` discriminated union, and lifted the local-only warning JSX
+into an exported `LocalBackupWarning` component (mirroring the existing
+`backupFreshness`/`BackupStatusSummary` precedent). Behavior preserved exactly;
+the union just removes the prior `boolean | undefined` + parallel `bucketName`
+bindings. Added 9 vitest/RTL tests: `backupDestination` across loading/local/
+whitespace-only/bucket/endpoint-only/bucket-preferred, and `LocalBackupWarning`
+asserting the warn-tone callout + Settings link fire only when local (nothing for
+s3/loading). Reviewed (feature-dev:code-reviewer): no blocking issues; applied
+both cleanups it raised — documented the deliberate `.trim()` divergence from the
+server's untrimmed `remoteTargetConfigured` (Settings trims on save, so this is
+belt-and-suspenders for a hand-edited DB value), and dropped the redundant
+`bucketName` local in favor of reading the narrowed union directly. Full Go gate +
+web typecheck/test/build green.
+
 ## 2026-06-24 · band 1.5 (data durability) · wire scheduled backups + overlap guard
 The biggest data-loss gap: the scheduler was instantiated but only ran the
 telemetry/alert loop, so **scheduled backups had never run** — a box left alone

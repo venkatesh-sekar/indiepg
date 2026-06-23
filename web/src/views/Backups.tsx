@@ -25,6 +25,7 @@ import type {
   BackupType,
   ConfigResponse,
   RecoveryTarget,
+  S3Target,
 } from "@/api/types";
 
 export function Backups() {
@@ -33,13 +34,10 @@ export function Backups() {
   const config = useAsync<ConfigResponse>(() => api.getConfig(), []);
 
   // Where backups actually land: local (this server) when no S3 bucket/endpoint
-  // is set, otherwise the configured bucket. Undefined while config loads, so the
-  // copy stays neutral until we know rather than flashing the wrong destination.
-  const backup = config.data?.config.backup;
-  const isLocal: boolean | undefined = config.data
-    ? !backup?.bucket?.trim() && !backup?.endpoint?.trim()
-    : undefined;
-  const bucketName = backup?.bucket?.trim() || backup?.endpoint?.trim() || "";
+  // is set, otherwise the configured bucket. Stays "loading" until config arrives
+  // so the copy never flashes the wrong destination.
+  const destination = backupDestination(config.data?.config.backup, config.data != null);
+  const isLocal = destination.kind === "local";
 
   const [runType, setRunType] = useState<BackupType | null>(null);
   const [runBusy, setRunBusy] = useState(false);
@@ -81,11 +79,13 @@ export function Backups() {
         description={
           <>
             Back up your database and check that your backups actually work.
-            {isLocal !== undefined ? (
+            {destination.kind !== "loading" ? (
               <>
                 {" "}
-                <Badge tone={isLocal ? "warn" : "ok"}>
-                  {isLocal ? "Stored on this server" : `Stored in S3 · ${bucketName}`}
+                <Badge tone={destination.kind === "local" ? "warn" : "ok"}>
+                  {destination.kind === "local"
+                    ? "Stored on this server"
+                    : `Stored in S3 · ${destination.bucketName}`}
                 </Badge>
               </>
             ) : null}
@@ -131,25 +131,16 @@ export function Backups() {
 
       {history.data ? <BackupStatusSummary backups={history.data.backups} /> : null}
 
-      {isLocal ? (
-        <Callout tone="warn" title="Your backups are on this server — move them to S3">
-          Backups are being written to <code>/var/lib/pgbackrest</code> on this same
-          machine. That covers accidental drops and bad migrations, but{" "}
-          <strong>not disk failure or losing the server</strong> — if this box goes, the
-          backups go with it. <Link to="/settings">Set up an S3 bucket in Settings</Link>{" "}
-          for real off-server backups. You can switch anytime and it takes effect
-          immediately — new backups go to S3, and the local ones stay on disk.
-        </Callout>
-      ) : null}
+      <LocalBackupWarning destination={destination} />
 
       <Callout tone="info" title="How backups work here">
-        {isLocal === false ? (
+        {destination.kind === "s3" ? (
           <>
             Backups are stored in your S3 bucket
-            {bucketName ? (
+            {destination.bucketName ? (
               <>
                 {" "}
-                (<code>{bucketName}</code>)
+                (<code>{destination.bucketName}</code>)
               </>
             ) : null}{" "}
             using pgBackRest.{" "}
@@ -218,6 +209,68 @@ export function Backups() {
         />
       ) : null}
     </div>
+  );
+}
+
+// --- Backup destination (local-on-this-server vs off-host S3) ---------------
+
+/**
+ * BackupDestination is where backups physically land:
+ *
+ *  - loading: config hasn't arrived yet — render neutral copy, never guess.
+ *  - local:   no S3 endpoint/bucket set, so pgBackRest writes to this same
+ *             server — survives bad drops/migrations but NOT disk or host loss.
+ *  - s3:      an off-host S3-compatible bucket is configured.
+ */
+export type BackupDestination =
+  | { kind: "loading" }
+  | { kind: "local" }
+  | { kind: "s3"; bucketName: string };
+
+/**
+ * backupDestination classifies where backups land from the saved S3 target. A
+ * target counts as configured (off-host) once either an endpoint or a bucket is
+ * set, so the local-only warning only shows when nothing at all points off this
+ * server. `loaded` is the "config response has arrived" flag; until then we report
+ * loading rather than flashing "stored on this server" for a box that actually has
+ * S3 configured.
+ *
+ * We trim before testing for emptiness. The Settings form already trims on save
+ * (so a whitespace-only value can't normally be persisted), and the Go server's
+ * authoritative `remoteTargetConfigured` compares against "" without trimming —
+ * trimming here is a deliberate, belt-and-suspenders UX choice so that a target
+ * that is only whitespace (e.g. a hand-edited DB value) still surfaces the
+ * local-only nudge rather than silently claiming an off-host destination exists.
+ */
+export function backupDestination(
+  backup: S3Target | undefined,
+  loaded: boolean,
+): BackupDestination {
+  if (!loaded) return { kind: "loading" };
+  const bucket = backup?.bucket?.trim() ?? "";
+  const endpoint = backup?.endpoint?.trim() ?? "";
+  if (!bucket && !endpoint) return { kind: "local" };
+  return { kind: "s3", bucketName: bucket || endpoint };
+}
+
+/**
+ * LocalBackupWarning is the panel's primary "move your backups off-host" nudge:
+ * it shouts (warn tone) that backups live on this same server and won't survive
+ * disk or host loss, and links to Settings to connect S3. Rendered only when the
+ * destination is local; kept as its own component so the message is covered by a
+ * test and can't silently regress as the page evolves.
+ */
+export function LocalBackupWarning({ destination }: { destination: BackupDestination }) {
+  if (destination.kind !== "local") return null;
+  return (
+    <Callout tone="warn" title="Your backups are on this server — move them to S3">
+      Backups are being written to <code>/var/lib/pgbackrest</code> on this same
+      machine. That covers accidental drops and bad migrations, but{" "}
+      <strong>not disk failure or losing the server</strong> — if this box goes, the
+      backups go with it. <Link to="/settings">Set up an S3 bucket in Settings</Link>{" "}
+      for real off-server backups. You can switch anytime and it takes effect
+      immediately — new backups go to S3, and the local ones stay on disk.
+    </Callout>
   );
 }
 

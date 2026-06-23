@@ -1,7 +1,27 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { backupFreshness, BackupStatusSummary } from "./Backups";
-import type { BackupRecord } from "@/api/types";
+import { MemoryRouter } from "react-router-dom";
+import {
+  backupDestination,
+  backupFreshness,
+  BackupStatusSummary,
+  LocalBackupWarning,
+} from "./Backups";
+import type { BackupRecord, S3Target } from "@/api/types";
+
+// s3 builds an S3Target; override only the fields a case cares about. Defaults to
+// an empty (unconfigured) target so "configured" cases are explicit.
+function s3(over: Partial<S3Target> = {}): S3Target {
+  return {
+    endpoint: "",
+    region: "",
+    bucket: "",
+    prefix: "",
+    access_key: "",
+    use_ssl: true,
+    ...over,
+  };
+}
 
 // rec builds a BackupRecord; override only what a case cares about. Defaults to a
 // successful run so failure cases are explicit at the call site.
@@ -23,6 +43,74 @@ function rec(over: Partial<BackupRecord>): BackupRecord {
     ...over,
   };
 }
+
+describe("backupDestination", () => {
+  it("reports loading until the config response has arrived", () => {
+    // Must not guess "local" for a box that may actually have S3 configured.
+    expect(backupDestination(undefined, false)).toEqual({ kind: "loading" });
+    expect(backupDestination(s3({ bucket: "b" }), false)).toEqual({ kind: "loading" });
+  });
+
+  it("reports local when no endpoint or bucket is set", () => {
+    expect(backupDestination(undefined, true)).toEqual({ kind: "local" });
+    expect(backupDestination(s3(), true)).toEqual({ kind: "local" });
+  });
+
+  it("treats a whitespace-only target as local (not a real off-host destination)", () => {
+    expect(backupDestination(s3({ bucket: "  ", endpoint: "  " }), true)).toEqual({
+      kind: "local",
+    });
+  });
+
+  it("reports s3 with the bucket name once a bucket is set", () => {
+    expect(backupDestination(s3({ bucket: "my-backups" }), true)).toEqual({
+      kind: "s3",
+      bucketName: "my-backups",
+    });
+  });
+
+  it("falls back to the endpoint for the label when only an endpoint is set", () => {
+    expect(backupDestination(s3({ endpoint: "s3.example.com" }), true)).toEqual({
+      kind: "s3",
+      bucketName: "s3.example.com",
+    });
+  });
+
+  it("prefers the bucket name over the endpoint for the label", () => {
+    expect(
+      backupDestination(s3({ bucket: "my-backups", endpoint: "s3.example.com" }), true),
+    ).toEqual({ kind: "s3", bucketName: "my-backups" });
+  });
+});
+
+describe("LocalBackupWarning", () => {
+  function renderWarning(destination: Parameters<typeof LocalBackupWarning>[0]["destination"]) {
+    return render(
+      <MemoryRouter>
+        <LocalBackupWarning destination={destination} />
+      </MemoryRouter>,
+    );
+  }
+
+  it("warns (warn tone) about disk/host loss and points to S3 when backups are local-only", () => {
+    renderWarning({ kind: "local" });
+    expect(document.querySelector(".callout")).toHaveClass("callout-warn");
+    expect(screen.getByText(/disk failure or losing the server/i)).toBeInTheDocument();
+    // Nudges off-host: a link into Settings to connect a bucket.
+    const link = screen.getByRole("link", { name: /set up an s3 bucket/i });
+    expect(link).toHaveAttribute("href", "/settings");
+  });
+
+  it("renders nothing once an off-host S3 destination is configured", () => {
+    const { container } = renderWarning({ kind: "s3", bucketName: "my-backups" });
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("renders nothing while the config is still loading", () => {
+    const { container } = renderWarning({ kind: "loading" });
+    expect(container).toBeEmptyDOMElement();
+  });
+});
 
 describe("backupFreshness", () => {
   it("reports none when no backups have run", () => {
