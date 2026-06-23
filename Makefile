@@ -16,7 +16,7 @@ GOFLAGS     ?=
 
 .DEFAULT_GOAL := build
 
-.PHONY: build test vet tidy web run reset clean fmt
+.PHONY: build test vet tidy web run reset clean fmt fmt-check verify verify-web
 
 ## build: compile the static binary (CGO disabled, pure-Go deps only)
 build:
@@ -37,6 +37,26 @@ vet:
 ## fmt: format all Go sources
 fmt:
 	$(GO) fmt ./...
+
+## fmt-check: fail if any tracked Go source is not gofmt-clean (gate check; does not rewrite)
+fmt-check:
+	@unformatted="$$(gofmt -l $$(git ls-files '*.go'))"; rc=$$?; \
+	if [ $$rc -ne 0 ]; then \
+	  echo "gofmt failed (exit $$rc) — likely a Go file it could not parse"; \
+	  exit $$rc; \
+	fi; \
+	if [ -n "$$unformatted" ]; then \
+	  echo "These Go files are not gofmt-clean (run 'make fmt'):"; \
+	  echo "$$unformatted"; \
+	  exit 1; \
+	fi
+
+## verify: run the full backend verify gate — fmt-check, vet, test, static build
+verify: fmt-check vet test build
+
+## verify-web: run the web verify gate (needs Node) — fresh install, typecheck, build, test
+verify-web:
+	cd $(WEB_DIR) && npm ci && npm run typecheck && npm run build && npm test
 
 ## tidy: tidy and verify the module graph
 tidy:

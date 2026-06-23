@@ -50,6 +50,15 @@ Tests use vitest + React Testing Library + jsdom. Config is inline in
 
 ## Verify gate (all must pass before committing)
 
+One command runs the whole backend gate (fmt-check → vet → test → static build):
+
+```sh
+make verify
+```
+
+It is exactly the explicit gate below. `make fmt-check` checks `gofmt` without
+rewriting — it fails and lists any file that isn't gofmt-clean:
+
 ```sh
 gofmt -l $(git ls-files '*.go')        # must print NOTHING
 go vet ./...
@@ -57,7 +66,11 @@ go test ./... -count=1
 CGO_ENABLED=0 go build ./cmd/indiepg
 ```
 
-If `web/` changed, also: `cd web && npm run typecheck && npm run build && npm test`.
+If `web/` changed, also run the web gate (needs Node):
+
+```sh
+make verify-web                        # npm ci → typecheck → build → test
+```
 
 Never commit with a red gate, and never leave the tracked tree dirty.
 

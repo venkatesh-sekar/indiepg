@@ -5,6 +5,24 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 0 (foundation) · executable verify gate
+Closed the last foundation item: verified the web gate is green from a fresh
+`npm ci` (typecheck/build/test all pass) and confirmed the build is
+deterministic — the committed `internal/server/web/dist` is byte-identical after
+a rebuild, so running the gate never dirties the tracked tree. Turned the gate
+from prose into one reproducible command: added `make verify`
+(fmt-check → vet → test → static build), `make verify-web`
+(npm ci → typecheck → build → test), and `make fmt-check` — the latter runs the
+`gofmt -l` "must print nothing" check that `go fmt` cannot do (it rewrites
+rather than reports). AGENTS.md now points at these targets. Why: the verify
+gate was re-typed by hand each iteration and free to drift from the docs; an
+executable gate keeps every iteration consistent and is the literal meaning of
+"wire the verify gate into the loop reality." Reviewed by
+feature-dev:code-reviewer — fixed its one blocking finding (`fmt-check`
+discarded `gofmt`'s non-zero exit, so a syntactically-broken file would silently
+pass; now it captures `$?` and fails). `make verify` green (exit 0); web gate
+green; tree clean. Foundation band done → moving to band 1 (security).
+
 ## 2026-06-24 · band 0 (foundation) · root AGENTS.md
 Added a root `AGENTS.md` so every iteration (and any human) shares one
 consistent set of build/test/run commands and conventions. It documents the

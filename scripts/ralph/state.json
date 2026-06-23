@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "iteration": 2,
-  "commits_total": 2,
-  "current_band": "0-foundation",
-  "last_item": "Add root AGENTS.md (build/test/run commands + conventions)",
-  "last_result": "done — AGENTS.md at repo root references all make targets, web verify gate, and DEFAULTS.md; reviewed (one doc fix applied); all Go gates green",
-  "notes": "Foundation band: one item left — verify the web gate (npm ci -> typecheck/build) is green from a fresh install (now documented in AGENTS.md). After that, move to band 1 (security).",
+  "iteration": 3,
+  "commits_total": 3,
+  "current_band": "1-security",
+  "last_item": "Wire the verify gate into the loop reality (make verify / verify-web / fmt-check)",
+  "last_result": "done — verified full web gate green from fresh npm ci (deterministic build, tree clean); made the gate executable via make verify/verify-web/fmt-check; AGENTS.md updated; reviewer's blocking finding (fmt-check swallowed gofmt's non-zero exit) fixed; make verify green",
+  "notes": "Foundation band (band 0) complete. Now in band 1 (security). Next: pick the highest-risk security item — audit session auth (HttpOnly/SameSite/Secure cookies, expiry/rotation, server-side logout invalidation) in internal/auth, with tests per property.",
   "north_star": "An indie hacker can stand up and run a rock-solid Postgres entirely from the indiepg UI, on best defaults, with safe optional overrides."
 }
