@@ -5,6 +5,30 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · restore-test EXECUTION (pgbackrest verify)
+`handleRestoreTest` was a stub returning "not implemented", so the restore-test
+surfacing could only ever show "never" — the operator had no way to prove a
+backup is recoverable. Closed the EXECUTION gap. This was a DESIGN-FIRST item
+(no `sm`/DEFAULTS precedent); I chose option (a) `pgbackrest verify` — a
+read-only repository integrity check (every backup + WAL file present with
+matching checksums) — over the heavier scratch-restore options. Rationale is the
+security/safety tie-break: verify NEVER touches the live data directory, needs no
+disk-headroom precheck (a restore ≈ DB size could fill the box and itself cause
+data loss) and no scratch cleanup, so it cannot cause data loss. It's the
+smallest slice that removes the most risk; the deeper scratch-restore-and-boot
+proof (which would populate `verified_rows` with a real row count) is re-filed as
+a follow-up backlog item rather than rushed. Added `Manager.RestoreTest` +
+`VerifyCmd`: verifies (not claims) ownership exactly like Restore's read side (a
+foreign owner is a HARD STOP), records a pass/fail `restore_tests` row on a
+detached context (a shutdown mid-verify never loses the result), and labels the
+verified backup. Wired the handler to it. Unit-tested via the fake Runner:
+success records history and NEVER invokes backup/restore; failure records a fail
+row; the fail row persists on a cancelled ctx; foreign-owner hard-stop; invalid
+stanza. Also made the UI honest (the code-reviewer flagged the success banner as
+overclaiming): "Your backups are proven recoverable" → "Your backup repository is
+verified intact", and the Callout now describes the checksum check rather than a
+full restore. Full Go gate + web typecheck/33 tests/build green.
+
 ## 2026-06-24 · band 1.5 (data durability) · surface restore-verification status at a glance
 The Backups page already listed restore-test history in a table, but nothing
 answered the durability question up front: *have my backups ever been proven

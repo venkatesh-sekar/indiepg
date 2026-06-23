@@ -149,8 +149,9 @@ export function Backups() {
         ) : null}
         A <strong>full</strong> backup copies everything; an{" "}
         <strong>incremental</strong> backup only copies what changed since the last one, so it&apos;s
-        faster and smaller. <strong>Test a restore</strong> proves your backups can actually be
-        recovered — before you ever need them.
+        faster and smaller. <strong>Test a restore</strong> verifies your backup repository is intact
+        and recoverable — it checks that every backup and WAL file is present with matching checksums,
+        without touching your live database.
       </Callout>
 
       {history.loading ? (
@@ -400,12 +401,13 @@ export function restoreTestStatus(tests: RestoreTestRecord[]): RestoreVerificati
 
 /**
  * RestoreTestStatus is the at-a-glance banner above the restore-test history: it
- * answers, in one line, whether the operator's backups have been proven
- * recoverable and when. The "never" state is intentionally calm (info, not a
- * call-to-action) — automated restore testing is not yet wired, so it states the
- * fact without nudging toward an action that cannot complete. Once tests run, a
- * failed/never-passed result shouts (danger), because an unrecoverable backup is
- * a data-loss risk the operator must see without reading the table.
+ * answers, in one line, whether the operator's backup repository has been
+ * verified intact and when. The "never" state is intentionally calm (info, not a
+ * call-to-action) — it states the fact without alarm, since the operator simply
+ * hasn't run a verification yet ("Test a restore" at the top of the page runs
+ * one). A failed/never-passed result shouts (danger), because a repository that
+ * fails its integrity check is a data-loss risk the operator must see without
+ * reading the table.
  */
 export function RestoreTestStatus({ tests }: { tests: RestoreTestRecord[] }) {
   const state = restoreTestStatus(tests);
@@ -442,10 +444,11 @@ export function RestoreTestStatus({ tests }: { tests: RestoreTestRecord[] }) {
   }
 
   return (
-    <Callout tone="ok" title="Your backups are proven recoverable">
-      Last verified restore <strong>{ago(when)}</strong> ({dateTime(when)})
+    <Callout tone="ok" title="Your backup repository is verified intact">
+      Last verified <strong>{ago(when)}</strong> ({dateTime(when)}) — every backup and WAL file was
+      present with matching checksums
       {state.passed.verified_rows > 0 ? (
-        <> · {state.passed.verified_rows.toLocaleString()} rows verified</>
+        <> · {state.passed.verified_rows.toLocaleString()} rows restored and verified</>
       ) : null}
       .
     </Callout>

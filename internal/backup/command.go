@@ -7,11 +7,14 @@ import (
 	"github.com/venkatesh-sekar/indiepg/internal/exec"
 )
 
-// Command timeouts. Info is quick; backup/restore can be long-running.
+// Command timeouts. Info is quick; backup/restore can be long-running. verify
+// reads every backup and WAL file in the repo to checksum it, so it can run long
+// on a large repo, but it never restores — far cheaper than a real restore.
 const (
 	infoTimeout    = 60 * time.Second
 	backupTimeout  = 6 * time.Hour
 	restoreTimeout = 6 * time.Hour
+	verifyTimeout  = 2 * time.Hour
 )
 
 // RecoveryTarget describes a point-in-time-recovery target for a restore.
@@ -89,6 +92,19 @@ func InfoCmd(stanza string) exec.RunSpec {
 		Args:    []string{"--stanza=" + stanza, "--output=json", "info"},
 		AsUser:  pgUser,
 		Timeout: infoTimeout,
+	}
+}
+
+// VerifyCmd builds the `pgbackrest verify` invocation for a stanza. verify is a
+// read-only repository integrity check: it confirms every backup and WAL file is
+// present and matches its recorded checksum/size. It never restores and never
+// touches the live data directory.
+func VerifyCmd(stanza string) exec.RunSpec {
+	return exec.RunSpec{
+		Name:    pgbackrestBin,
+		Args:    []string{"--stanza=" + stanza, "verify"},
+		AsUser:  pgUser,
+		Timeout: verifyTimeout,
 	}
 }
 

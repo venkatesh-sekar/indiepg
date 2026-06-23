@@ -482,6 +482,127 @@ func TestManagerRestore_ForeignOwnerHardStop(t *testing.T) {
 	require.Zero(t, runner.CallCount())
 }
 
+// TestManagerRestoreTest_SuccessRecordsHistory proves a passing repo
+// verification records a "success" restore-test row, labels the verified backup,
+// and — crucially — runs `pgbackrest verify` and NEVER restore/backup, so it can
+// never touch the live data directory.
+func TestManagerRestoreTest_SuccessRecordsHistory(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("info", exec.FakeResponse{Stdout: sampleInfoJSON})
+	runner.On("verify", exec.FakeResponse{Stdout: "repository ok"})
+
+	st := newTestStore(t)
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	res, err := m.RestoreTest(ctx)
+	require.NoError(t, err)
+	require.True(t, res.OK)
+	require.Equal(t, "pgbackrest verify", res.Data["method"])
+
+	recs, err := st.ListRestoreTests(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	require.Equal(t, "success", recs[0].Result)
+	// Labelled with the newest backup from the info refresh.
+	require.Equal(t, "20260102-030000F_20260102-040000I", recs[0].SourceLabel)
+	// verify performs no restore, so no rows are counted — must stay honest at 0.
+	require.Zero(t, recs[0].VerifiedRows)
+
+	// A restore test must NEVER invoke restore or backup against the live cluster.
+	for _, c := range runner.Calls() {
+		require.NotContains(t, c.Args, "restore")
+		require.NotContains(t, c.Args, "backup")
+	}
+	// And it must actually have run verify.
+	require.NotZero(t, len(runner.Calls()))
+	require.Contains(t, runner.Calls()[len(runner.Calls())-1].Args, "verify")
+}
+
+// TestManagerRestoreTest_FailureRecordsFailRow proves a failed verification is
+// recorded as a "fail" restore-test row (so the surfacing shows danger) and the
+// underlying exec error is returned.
+func TestManagerRestoreTest_FailureRecordsFailRow(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("info", exec.FakeResponse{Stdout: sampleInfoJSON})
+	runner.On("verify", exec.FakeResponse{ExitCode: 28, Err: core.ExecError("checksum mismatch")})
+
+	st := newTestStore(t)
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	_, err := m.RestoreTest(ctx)
+	require.Error(t, err)
+	require.Equal(t, core.CodeExec, core.CodeOf(err))
+
+	recs, err := st.ListRestoreTests(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	require.Equal(t, "fail", recs[0].Result)
+	require.NotEmpty(t, recs[0].Detail)
+}
+
+// TestManagerRestoreTest_FailRowPersistedOnCancelledCtx proves the fail row is
+// recorded on a detached context even when the operation ctx is already
+// cancelled (e.g. shutdown), so a failed verification is never silently lost.
+func TestManagerRestoreTest_FailRowPersistedOnCancelledCtx(t *testing.T) {
+	runner := exec.NewFakeRunner()
+	runner.On("info", exec.FakeResponse{Stdout: sampleInfoJSON})
+	runner.On("verify", exec.FakeResponse{ExitCode: 28, Err: core.ExecError("checksum mismatch")})
+
+	st := newTestStore(t)
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := m.RestoreTest(ctx)
+	require.Error(t, err)
+
+	recs, err := st.ListRestoreTests(context.Background(), 10)
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	require.Equal(t, "fail", recs[0].Result)
+}
+
+// TestManagerRestoreTest_ForeignOwnerHardStop proves a foreign-owned repo is a
+// HARD STOP: verify is never invoked and no restore-test row is written.
+func TestManagerRestoreTest_ForeignOwnerHardStop(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("verify", exec.FakeResponse{Stdout: "should not run"})
+
+	os := newFakeObjectStore()
+	os.seedForeignMarker(t, 1*time.Minute) // non-stale foreign owner
+	owner := identity.NewOwner(testIdentity(), os, core.Discard())
+
+	st := newTestStore(t)
+	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	_, err := m.RestoreTest(ctx)
+	require.Error(t, err)
+	require.Equal(t, core.CodeOwnership, core.CodeOf(err))
+
+	require.Zero(t, runner.CallCount())
+	recs, err := st.ListRestoreTests(ctx, 10)
+	require.NoError(t, err)
+	require.Empty(t, recs)
+}
+
+func TestManagerRestoreTest_InvalidStanza(t *testing.T) {
+	runner := exec.NewFakeRunner()
+	cfg := testConfig()
+	cfg.Stanza = "Invalid Stanza"
+	m := New(Options{Runner: runner, Config: cfg, Logger: core.Discard()})
+	_, err := m.RestoreTest(context.Background())
+	require.Error(t, err)
+	require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	require.Zero(t, runner.CallCount())
+}
+
 func TestManagerRestore_InvalidTarget(t *testing.T) {
 	tm := time.Now()
 	m := New(Options{Runner: exec.NewFakeRunner(), Config: testConfig(), Logger: core.Discard()})

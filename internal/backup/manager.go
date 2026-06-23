@@ -292,6 +292,78 @@ func (m *Manager) Restore(ctx context.Context, target *RecoveryTarget, delta boo
 	return result, nil
 }
 
+// RestoreTest verifies that the backup repository is intact and recoverable
+// WITHOUT performing a restore. It runs `pgbackrest verify`, which checks that
+// every backup and WAL file in the repo is present and matches its recorded
+// checksum/size — the cheapest meaningful proof that a restore could succeed.
+//
+// This is the deliberate first slice of restore-verification: it never touches
+// the live data directory, needs no scratch space or disk-headroom precheck, and
+// cannot itself cause data loss. A deeper scratch-restore-and-boot proof (which
+// would populate VerifiedRows with a real row count) is a separate, heavier
+// capability and intentionally not done here.
+//
+// Like Restore, RestoreTest only reads the repo, so it verifies (does not claim)
+// ownership: a foreign, non-stale owner is a HARD STOP. The outcome — pass or
+// fail — is recorded in store.restore_tests regardless, so the durability
+// surfacing can answer "have my backups been proven recoverable, and when?".
+func (m *Manager) RestoreTest(ctx context.Context) (core.Result, error) {
+	stanza := m.config().Stanza
+	if err := validateStanza(stanza); err != nil {
+		return core.Result{}, err
+	}
+
+	// Reading a foreign-owned repo is a HARD STOP (mirrors Restore's read side).
+	if err := m.verifyForRead(ctx); err != nil {
+		return core.Result{}, err
+	}
+
+	// Label the backup being verified (newest, best-effort) so the history row
+	// records WHAT was checked. An info failure here must not fail the verify.
+	sourceLabel := ""
+	if info, err := m.Info(ctx); err == nil && len(info) > 0 {
+		sourceLabel = info[0].Label
+	}
+
+	started := time.Now().UTC()
+	_, runErr := m.runner.Run(ctx, VerifyCmd(stanza))
+	elapsed := time.Since(started)
+
+	rec := store.RestoreTestRecord{
+		TestedAt:    started,
+		SourceLabel: sourceLabel,
+		DurationMS:  elapsed.Milliseconds(),
+	}
+	if runErr != nil {
+		rec.Result = "fail"
+		rec.Detail = "pgbackrest verify failed: " + runErr.Error()
+		// Record on a detached context so a shutdown that cancels the operation
+		// ctx never drops the record of a failed (and thus alarming) verification.
+		recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		m.recordRestoreTest(recCtx, rec)
+		return core.Result{}, runErr
+	}
+	rec.Result = "success"
+	rec.Detail = "pgbackrest verify passed: repository integrity confirmed (no restore performed)"
+
+	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	id := m.recordRestoreTest(recCtx, rec)
+
+	result := core.Ok("restore test passed").
+		WithData("stanza", stanza).
+		WithData("method", "pgbackrest verify").
+		WithData("duration_ms", elapsed.Milliseconds())
+	if sourceLabel != "" {
+		result = result.WithData("source_label", sourceLabel)
+	}
+	if id > 0 {
+		result = result.WithData("history_id", id)
+	}
+	return result, nil
+}
+
 // remoteTargetConfigured reports whether a remote/S3 backup destination is
 // wired (a bucket or endpoint is set). A repo with neither is treated as
 // explicitly local-only, where there is no shared resource to corrupt and the
@@ -385,6 +457,21 @@ func (m *Manager) recordBackup(ctx context.Context, rec store.BackupRecord) int6
 	id, err := m.store.InsertBackup(ctx, rec)
 	if err != nil {
 		m.log.Error("failed to record backup history", "error", err)
+		return 0
+	}
+	return id
+}
+
+// recordRestoreTest inserts a restore-test history row, logging (not failing) on
+// a store error so a transient store hiccup never masks the verification result.
+// Returns the new row id (0 on failure or when no store is configured).
+func (m *Manager) recordRestoreTest(ctx context.Context, rec store.RestoreTestRecord) int64 {
+	if m.store == nil {
+		return 0
+	}
+	id, err := m.store.InsertRestoreTest(ctx, rec)
+	if err != nil {
+		m.log.Error("failed to record restore-test history", "error", err)
 		return 0
 	}
 	return id

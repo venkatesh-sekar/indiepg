@@ -170,16 +170,23 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, res)
 }
 
-// handleRestoreTest is a placeholder for automated restore verification. The
-// backend persists restore-test history but has no execution path yet, so this
-// returns a typed internal error rather than faking a success.
+// handleRestoreTest verifies that the backup repository is intact and
+// recoverable by running `pgbackrest verify` — a read-only repo integrity check
+// that never touches the live data directory and never performs a restore. The
+// pass/fail outcome is recorded in restore-test history so the durability
+// surfacing can answer "have my backups been proven recoverable?".
 func (s *Server) handleRestoreTest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	err := core.InternalError("restore-test execution is not available in this build").
-		WithHint("restore-test history is shown; automated restore verification is not yet implemented")
-	s.audit(ctx, "restore_test", "stanza", "failure", "restore-test execution unavailable", core.CodeOf(err))
-	writeError(w, err)
+	res, err := s.backups.RestoreTest(ctx)
+	if err != nil {
+		s.audit(ctx, "restore_test", "stanza", "failure", "restore-test verification failed", core.CodeOf(err))
+		writeError(w, err)
+		return
+	}
+
+	s.audit(ctx, "restore_test", "stanza", "success", "restore-test verification passed", "")
+	writeData(w, http.StatusOK, res)
 }
 
 // buildRecoveryTarget converts the optional request target into a

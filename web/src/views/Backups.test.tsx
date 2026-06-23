@@ -234,8 +234,8 @@ describe("restoreTestStatus", () => {
 
 describe("RestoreTestStatus", () => {
   it("calmly states (info) recoverability is unverified when no test has run", () => {
-    // Intentionally NOT a danger shout: automated restore testing is not yet
-    // wired, so it must not nudge toward an action that cannot complete.
+    // Intentionally NOT a danger shout: the operator simply hasn't run a
+    // verification yet, so it states the fact without alarm.
     render(<RestoreTestStatus tests={[]} />);
     expect(document.querySelector(".callout")).toHaveClass("callout-info");
     expect(screen.getByText(/haven't been test-restored yet/i)).toBeInTheDocument();
@@ -255,10 +255,10 @@ describe("RestoreTestStatus", () => {
     expect(screen.getByText(/no restore test has passed yet/i)).toBeInTheDocument();
   });
 
-  it("shows an ok banner (with verified rows) when the latest test passed", () => {
+  it("shows an ok banner (with restored rows) when the latest test passed", () => {
     render(<RestoreTestStatus tests={[rt({ result: "success", verified_rows: 1234 })]} />);
     expect(document.querySelector(".callout")).toHaveClass("callout-ok");
-    expect(screen.getByText(/proven recoverable/i)).toBeInTheDocument();
-    expect(screen.getByText(/1,234 rows verified/i)).toBeInTheDocument();
+    expect(screen.getByText(/verified intact/i)).toBeInTheDocument();
+    expect(screen.getByText(/1,234 rows restored and verified/i)).toBeInTheDocument();
   });
 });
