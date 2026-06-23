@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -95,14 +96,16 @@ func TestVerifyPasswordTamperedKeyReturnsFalse(t *testing.T) {
 	hash, err := HashPassword("pw", DefaultHashParams())
 	require.NoError(t, err)
 	parts := strings.Split(hash, "$")
-	// Flip the last base64 char of the key (still valid base64), expect false.
-	key := parts[5]
-	last := key[len(key)-1]
-	var repl byte = 'A'
-	if last == 'A' {
-		repl = 'B'
-	}
-	parts[5] = key[:len(key)-1] + string(repl)
+
+	// Tamper a real key *byte* (decode, flip, re-encode) rather than flipping a
+	// base64 character. The key is 32 bytes encoded with RawStdEncoding, so its
+	// final base64 char carries only 4 significant bits plus 2 padding bits;
+	// flipping that char can leave the decoded bytes unchanged and would make
+	// this test flaky. Flipping a decoded byte always changes the key.
+	key, err := base64.RawStdEncoding.DecodeString(parts[5])
+	require.NoError(t, err)
+	key[0] ^= 0xFF
+	parts[5] = base64.RawStdEncoding.EncodeToString(key)
 	tampered := strings.Join(parts, "$")
 
 	ok, err := VerifyPassword("pw", tampered)

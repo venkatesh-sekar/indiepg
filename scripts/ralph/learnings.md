@@ -31,6 +31,11 @@ the top, prune stale entries. One line each. Newest at the bottom of each group.
   `-tags integration`, so these never run in the normal gate (by design).
 - `go` here is a snap; the command sandbox blocks snap-confine
   (`cap_dac_override` missing). Run go/psql/pg_ctl with the sandbox disabled.
+- Tampering a base64 value by flipping its LAST char can be a no-op: the final
+  RawStdEncoding char of an N-byte blob whose length isn't a multiple of 3 carries
+  padding bits that decode to nothing (a 32-byte key → 43 chars, last char = 4
+  real bits + 2 padding). To reliably corrupt encoded bytes in a test, decode →
+  flip a byte → re-encode, never flip a base64 char. (Flaked the auth tamper test.)
 - Distinguish the two read-only refusal SQLSTATEs: `25006`
   (read_only_sql_transaction = the defense-in-depth GUC fired) vs `42501`
   (insufficient_privilege = the authoritative privilege-denial boundary). Assert

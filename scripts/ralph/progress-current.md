@@ -5,6 +5,21 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 0 (priority-0 fix) · de-flake the auth tampered-key test
+A failing test anywhere is always priority 0, so this iteration fixed it before
+resuming band-1 work. `go test ./...` flaked ~10% (3/30 runs) on
+`TestVerifyPasswordTamperedKeyReturnsFalse` in `internal/auth`. Root cause: the
+test tampered an Argon2id hash by flipping the LAST base64 character of the
+32-byte key. A 32-byte key encoded with `base64.RawStdEncoding` is 43 chars whose
+final char carries only 4 significant bits + 2 padding bits — so flipping it
+often decoded back to the SAME key bytes, leaving the hash untampered;
+`VerifyPassword` then (correctly) returned true and the test failed. Fixed by
+tampering a real key *byte* instead: decode `parts[5]`, `key[0] ^= 0xFF`,
+re-encode. That always changes the derived key, so the assertion is deterministic
+(0/50 failures after). Pure test change; no production code touched. Reviewed
+(code-reviewer: no blocking issues). The band-1 CREATE-via-PUBLIC item that
+prompted the discovery of this flake remains open and detailed in the backlog.
+
 ## 2026-06-24 · band 1 (security) · prove read-only role can't write at the DB level
 Closed the "verify read-only role is enforced at the DB level" backlog item.
 The query box runs through `ExecuteRead` on a pool connected as `indiepg_readonly`,
