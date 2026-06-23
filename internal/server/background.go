@@ -179,8 +179,9 @@ func (s *Server) stopBackgroundJobs() {
 
 // seedDefaultAlertRules inserts any of the shipped default rules that are not
 // already present in the store, so a fresh install boots with smart alerting
-// (Postgres down, disk full, backup failed/stale, connections near max,
-// replication lag). It is idempotent and never clobbers an operator's edits: a
+// (Postgres down, disk full, backup failed/stale, connections near max
+// escalating to critically high, replication lag). It is idempotent and never
+// clobbers an operator's edits: a
 // rule whose id already exists is left exactly as the operator saved it
 // (including a disabled or re-thresholded one), so seeding can run safely on
 // every startup.

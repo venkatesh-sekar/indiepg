@@ -182,8 +182,9 @@ func RuleFromRecord(rec store.AlertRecord) (Rule, error) {
 
 // DefaultRules returns the smart out-of-the-box rules every panel ships with:
 // Postgres down, disk headroom low (early warning) escalating to disk almost
-// full, no recent backup, connections near max, and replication lag high. These
-// match the design's "smart defaults" (§5.8).
+// full, no recent backup, connections near max (warning) escalating to
+// connections critically high, and replication lag high. These match the
+// design's "smart defaults" (§5.8).
 func DefaultRules() []Rule {
 	return []Rule{
 		{
@@ -263,6 +264,26 @@ func DefaultRules() []Rule {
 			Severity:  SeverityWarning,
 			For:       2 * time.Minute,
 			Cooldown:  30 * time.Minute,
+			Enabled:   true,
+		},
+		{
+			// Critical escalation of connections-near-max. At ~max_connections
+			// Postgres REFUSES new clients ("too many clients already") — an
+			// outage: apps can no longer connect, and the panel itself can be
+			// locked out once only superuser_reserved_connections remain. So once
+			// saturation is near-total, page LOUDER and SOONER than the 85% warning:
+			// a higher threshold but a shorter 1m For and a 15m cooldown matching the
+			// other outage-class rules (pg-down). 95% < 100% leaves a sliver of
+			// runway to kill runaway sessions before exhaustion. Mirrors the
+			// disk-headroom-low → disk-almost-full two-tier escalation.
+			ID:        "connections-critical",
+			Name:      "Connections critically high",
+			Metric:    MetricConnectionsPercent,
+			Op:        OpGTE,
+			Threshold: 95,
+			Severity:  SeverityCritical,
+			For:       1 * time.Minute,
+			Cooldown:  15 * time.Minute,
 			Enabled:   true,
 		},
 		{

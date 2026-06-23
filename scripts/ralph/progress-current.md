@@ -5,6 +5,38 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2.5 (resource & config safety) · connection-saturation alert: add a CRITICAL escalation tier
+Closed the last band-2.5 alert item. The WARNING tier `connections-near-max`
+(`pg.connections_percent` >= 85%, For 2m) already shipped — the prior iteration's
+notes correctly suspected the item was "likely already satisfied." The audit found
+it satisfied at the warning level but missing an escalation: at ~max_connections
+Postgres refuses new clients ("too many clients already") — a hard outage where
+apps can no longer connect and the panel itself can be locked out once only
+`superuser_reserved_connections` remain. Every other outage-class resource
+(disk, pg-down) pages CRITICAL; connections only had the one warning.
+
+Added the critical tier `connections-critical` (`pg.connections_percent` >= 95%,
+For 1m, Cooldown 15m, Severity Critical) — a higher threshold but a shorter For
+and the 15m cooldown of the other outage-class rules, with 95% leaving a sliver
+of runway to kill runaway sessions before exhaustion. This mirrors the
+disk-headroom-low(80% warn) → disk-almost-full(90% crit) two-tier escalation
+established for disk. The security/durability tie-break wins: escalate louder and
+sooner before a hard outage.
+
+Rule-only, like the disk early-warning tier: the metric is already real
+(`internal/pg/sampler.go` samples `count(*) FROM pg_stat_activity` /
+`current_setting('max_connections')` → snapshot → `metricValue`'s
+`pg.connections_percent`), and `seedDefaultAlertRules` is ID-based so the new
+rule auto-seeds on upgrade without clobbering an operator's edits. Updated the
+`TestDefaultRules` want-list and added `TestConnectionSaturationTiers` proving
+tier ordering (warning strictly lower severity + threshold than critical, same
+metric) AND non-vacuous firing of BOTH tiers — the warning fires at 90% (past its
+2m For) while the critical stays OK below 95%, and the critical fires at 97% past
+its 1m For. Also fixed the now-stale `seedDefaultAlertRules` doc comment to name
+the new tier. Go gate green (gofmt/vet/test/build, sandbox-disabled per snap);
+web untouched. Reviewed (feature-dev:code-reviewer): no blocking findings.
+Remaining band-2.5: host-sized tuning at provision (pure sizing fn, no PG needed).
+
 ## 2026-06-24 · band 2.5 (resource & config safety) · self-healing config: a config change that stops Postgres auto-rolls-back to last-known-good
 The marquee band-2.5 item, named in the north star: "a bad change (even a user
 override) that stops Postgres must auto-rollback to last-known-good." Built the

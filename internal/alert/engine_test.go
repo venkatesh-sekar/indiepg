@@ -383,6 +383,91 @@ func TestDiskHeadroomEarlyWarningTier(t *testing.T) {
 	require.Equal(t, string(StateOK), critRec.State, "critical tier must not fire below its threshold")
 }
 
+// TestConnectionSaturationTiers proves the shipped connection-saturation rules
+// form a two-tier escalation like the disk rules: "connections-near-max" is a
+// Warning that trips at a strictly lower saturation than the
+// "connections-critical" Critical, which pages louder and sooner as the box
+// approaches max_connections (a hard outage: Postgres refuses new clients). It
+// verifies the tier ordering and that BOTH tiers fire non-vacuously — the
+// warning between the thresholds without tripping the critical, and the critical
+// once saturation is near-total.
+func TestConnectionSaturationTiers(t *testing.T) {
+	var warn, crit Rule
+	for _, r := range DefaultRules() {
+		switch r.ID {
+		case "connections-near-max":
+			warn = r
+		case "connections-critical":
+			crit = r
+		}
+	}
+	require.Equal(t, "connections-near-max", warn.ID, "default rule set must include the warning tier")
+	require.Equal(t, "connections-critical", crit.ID, "default rule set must include the critical tier")
+
+	// Tier shape: the warning must be lower-severity and trip at a strictly lower
+	// saturation than the critical, so it is a genuine early warning on the same
+	// metric.
+	require.Equal(t, SeverityWarning, warn.Severity)
+	require.Equal(t, SeverityCritical, crit.Severity)
+	require.Equal(t, MetricConnectionsPercent, warn.Metric)
+	require.Equal(t, MetricConnectionsPercent, crit.Metric)
+	require.Less(t, warn.Threshold, crit.Threshold, "the warning must fire before the critical threshold")
+
+	base := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+
+	// Warning-only band: at saturation between the two thresholds (90 of 100 ==
+	// 90%, with 85 <= 90 < 95) the warning fires once sustained past its For
+	// window while the critical stays quiet.
+	t.Run("warning fires below critical", func(t *testing.T) {
+		st := newTestStore(t)
+		eng := NewEngine(st, nil)
+		saveRule(t, st, warn)
+		saveRule(t, st, crit)
+
+		snap90 := telemetry.Snapshot{Connections: 90, MaxConnections: 100}
+
+		// First breach: within the warning's For window, nothing fires yet.
+		events, err := eng.Evaluate(context.Background(), snap90, base)
+		require.NoError(t, err)
+		require.Empty(t, events)
+
+		// Sustained past the 2-minute For window: only the warning fires.
+		events, err = eng.Evaluate(context.Background(), snap90, base.Add(3*time.Minute))
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		require.Equal(t, "connections-near-max", events[0].Rule.ID)
+		require.Equal(t, StateFiring, events[0].State)
+
+		critRec, err := st.GetAlert(context.Background(), "connections-critical")
+		require.NoError(t, err)
+		require.Equal(t, string(StateOK), critRec.State, "critical tier must not fire below its threshold")
+	})
+
+	// Critical band: at near-total saturation (97 of 100 == 97% >= 95) the
+	// critical tier fires once sustained past its (shorter) For window. Proves the
+	// new tier is non-vacuous.
+	t.Run("critical fires near saturation", func(t *testing.T) {
+		st := newTestStore(t)
+		eng := NewEngine(st, nil)
+		saveRule(t, st, crit)
+
+		snap97 := telemetry.Snapshot{Connections: 97, MaxConnections: 100}
+
+		// First breach: within the critical's For window, nothing fires yet.
+		events, err := eng.Evaluate(context.Background(), snap97, base)
+		require.NoError(t, err)
+		require.Empty(t, events)
+
+		// Sustained past the 1-minute For window: the critical fires.
+		events, err = eng.Evaluate(context.Background(), snap97, base.Add(90*time.Second))
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		require.Equal(t, "connections-critical", events[0].Rule.ID)
+		require.Equal(t, SeverityCritical, events[0].Rule.Severity)
+		require.Equal(t, StateFiring, events[0].State)
+	})
+}
+
 func TestEngineMalformedRuleSkippedNotFatal(t *testing.T) {
 	st := newTestStore(t)
 	eng := NewEngine(st, nil)
