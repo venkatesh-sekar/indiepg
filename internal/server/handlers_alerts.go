@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -31,6 +33,29 @@ type alertChannelConfig struct {
 	PushoverUser  string `json:"pushover_user,omitempty"`
 	WebhookURL    string `json:"webhook_url,omitempty"`
 }
+
+// String renders the channel with its credentials — the Pushover application
+// token and the webhook URL (which may itself embed a secret) — replaced by the
+// redaction marker, the same two fields maskAlertChannels strips before the API
+// echoes a channel back. This keeps a stored notification secret from leaking
+// through a log line, an error string, or any fmt verb. PushoverUser is a
+// non-secret user/group key (the mask keeps it), so it stays visible.
+func (c alertChannelConfig) String() string {
+	return fmt.Sprintf(
+		"alertChannelConfig{Kind:%q Enabled:%t PushoverToken:%s PushoverUser:%q WebhookURL:%s}",
+		c.Kind, c.Enabled, core.Redact(c.PushoverToken), c.PushoverUser, core.Redact(c.WebhookURL),
+	)
+}
+
+// LogValue makes alertChannelConfig an slog.LogValuer so structured logging
+// renders the redacted String() form rather than reflecting into the raw
+// credential fields.
+func (c alertChannelConfig) LogValue() slog.Value { return slog.StringValue(c.String()) }
+
+// GoString makes alertChannelConfig an fmt.GoStringer so even the %#v Go-syntax
+// verb — which bypasses String() — renders the redacted form rather than the
+// raw Pushover token and webhook URL.
+func (c alertChannelConfig) GoString() string { return c.String() }
 
 // alertRuleResponse is the wire shape for a single rule. Durations are exposed
 // in whole seconds (matching the stored definition), and the evaluation state

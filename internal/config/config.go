@@ -5,7 +5,11 @@
 package config
 
 import (
+	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
 
 // Defaults captured as constants so install and load agree.
@@ -42,6 +46,30 @@ type S3Target struct {
 	// it makes every encrypted backup unrecoverable.
 	CipherPass string `json:"-"`
 }
+
+// String renders the target with its two secrets (SecretKey, CipherPass)
+// replaced by the redaction marker, so an S3Target — including one reached as
+// the Backup field of a Config formatted with %+v — can never leak its
+// credentials through a log line, an error string, or any fmt verb. AccessKey is
+// an access-key *id* (already serialized to the API), not a secret, so it stays
+// visible to keep the rendering useful for debugging.
+func (t S3Target) String() string {
+	return fmt.Sprintf(
+		"S3Target{Endpoint:%q Region:%q Bucket:%q Prefix:%q AccessKey:%q SecretKey:%s CipherPass:%s UseSSL:%t}",
+		t.Endpoint, t.Region, t.Bucket, t.Prefix, t.AccessKey,
+		core.Redact(t.SecretKey), core.Redact(t.CipherPass), t.UseSSL,
+	)
+}
+
+// LogValue makes S3Target an slog.LogValuer so structured logging (the panel's
+// core.Logger) renders the redacted String() form rather than reflecting into
+// the raw secret fields.
+func (t S3Target) LogValue() slog.Value { return slog.StringValue(t.String()) }
+
+// GoString makes S3Target an fmt.GoStringer so even the %#v Go-syntax verb —
+// which bypasses String() and would otherwise reflect into the raw fields —
+// renders the redacted form. Closes the last fmt path that could leak a secret.
+func (t S3Target) GoString() string { return t.String() }
 
 // Schedules holds cron expressions (robfig/cron syntax) for periodic jobs. An
 // empty expression disables that job.

@@ -1,6 +1,12 @@
 package store
 
-import "time"
+import (
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/venkatesh-sekar/indiepg/internal/core"
+)
 
 // Instance is the panel's stable identity row.
 type Instance struct {
@@ -20,6 +26,28 @@ type AuthRecord struct {
 	LockedUntil    *time.Time `json:"locked_until,omitempty"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
+
+// String renders the record with its two secrets — the Argon2id PasswordHash and
+// the raw HMAC SessionSecret used to sign every session token — replaced by the
+// redaction marker. These are the most sensitive bytes the panel holds, so an
+// AuthRecord must never leak them through a log line, an error string, or any
+// fmt verb; only the non-secret lockout/state fields are shown.
+func (r AuthRecord) String() string {
+	return fmt.Sprintf(
+		"AuthRecord{PasswordHash:%s SessionSecret:%s FailedAttempts:%d LockedUntil:%v UpdatedAt:%v}",
+		core.Redact(r.PasswordHash), core.RedactBytes(r.SessionSecret),
+		r.FailedAttempts, r.LockedUntil, r.UpdatedAt,
+	)
+}
+
+// LogValue makes AuthRecord an slog.LogValuer so structured logging renders the
+// redacted String() form instead of reflecting into the secret fields.
+func (r AuthRecord) LogValue() slog.Value { return slog.StringValue(r.String()) }
+
+// GoString makes AuthRecord an fmt.GoStringer so even the %#v Go-syntax verb —
+// which bypasses String() — renders the redacted form rather than the raw
+// password hash and session signing secret.
+func (r AuthRecord) GoString() string { return r.String() }
 
 // AuditEntry is one row of the audit log.
 type AuditEntry struct {

@@ -46,6 +46,16 @@ the top, prune stale entries. One line each. Newest at the bottom of each group.
   padding bits that decode to nothing (a 32-byte key → 43 chars, last char = 4
   real bits + 2 padding). To reliably corrupt encoded bytes in a test, decode →
   flip a byte → re-encode, never flip a base64 char. (Flaked the auth tamper test.)
+- To keep a secret out of logs/errors defensively (not just at known call sites),
+  make the secret-bearing struct render itself redacted: implement `fmt.Stringer`
+  AND `slog.LogValuer` AND `fmt.GoStringer`. String() covers `%v/%+v/%s` and a
+  parent's `%+v` (fmt recurses into struct fields and calls their String());
+  LogValue() covers slog structured logging (the panel's core.Logger); GoString()
+  is required because `%#v` bypasses String() (testify diff output uses %#v).
+  Helpers: `core.Redact(string)` / `core.RedactBytes([]byte)` → fixed `REDACTED`
+  marker, "" when empty, never reveals length. Secret-bearing structs today:
+  config.S3Target, store.AuthRecord, server.alertChannelConfig. Note LogValuer
+  does NOT affect encoding/json — JSON API output still relies on `json:"-"`.
 - Distinguish the two read-only refusal SQLSTATEs: `25006`
   (read_only_sql_transaction = the defense-in-depth GUC fired) vs `42501`
   (insufficient_privilege = the authoritative privilege-denial boundary). Assert

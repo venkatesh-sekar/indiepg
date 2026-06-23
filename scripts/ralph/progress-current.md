@@ -5,6 +5,24 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1 (security) · secrets never logged (log-scrubbing half of secrets-at-rest)
+The state DB file `0600`/dir `0700` hardening and its mode test already existed,
+so this closed the remaining "never logged" half. Inventoried every
+secret-bearing struct and gave each a redacting `fmt.Stringer` + `slog.LogValuer`
++ `fmt.GoStringer`: `config.S3Target` (SecretKey, CipherPass), `store.AuthRecord`
+(Argon2id password hash + the raw HMAC session signing secret — the crown
+jewels), `server.alertChannelConfig` (Pushover token, webhook URL). New
+`core.Redact`/`core.RedactBytes` produce a fixed `REDACTED` marker that leaks
+nothing (not even length). Now no log line, error string, or fmt verb
+(`%v/%+v/%s/%#v`, including a secret nested inside a parent's `%+v`) can surface
+these — defense-in-depth against a future `log.Info("cfg", cfg)` regression.
+Non-secret identifiers stay visible to match the codebase's own boundary (S3
+AccessKey is serialized `json:"access_key"`; PushoverUser is kept by
+`maskAlertChannels`). Per-struct log-scrubbing tests assert secrets absent +
+marker present across text and JSON slog handlers and every fmt verb. JSON API
+output is unchanged (`json:"-"` stands; LogValuer never touches encoding/json).
+Reviewed by code-reviewer; closed the `%#v` GoStringer hole it flagged.
+
 ## 2026-06-24 · band 1 (security) · close the read-only CREATE-via-PUBLIC residual
 Closed the last DB-level write vector for `indiepg_readonly`. On PG <= 14 the
 `public` schema grants CREATE to the `PUBLIC` pseudo-role, which every role
