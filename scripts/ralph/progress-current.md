@@ -5,6 +5,30 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · restore-test DEEP — end-to-end integration test
+Committed the one remaining band-1.5 item: the end-to-end integration proof for
+`Manager.RestoreTestDeep` (`internal/backup/restore_deep_integration_test.go`).
+The fake-Runner unit tests can prove orchestration but never that a real restore
+boots and counts; this does. It's `//go:build integration` + env-gated (skips
+unless `INDIEPG_PG_BINDIR` is set and `pgbackrest` is on PATH), so it NEVER runs
+in the loop's untagged `go test ./...` gate — by design. It stands up a throwaway
+PG cluster with a local pgBackRest stanza, takes a real full backup of 1234
+seeded+ANALYZEd rows through `Manager.Backup`, then asserts `RestoreTestDeep`
+restores into a scratch dir, boots it (full WAL replay) on a private socket,
+records a `success` row with `verified_rows > 0`, and tears the scratch dir down.
+A `stripUserRunner` drops the production `AsUser="postgres"` and injects
+`PGBACKREST_CONFIG` so every binary runs as the current user — no sudo. Verified
+it compiles under `-tags integration` (vet clean) and leaves the normal gate
+untouched (gofmt/vet/test/build all green). Reviewed (feature-dev:code-reviewer):
+its one "critical" finding (port 5499 collision) was rejected as factually wrong —
+both clusters use unix sockets in distinct dirs with empty `listen_addresses`, so
+the shared port is only a socket-filename suffix in non-overlapping directories
+(restore_deep.go's own comment designs against exactly this); its second finding
+was a self-described doc note already covered by the test's ANALYZE comment.
+**This was the last load-bearing band-1.5 item → band 1.5 (data durability) is
+complete. Next iteration starts band 2 (stability).** (The unregistered `digest`
+job is deferred — no digest builder exists, not load-bearing for "never lose data".)
+
 ## 2026-06-24 · band 1.5 (data durability) · restore-test DEEP — UI opt-in button
 The deep-restore proof (`Manager.RestoreTestDeep`, `POST /backups/restore-test?deep=true`)
 had backend + scheduler but no way to trigger it from the panel — only the cheap
