@@ -6,8 +6,10 @@ import {
   backupFreshness,
   BackupStatusSummary,
   LocalBackupWarning,
+  RestoreTestStatus,
+  restoreTestStatus,
 } from "./Backups";
-import type { BackupRecord, S3Target } from "@/api/types";
+import type { BackupRecord, RestoreTestRecord, S3Target } from "@/api/types";
 
 // s3 builds an S3Target; override only the fields a case cares about. Defaults to
 // an empty (unconfigured) target so "configured" cases are explicit.
@@ -19,6 +21,21 @@ function s3(over: Partial<S3Target> = {}): S3Target {
     prefix: "",
     access_key: "",
     use_ssl: true,
+    ...over,
+  };
+}
+
+// rt builds a RestoreTestRecord; override only what a case cares about.
+// Defaults to a passed test so failure cases are explicit at the call site.
+function rt(over: Partial<RestoreTestRecord>): RestoreTestRecord {
+  return {
+    id: 1,
+    tested_at: "2026-06-24T10:00:00Z",
+    source_label: "20260624-incr",
+    verified_rows: 0,
+    result: "success",
+    duration_ms: 1000,
+    detail: "",
     ...over,
   };
 }
@@ -177,5 +194,71 @@ describe("BackupStatusSummary", () => {
     expect(document.querySelector(".callout")).toHaveClass("callout-ok");
     expect(screen.getByText(/your data is backed up/i)).toBeInTheDocument();
     expect(screen.getByText("full")).toBeInTheDocument();
+  });
+});
+
+describe("restoreTestStatus", () => {
+  it("reports never when no restore test has run", () => {
+    expect(restoreTestStatus([])).toEqual({ kind: "never" });
+  });
+
+  it("reports passed when the most recent test passed", () => {
+    const newest = rt({ id: 2, result: "success" });
+    const older = rt({ id: 1, result: "success" });
+    expect(restoreTestStatus([newest, older])).toEqual({ kind: "passed", passed: newest });
+  });
+
+  it("reports failed (with the last PASSED test) when the most recent test failed", () => {
+    const failed = rt({ id: 3, result: "fail" });
+    const lastPassed = rt({ id: 2, result: "success" });
+    const older = rt({ id: 1, result: "success" });
+    // newest-first order, as the server returns it
+    expect(restoreTestStatus([failed, lastPassed, older])).toEqual({
+      kind: "failed",
+      passed: lastPassed,
+    });
+  });
+
+  it("reports never-passed when tests have run but none ever passed", () => {
+    expect(restoreTestStatus([rt({ result: "fail" }), rt({ result: "fail" })])).toEqual({
+      kind: "never-passed",
+    });
+  });
+
+  it("treats an unrecognized latest result as not-failed (keeps showing the last pass)", () => {
+    const unknown = rt({ id: 3, result: "running" });
+    const lastPassed = rt({ id: 2, result: "success" });
+    expect(restoreTestStatus([unknown, lastPassed])).toEqual({ kind: "passed", passed: lastPassed });
+  });
+});
+
+describe("RestoreTestStatus", () => {
+  it("calmly states (info) recoverability is unverified when no test has run", () => {
+    // Intentionally NOT a danger shout: automated restore testing is not yet
+    // wired, so it must not nudge toward an action that cannot complete.
+    render(<RestoreTestStatus tests={[]} />);
+    expect(document.querySelector(".callout")).toHaveClass("callout-info");
+    expect(screen.getByText(/haven't been test-restored yet/i)).toBeInTheDocument();
+  });
+
+  it("shouts (danger) when the most recent restore test failed", () => {
+    render(
+      <RestoreTestStatus tests={[rt({ result: "fail" }), rt({ result: "success" })]} />,
+    );
+    expect(document.querySelector(".callout")).toHaveClass("callout-danger");
+    expect(screen.getByText(/most recent restore test failed/i)).toBeInTheDocument();
+  });
+
+  it("shouts (danger) when no restore test has ever passed", () => {
+    render(<RestoreTestStatus tests={[rt({ result: "fail" })]} />);
+    expect(document.querySelector(".callout")).toHaveClass("callout-danger");
+    expect(screen.getByText(/no restore test has passed yet/i)).toBeInTheDocument();
+  });
+
+  it("shows an ok banner (with verified rows) when the latest test passed", () => {
+    render(<RestoreTestStatus tests={[rt({ result: "success", verified_rows: 1234 })]} />);
+    expect(document.querySelector(".callout")).toHaveClass("callout-ok");
+    expect(screen.getByText(/proven recoverable/i)).toBeInTheDocument();
+    expect(screen.getByText(/1,234 rows verified/i)).toBeInTheDocument();
   });
 });

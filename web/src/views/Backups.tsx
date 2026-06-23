@@ -25,6 +25,7 @@ import type {
   BackupType,
   ConfigResponse,
   RecoveryTarget,
+  RestoreTestRecord,
   S3Target,
 } from "@/api/types";
 
@@ -170,6 +171,7 @@ export function Backups() {
           </Card>
 
           <Card title="Restore tests">
+            <RestoreTestStatus tests={history.data.restore_tests} />
             {history.data.restore_tests.length === 0 ? (
               <EmptyState
                 title="No restore tests yet"
@@ -356,6 +358,96 @@ export function BackupStatusSummary({ backups }: { backups: BackupRecord[] }) {
     <Callout tone="ok" title="Your data is backed up">
       Last good backup <strong>{ago(when)}</strong> ({dateTime(when)}) ·{" "}
       <Badge tone="info">{state.good.backup_type}</Badge>
+    </Callout>
+  );
+}
+
+// --- Restore verification (have my backups been proven recoverable?) --------
+
+/**
+ * RestoreVerification is the at-a-glance answer to "have my backups actually
+ * been test-restored, and did it work?" — a stronger guarantee than "a backup
+ * file exists", since a backup you have never restored is one you do not know
+ * works. Derived from the restore-test history (newest-first).
+ *
+ *  - never:        no restore test has ever run — recoverability is unverified.
+ *  - passed:       the most recent restore test passed.
+ *  - failed:       a test has passed before, but the MOST RECENT one failed — so
+ *                  recoverability is in doubt right now.
+ *  - never-passed: restore tests have run but not one has ever passed.
+ */
+export type RestoreVerification =
+  | { kind: "never" }
+  | { kind: "passed"; passed: RestoreTestRecord }
+  | { kind: "failed"; passed: RestoreTestRecord }
+  | { kind: "never-passed" };
+
+/**
+ * restoreTestStatus classifies the restore-test history. It mirrors
+ * backupFreshness and relies on the same server contract that records are
+ * newest-first (`ORDER BY tested_at DESC`), so tests[0] is the most recent run
+ * and the first pass encountered is the most recent good one. It reuses the
+ * shared SUCCESS_RESULTS/FAILURE_RESULTS vocabulary so backups and restore tests
+ * classify "pass"/"fail" identically.
+ */
+export function restoreTestStatus(tests: RestoreTestRecord[]): RestoreVerification {
+  if (tests.length === 0) return { kind: "never" };
+  const passed = tests.find((t) => SUCCESS_RESULTS.has(t.result.toLowerCase()));
+  if (!passed) return { kind: "never-passed" };
+  if (FAILURE_RESULTS.has(tests[0].result.toLowerCase())) return { kind: "failed", passed };
+  return { kind: "passed", passed };
+}
+
+/**
+ * RestoreTestStatus is the at-a-glance banner above the restore-test history: it
+ * answers, in one line, whether the operator's backups have been proven
+ * recoverable and when. The "never" state is intentionally calm (info, not a
+ * call-to-action) — automated restore testing is not yet wired, so it states the
+ * fact without nudging toward an action that cannot complete. Once tests run, a
+ * failed/never-passed result shouts (danger), because an unrecoverable backup is
+ * a data-loss risk the operator must see without reading the table.
+ */
+export function RestoreTestStatus({ tests }: { tests: RestoreTestRecord[] }) {
+  const state = restoreTestStatus(tests);
+
+  if (state.kind === "never") {
+    return (
+      <Callout tone="info" title="Your backups haven't been test-restored yet">
+        You&apos;ve confirmed backups are being made, but not that they can actually be recovered.
+        A restore test is the only way to be sure — until one runs, treat recoverability as
+        unverified.
+      </Callout>
+    );
+  }
+
+  if (state.kind === "never-passed") {
+    return (
+      <Callout tone="danger" title="No restore test has passed yet">
+        Every restore test so far has failed, so your backups have not been proven recoverable.
+        Check the most recent failure below.
+      </Callout>
+    );
+  }
+
+  const when = state.passed.tested_at;
+
+  if (state.kind === "failed") {
+    return (
+      <Callout tone="danger" title="Your most recent restore test failed">
+        The last restore test did not pass, so your backups may not be recoverable right now. The
+        last test that passed was <strong>{ago(when)}</strong> ({dateTime(when)}) — check the
+        failure below.
+      </Callout>
+    );
+  }
+
+  return (
+    <Callout tone="ok" title="Your backups are proven recoverable">
+      Last verified restore <strong>{ago(when)}</strong> ({dateTime(when)})
+      {state.passed.verified_rows > 0 ? (
+        <> · {state.passed.verified_rows.toLocaleString()} rows verified</>
+      ) : null}
+      .
     </Callout>
   );
 }

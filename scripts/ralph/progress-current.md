@@ -5,6 +5,27 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · surface restore-verification status at a glance
+The Backups page already listed restore-test history in a table, but nothing
+answered the durability question up front: *have my backups ever been proven
+recoverable?* A backup you've never restored is one you don't know works. Closed
+the surfacing item: added an exported pure `restoreTestStatus(tests)` classifier
+(`never | passed | failed | never-passed`, mirroring `backupFreshness` and reusing
+the shared SUCCESS/FAILURE result vocabulary so backups and restore tests classify
+identically) and a `RestoreTestStatus` banner above the Restore-tests card that
+states recoverability + when in one line. Crucially, the "never" state is
+deliberately CALM (info tone, no call-to-action): automated restore-test execution
+is still a stub, so in production only "never" can occur today, and the banner must
+not nudge the operator toward a button that can't complete. The failed/never-passed
+states shout danger for when execution lands. Added 9 vitest/RTL tests (classifier ×
+all branches incl. unknown-latest result; component × all four tones incl. the
+verified-rows display path). Reviewed (feature-dev:code-reviewer): no blocking
+issues. Refiled the real next durability item — restore-test EXECUTION — as a
+DESIGN-FIRST backlog entry (verify vs scratch-restore vs full-boot, each with its
+disk-headroom/cleanup tradeoffs; no `sm` precedent to port), so it gets a deliberate
+design pass rather than a rushed half-build that would give false durability
+confidence. Web typecheck/33 tests/build + full Go gate green.
+
 ## 2026-06-24 · band 1.5 (data durability) · test-lock the local-only "move backups off-host" nudge
 The off-host nudge already existed (Backups page badge + warn Callout, Settings
 "recommended" copy), but the local-vs-S3 destination logic was computed inline in
