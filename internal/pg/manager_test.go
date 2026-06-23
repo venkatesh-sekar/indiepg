@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,28 @@ import (
 
 func newManager(r exec.Runner) *Manager {
 	return New(Options{Runner: r, Config: config.Default()})
+}
+
+// pinTuningNoOp makes a manager's Provision apply a fixed, host-independent
+// recommendation and programs the FakeRunner's pg_settings read to report every
+// managed setting already at that value (rendered in MB) — so ApplyTuning sees no
+// change and Provision's restart/reload behaviour stays deterministic regardless
+// of the test host's RAM/CPU.
+func pinTuningNoOp(m *Manager, r *exec.FakeRunner) {
+	rec := RecommendTuning(4096, 4, ProfileMixed)
+	m.detectTuning = func(WorkloadProfile) (TuningRecommendation, bool) { return rec, true }
+	// Report each setting in the unit Postgres natively emits — 8kB blocks for
+	// shared_buffers/effective_cache_size, kB for work_mem/maintenance_work_mem,
+	// unit-less for max_connections — so the no-op detection exercises the real
+	// byte-conversion round-trip rather than a synthetic MB==MB identity.
+	rows := strings.Join([]string{
+		fmt.Sprintf("shared_buffers|%d|8kB", rec.SharedBuffersMB*128),
+		fmt.Sprintf("effective_cache_size|%d|8kB", rec.EffectiveCacheMB*128),
+		fmt.Sprintf("work_mem|%d|kB", rec.WorkMemMB*1024),
+		fmt.Sprintf("maintenance_work_mem|%d|kB", rec.MaintenanceWorkMemMB*1024),
+		fmt.Sprintf("max_connections|%d|", rec.MaxConnections),
+	}, "\n")
+	r.On("pg_settings", exec.FakeResponse{Stdout: rows})
 }
 
 // joinedCall renders a recorded RunSpec the way the FakeRunner matches it, so
@@ -43,11 +66,14 @@ func TestProvision_HappyPath(t *testing.T) {
 	r.On("pg_reload_conf", exec.FakeResponse{})
 
 	m := newManager(r)
+	pinTuningNoOp(m, r)
 
 	res, err := m.Provision(context.Background())
 	require.NoError(t, err)
 	require.True(t, res.OK)
 	require.NotEmpty(t, res.Statements)
+	require.Equal(t, "already-applied", res.Data["tuning"])
+	require.Contains(t, strings.Join(res.Statements, "\n"), "host-sized tuning")
 
 	// The managed trust block must have been written ahead of the default rule.
 	hbaContent, err := os.ReadFile(hbaFile)
@@ -100,6 +126,9 @@ func TestProvision_SecondRunIsIdempotentNoOp(t *testing.T) {
 	r.On("pg_reload_conf", exec.FakeResponse{})
 
 	m := newManager(r)
+	// Tuning is already at the host-sized value on both runs, so it never restarts
+	// or reloads — keeping the reload-count invariant below about pg_hba alone.
+	pinTuningNoOp(m, r)
 
 	// First provision: fresh box. Socket auth is configured and the reload fires.
 	first, err := m.Provision(context.Background())

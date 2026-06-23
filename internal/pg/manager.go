@@ -71,6 +71,20 @@ type Manager struct {
 	mu       sync.RWMutex
 	readPool *pgxpool.Pool
 	privPool *pgxpool.Pool
+
+	// detectTuning resolves this host's recommended tuning for a profile. nil
+	// means use detectHostTuning (real /proc/meminfo + runtime CPU); tests set
+	// it to pin RAM/CPU so the apply decision is deterministic.
+	detectTuning func(WorkloadProfile) (TuningRecommendation, bool)
+}
+
+// hostTuning returns the host-sized recommendation for a profile, via the
+// detectTuning seam when set (tests) or real host detection otherwise.
+func (m *Manager) hostTuning(profile WorkloadProfile) (TuningRecommendation, bool) {
+	if m.detectTuning != nil {
+		return m.detectTuning(profile)
+	}
+	return detectHostTuning(profile)
 }
 
 // Options configure a Manager. Runner is required for any IO; a nil Logger is
@@ -193,22 +207,40 @@ func (m *Manager) Provision(ctx context.Context) (core.Result, error) {
 	if !socketAuthChanged {
 		socketAuth = "already-present"
 	}
-	// Surface the host-sized best-default tuning for this box (Mixed profile)
-	// so the operator can see what Postgres should be sized to for their RAM/CPU.
-	// This is informational only — it is NOT applied here; applying the
-	// restart-requiring settings (shared_buffers, max_connections) is a separate
-	// step that must funnel through restartWithRollback. Computing it never
-	// touches Postgres, so it cannot fail provisioning.
-	tuning, _ := detectHostTuning(ProfileMixed)
+	// Apply the host-sized best-default tuning for this box (Mixed profile):
+	// shared_buffers / work_mem / effective_cache_size / max_connections sized to
+	// detected RAM/CPU per DEFAULTS.md. Restart-requiring settings are activated
+	// through restartWithRollback, so a value the postmaster rejects auto-rolls-
+	// back to last-known-good and Postgres is never left down. Re-running Provision
+	// is a no-op when the settings already match.
+	tuning, _ := m.hostTuning(ProfileMixed)
+	tuningStatus := "applied"
+	tuningChanged, err := m.ApplyTuning(ctx, tuning)
+	switch {
+	case err == nil && !tuningChanged:
+		tuningStatus = "already-applied"
+	case err == nil:
+		tuningStatus = "applied"
+	case core.CodeOf(err) == core.CodeSafety:
+		// A value the postmaster rejected was auto-rolled-back; Postgres is running
+		// on the previous good config. Don't fail the whole provision over an
+		// oversized tuning default — record it and carry on, on best defaults.
+		m.log.Warn("host-sized tuning was rejected and rolled back; Postgres running on prior config",
+			"error", err.Error())
+		tuningStatus = "rejected (rolled back to last-known-good)"
+	default:
+		return core.Result{}, err
+	}
 	steps = append(steps, fmt.Sprintf(
-		"computed host-sized tuning recommendation (%dMB RAM, %d CPU, %s profile) — not yet applied",
-		tuning.MemoryMB, tuning.CPUCount, tuning.Profile))
+		"host-sized tuning (%dMB RAM, %d CPU, %s profile): %s",
+		tuning.MemoryMB, tuning.CPUCount, tuning.Profile, tuningStatus))
 
 	result := core.Ok("Postgres provisioned").
 		WithData("roles", []string{ReadOnlyRole, AdminRole}).
 		WithData("service", serviceName).
 		WithData("socket_auth", socketAuth).
 		WithData("recommended_tuning", tuning.SettingsMap()).
+		WithData("tuning", tuningStatus).
 		WithStatements(steps...)
 	return result, nil
 }

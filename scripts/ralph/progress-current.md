@@ -5,6 +5,27 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2.5 (resource & config safety) · APPLY host-sized tuning at provision
+Made the host-sized recommendation actually take effect, completing the band-2.5
+arc (iter 28 only *surfaced* it because applying needed the self-healing restart
+primitive, which iter 26 built). Added `Manager.ApplyTuning(ctx, rec)`
+(`internal/pg/tuning_apply.go`): persists the five core settings via ALTER SYSTEM,
+idempotent by comparing against `pg_settings` normalised to bytes through the unit
+column (`settingUnitBytes`). Restart-requiring settings (shared_buffers,
+max_connections) funnel through `restartWithRollback` — snapshot auto.conf before
+write, roll back to last-known-good on a failed restart so PG is never left down;
+reloadable-only changes use pg_reload_conf. Integer GUCs written unquoted, memory
+settings quoted. Wired into `Provision` (replacing "surfaced, not applied"): applies
+Mixed-profile defaults and gracefully tolerates a CodeSafety rollback (warns +
+records `tuning: rejected`, doesn't fail the whole provision over an oversized
+default). Why: best-defaults-first — a left-alone box now runs sized to its RAM/CPU,
+and a bad value can't strand Postgres down. Added a `detectTuning` test seam so
+provision tests pin RAM/CPU deterministically. Fully unit-tested (no-op / reload-only
+/ restart / restart+reload / rollback / missing-setting / unit math / quoting);
+provision happy-path + idempotent tests updated to native pg_settings units. Reviewed
+(feature-dev:code-reviewer): fixed integer-GUC quoting + the synthetic test-unit gap.
+Remaining (split into two new backlog items): real-PG integration proof + UI surface.
+
 ## 2026-06-24 · band 2.5 (resource & config safety) · host-sized tuning: pure sizing function
 Closed the last open band-2.5 item. Added `RecommendTuning(memoryMB, cpuCount,
 profile)` in `internal/pg/tuning.go` — a pure, deterministic function that sizes
