@@ -60,12 +60,18 @@ the top, prune stale entries. One line each. Newest at the bottom of each group.
   (read_only_sql_transaction = the defense-in-depth GUC fired) vs `42501`
   (insufficient_privilege = the authoritative privilege-denial boundary). Assert
   42501 with the GUC off to prove the boundary isn't merely the resettable GUC.
-- ALERTING IS DORMANT: the whole alert subsystem (internal/alert engine+rules+
-  notifiers+DefaultRules, internal/telemetry Collector) is built and unit-tested
-  but NEVER RUNS — nothing in `indiepg serve`/ListenAndServe calls
-  `Collector.SampleOnce` or `Engine.Evaluate` or `scheduler.Start`. So every alert
-  rule (incl. backup-stale/backup-failed) is a no-op in production until the
-  evaluation loop is wired (top band-1.5 backlog item). Also: the real pg.Sampler
+- ALERTING IS NOW WIRED (2026-06-24): `internal/server/background.go` runs the
+  loop. `ListenAndServe`→`startBackgroundJobs(ctx)` seeds DefaultRules idempotently
+  (insert-missing-IDs only; never clobbers operator edits) and registers a
+  `telemetry-sample` scheduler job on `cfg.Schedules.TelemetrySample`; each tick
+  `runTelemetryCycle` = Collector.SampleOnce → Engine.Evaluate → dispatch to
+  enabled stored channels. The `scheduler.Scheduler` (robfig/cron wrapper) was
+  ALSO never instantiated in prod before this — which means SCHEDULED BACKUPS have
+  never run either (only `POST /backups/run`). Registering the
+  full/incremental/restore-test/digest jobs in background.go is the new top
+  band-1.5 item. Pattern for wiring a periodic job: add it in startBackgroundJobs
+  via `s.sched.Register(name, cfg.Schedules.X, fn)`; empty spec disables it.
+  Also: the real pg.Sampler
   (internal/pg/sampler.go) only reads host /proc + PG stats; it NEVER populated
   the backup.* snapshot fields, so `backup.last_age_seconds` was always 0.
   `telemetry.Collector.enrichBackup` now folds backup age + last-failed from the

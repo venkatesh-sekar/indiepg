@@ -17,6 +17,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/venkatesh-sekar/indiepg/internal/alert"
 	"github.com/venkatesh-sekar/indiepg/internal/auth"
 	"github.com/venkatesh-sekar/indiepg/internal/backup"
 	"github.com/venkatesh-sekar/indiepg/internal/config"
@@ -26,8 +27,10 @@ import (
 	"github.com/venkatesh-sekar/indiepg/internal/migrate"
 	"github.com/venkatesh-sekar/indiepg/internal/pg"
 	"github.com/venkatesh-sekar/indiepg/internal/pg/guard"
+	"github.com/venkatesh-sekar/indiepg/internal/scheduler"
 	"github.com/venkatesh-sekar/indiepg/internal/server/web"
 	"github.com/venkatesh-sekar/indiepg/internal/store"
+	"github.com/venkatesh-sekar/indiepg/internal/telemetry"
 )
 
 // defaultSessionTTL is how long an issued session token stays valid.
@@ -68,6 +71,15 @@ type Server struct {
 	// is the ONLY honest reason the ssh-less handshake reports "S3 required".
 	migrateEngine migrate.PgEngine
 	migrate       *migrate.Service
+
+	// Background telemetry + alerting. collector samples host/PG metrics (folding
+	// in backup health) and buffers them; engine evaluates the persisted alert
+	// rules against each snapshot; sched drives the loop on the configured
+	// cadence. These are built here but only run once ListenAndServe starts the
+	// scheduler — see background.go.
+	collector *telemetry.Collector
+	engine    *alert.Engine
+	sched     *scheduler.Scheduler
 
 	sessionTTL time.Duration
 	spa        http.Handler
@@ -296,6 +308,16 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 		sessionTTL: ttl,
 		spa:        newSPAHandler(dist),
 	}
+
+	// Telemetry collector + alert engine. The collector buffers samples into the
+	// store for the dashboard and folds backup health in from the store; OTLP
+	// export is left unwired (nil exporter) — NewCollector degrades gracefully and
+	// still buffers/evaluates. The scheduler that drives them is created when
+	// ListenAndServe starts the background loop, so test servers built via
+	// newServer (and never served) carry no running goroutines.
+	s.collector = telemetry.NewCollector(s.sampler, st, nil, log)
+	s.engine = alert.NewEngine(st, log)
+
 	s.handler = s.buildRouter()
 	return s, nil
 }
@@ -324,6 +346,13 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return core.InternalError("server: bind %s", s.cfg.BindAddr).Wrap(err)
 	}
+
+	// Start the telemetry sampling + alert evaluation loop. It samples on the
+	// configured cadence, evaluates the persisted rules, and dispatches firing/
+	// recovery events to the configured channels. Tied to ctx, so it stops with
+	// the server; the deferred Stop makes that deterministic on every return path.
+	s.startBackgroundJobs(ctx)
+	defer s.stopBackgroundJobs()
 
 	errCh := make(chan error, 1)
 	go func() {

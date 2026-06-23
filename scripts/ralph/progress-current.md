@@ -5,6 +5,35 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · wire the dormant telemetry + alert loop
+Closed the capstone: the whole alert subsystem (collector, engine, rules,
+notifiers) was built and unit-tested but NEVER RAN — nothing in `indiepg serve`
+called `Collector.SampleOnce` or `Engine.Evaluate`, so no alert could fire in
+production. Added `internal/server/background.go`: `ListenAndServe` now calls
+`startBackgroundJobs(ctx)`, which (1) seeds `alert.DefaultRules()` into the store
+idempotently — only inserting missing IDs so an operator's edit or disable is
+never clobbered — and (2) creates a `scheduler.Scheduler` and registers a
+`telemetry-sample` job on `cfg.Schedules.TelemetrySample` (default `@every 30s`).
+Each tick `runTelemetryCycle` samples (host/PG + backup health, buffering samples
+for the dashboard) → evaluates every persisted rule → dispatches firing/recovery
+events to every enabled stored Pushover/webhook channel. Collector+Engine are
+built in `newServer`; the OTLP exporter is left nil (NewCollector degrades
+gracefully and still buffers+evaluates — wiring export is a separate item). The
+loop is tied to ctx, stops cleanly on shutdown, and the startup seed is bounded
+by a 30s timeout so a hung store can't stall the listener. Refactored
+`loadAlertChannels` to expose a ctx-based `loadAlertChannelsCtx` for the
+dispatcher (no `*http.Request`). Tests: seed idempotency + preserves a disabled
+rule; one full cycle fires `backup-failed` and delivers a "firing" payload to an
+httptest webhook (+ asserts the rule persists as firing); fires-with-no-channel
+is a clean no-op. Reviewed (feature-dev:code-reviewer): bounded the seed, added a
+default-branch warn for unknown channel kinds, documented ctx-cancellation
+shutdown. **Discovered + backlogged the next durability gap:** because the
+scheduler was never instantiated, *scheduled backups have also never run* — only
+the manual "Run backup" button does. The alert loop now makes that LOUD
+(backup-stale/backup-failed will fire), but the fix — registering the
+full/incremental/restore-test/digest jobs in `background.go` — is the new top
+band-1.5 item.
+
 ## 2026-06-24 · band 1.5 (data durability) · loud immediate alert when a backup fails
 Closed the "loud alert when a scheduled backup fails or hasn't succeeded within
 its window" item. There was already a `backup-stale` default rule (no successful

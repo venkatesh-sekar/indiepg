@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -321,11 +322,18 @@ func (s *Server) handleTestAlertChannel(w http.ResponseWriter, r *http.Request) 
 	writeData(w, http.StatusOK, core.Ok("test notification sent"))
 }
 
-// loadAlertChannels reads and decodes the persisted channel list. A missing
-// config key is normal (no channels configured yet) and yields a non-nil empty
-// slice so the JSON response is [] rather than null.
+// loadAlertChannels reads and decodes the persisted channel list for a request.
+// It is a thin wrapper over loadAlertChannelsCtx using the request context.
 func (s *Server) loadAlertChannels(r *http.Request) ([]alertChannelConfig, error) {
-	raw, err := s.store.GetConfig(r.Context(), alertChannelsConfigKey)
+	return s.loadAlertChannelsCtx(r.Context())
+}
+
+// loadAlertChannelsCtx reads and decodes the persisted channel list. A missing
+// config key is normal (no channels configured yet) and yields a non-nil empty
+// slice so the JSON response is [] rather than null. The ctx variant is what the
+// background alert dispatcher uses, which has no *http.Request.
+func (s *Server) loadAlertChannelsCtx(ctx context.Context) ([]alertChannelConfig, error) {
+	raw, err := s.store.GetConfig(ctx, alertChannelsConfigKey)
 	if err != nil {
 		if core.CodeOf(err) == core.CodeNotFound {
 			return []alertChannelConfig{}, nil
