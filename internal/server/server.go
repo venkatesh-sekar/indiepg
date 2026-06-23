@@ -203,7 +203,11 @@ func (s *Server) ensureBackupConfigured(ctx context.Context, cfg config.Config) 
 
 	archChanged, err := s.pg.EnsureArchiving(ctx, cfg.Stanza)
 	if err != nil {
-		return false, core.InternalError("server: enable WAL archiving for backups").Wrap(err)
+		// EnsureArchiving returns a typed error: CodeSafety when a config change
+		// was auto-rolled-back (Postgres is running) or CodeInternal when Postgres
+		// is down. Both messages are self-descriptive — return as-is so that signal
+		// reaches the operator rather than burying it under a generic CodeInternal.
+		return false, err
 	}
 
 	// stanza-create is idempotent, so run it on every pass: it self-heals a repo

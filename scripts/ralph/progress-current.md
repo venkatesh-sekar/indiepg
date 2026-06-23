@@ -5,6 +5,41 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2.5 (resource & config safety) · self-healing config: a config change that stops Postgres auto-rolls-back to last-known-good
+The marquee band-2.5 item, named in the north star: "a bad change (even a user
+override) that stops Postgres must auto-rollback to last-known-good." Built the
+core primitive in `internal/pg/safeconfig.go`: `snapshotAutoConf` captures
+`<data_directory>/postgresql.auto.conf` (the file ALTER SYSTEM writes) BEFORE a
+change and fails closed if it can't read it — a restart we can't undo must never
+proceed. `restartWithRollback` restarts Postgres to activate the change; the
+postgresql systemd unit is synchronous, so a non-zero `systemctl restart` exit is
+the authoritative "did not come back up" signal. On that signal it restores the
+snapshot via `tee` as the postgres OS user (keeps owner + 0600 mode; a file
+restore works even while PG is down, unlike `ALTER SYSTEM RESET`) and restarts
+again, so the cluster is never left down — returning a typed `CodeSafety` error
+("rolled back to last-known-good; Postgres is running"). If the rollback restart
+ALSO fails it returns `CodeInternal` ("Postgres is down") with a hint that
+auto.conf still holds the rejected settings.
+
+Made it load-bearing immediately rather than dead code: routed the one real
+config-change-then-restart path — `EnsureArchiving` (archive_mode/wal_level) —
+through it. It now snapshots before its ALTER SYSTEM loop and restarts via
+`restartWithRollback`. Fixed the caller (`ensureBackupConfigured`) to stop
+re-wrapping the typed error as a generic `CodeInternal`, which had buried the
+`CodeSafety`/`CodeInternal` distinction the SPA branches on.
+
+Tests (`safeconfig_test.go` + `archive_test.go`): the acceptance case — a bad
+setting (first restart fails) → exact last-known-good content restored via `tee` →
+second restart → `CodeSafety`; rollback-restart-also-fails → `CodeInternal`
+"down"; clean restart never rewrites auto.conf; snapshot fails closed; and the
+load-bearing ordering invariant — a snapshot failure aborts EnsureArchiving BEFORE
+any ALTER SYSTEM write. Go gate green (gofmt/vet/test/build); web untouched.
+Reviewed (feature-dev:code-reviewer): addressed all three findings (caller error
+code preserved, rollback-failed hint, ordering test). NOTE: there is no
+operator-facing override-apply UI yet (next band-2.5 items: host-sized tuning at
+provision, connection-saturation alert) — this primitive is what those and any
+future override flow must funnel their restart through.
+
 ## 2026-06-24 · band 2.5 (resource & config safety) · early-warning disk headroom alert (warn well before the volume fills)
 First band-2.5 item. The panel already shipped a CRITICAL `disk-almost-full` rule
 at 90% on `host.disk_percent` (a statfs of the Postgres data/WAL volume), but 90%

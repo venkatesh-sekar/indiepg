@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -9,6 +10,30 @@ import (
 
 	"github.com/venkatesh-sekar/indiepg/internal/exec"
 )
+
+// Snapshotting postgresql.auto.conf for rollback happens BEFORE any ALTER SYSTEM
+// write — the load-bearing ordering invariant for self-healing config. If the
+// snapshot fails (e.g. the file is unreadable), EnsureArchiving must fail closed:
+// abort with no settings written, so there is nothing to roll back.
+func TestEnsureArchiving_SnapshotFailureAbortsBeforeAnyWrite(t *testing.T) {
+	r := exec.NewFakeRunner().On("current_setting", exec.FakeResponse{
+		Stdout: "off||minimal|off\n", // needs archive_mode + wal_level → needRestart
+	})
+	r.On("data_directory", exec.FakeResponse{Stdout: "/data"})
+	r.On("postgresql.auto.conf", exec.FakeResponse{Err: errors.New("permission denied")})
+	m := newManager(r)
+
+	changed, err := m.EnsureArchiving(context.Background(), "main")
+	require.Error(t, err)
+	require.False(t, changed)
+
+	for _, c := range r.Calls() {
+		require.NotContains(t, joinedArgs(c), "ALTER SYSTEM",
+			"no setting may be written when the rollback snapshot could not be taken")
+		require.NotContains(t, joinedArgs(c), "restart postgresql",
+			"Postgres must not be restarted when the snapshot failed")
+	}
+}
 
 func joinedArgs(c exec.RunSpec) string {
 	return c.Name + " " + strings.Join(c.Args, " ")
@@ -21,6 +46,9 @@ func TestEnsureArchiving_EnablesAndRestarts(t *testing.T) {
 	r := exec.NewFakeRunner().On("current_setting", exec.FakeResponse{
 		Stdout: "off||replica|off\n", // archive_mode|archive_command|wal_level|wal_compression
 	})
+	// The restart path snapshots postgresql.auto.conf first (for rollback), which
+	// reads the data directory via SHOW data_directory.
+	r.On("data_directory", exec.FakeResponse{Stdout: "/var/lib/postgresql/14/main"})
 	m := newManager(r)
 
 	changed, err := m.EnsureArchiving(context.Background(), "main")

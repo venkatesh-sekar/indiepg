@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/venkatesh-sekar/indiepg/internal/core"
-	"github.com/venkatesh-sekar/indiepg/internal/exec"
 )
 
 // EnsureArchiving makes Postgres ship WAL to pgBackRest's archive — the
@@ -79,6 +78,17 @@ func (m *Manager) EnsureArchiving(ctx context.Context, stanza string) (bool, err
 		return false, nil
 	}
 
+	// A postmaster-only change (archive_mode/wal_level) needs a restart, which
+	// could fail to come back up. Snapshot postgresql.auto.conf BEFORE writing
+	// anything so restartWithRollback can revert to last-known-good if it does.
+	var snap autoConfSnapshot
+	if needRestart {
+		var err error
+		if snap, err = m.snapshotAutoConf(ctx); err != nil {
+			return false, err
+		}
+	}
+
 	for _, s := range stmts {
 		if _, err := m.runPsql(ctx, defaultConnectDatabase, s); err != nil {
 			return false, core.ExecError("pg: enabling WAL archiving failed").Wrap(err)
@@ -86,12 +96,8 @@ func (m *Manager) EnsureArchiving(ctx context.Context, stanza string) (bool, err
 	}
 
 	if needRestart {
-		if _, err := m.runner.Run(ctx, exec.RunSpec{
-			Name:    "systemctl",
-			Args:    []string{"restart", serviceName},
-			Timeout: commandTimeout,
-		}); err != nil {
-			return false, core.ExecError("pg: restarting %s to apply WAL archiving failed", serviceName).Wrap(err)
+		if err := m.restartWithRollback(ctx, snap, "WAL archiving config"); err != nil {
+			return false, err
 		}
 		m.log.InfoCtx(ctx, "enabled WAL archiving for pgBackRest (restarted Postgres)", "stanza", stanza)
 		return true, nil
