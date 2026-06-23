@@ -250,8 +250,13 @@ export const api = {
   restore(req: RestoreRequest): Promise<Result> {
     return request<Result>("/backups/restore", { method: "POST", body: req });
   },
-  runRestoreTest(): Promise<Result> {
-    return request<Result>("/backups/restore-test", { method: "POST" });
+  // runRestoreTest proves a backup is recoverable. The default (cheap, always-safe)
+  // form runs `pgbackrest verify`, a read-only repo integrity check. `deep: true`
+  // opts into a full scratch restore + boot + row count, which catches
+  // recovery-time failures verify cannot but runs longer and needs disk headroom.
+  runRestoreTest(opts: { deep?: boolean } = {}): Promise<Result> {
+    const path = opts.deep ? "/backups/restore-test?deep=true" : "/backups/restore-test";
+    return request<Result>(path, { method: "POST" });
   },
 
   // settings / config ------------------------------------------------------

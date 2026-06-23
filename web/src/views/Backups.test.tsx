@@ -1,10 +1,11 @@
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import {
   backupDestination,
   backupFreshness,
   BackupStatusSummary,
+  DeepRestoreTestConfirm,
   LocalBackupWarning,
   RestoreTestStatus,
   restoreTestStatus,
@@ -260,5 +261,43 @@ describe("RestoreTestStatus", () => {
     expect(document.querySelector(".callout")).toHaveClass("callout-ok");
     expect(screen.getByText(/verified intact/i)).toBeInTheDocument();
     expect(screen.getByText(/1,234 rows restored and verified/i)).toBeInTheDocument();
+  });
+});
+
+describe("DeepRestoreTestConfirm", () => {
+  const noop = () => undefined;
+
+  it("renders nothing when closed", () => {
+    const { container } = render(
+      <DeepRestoreTestConfirm open={false} busy={false} onConfirm={noop} onCancel={noop} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("states up front what it does and its costs (longer + disk headroom)", () => {
+    render(<DeepRestoreTestConfirm open busy={false} onConfirm={noop} onCancel={noop} />);
+    // It must say what the action actually does before it does it.
+    expect(screen.getByText(/restores your latest backup into a throwaway/i)).toBeInTheDocument();
+    // The two costs the operator must know about up front.
+    expect(screen.getByText(/runs longer/i)).toBeInTheDocument();
+    expect(screen.getByText(/free disk space/i)).toBeInTheDocument();
+    // The safety reassurance: live DB untouched, refuses rather than fill disk.
+    expect(screen.getByText(/live database is never touched/i)).toBeInTheDocument();
+    expect(screen.getByText(/refuses to run rather/i)).toBeInTheDocument();
+  });
+
+  it("confirms via the confirm button and cancels via cancel", () => {
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+    render(<DeepRestoreTestConfirm open busy={false} onConfirm={onConfirm} onCancel={onCancel} />);
+    fireEvent.click(screen.getByRole("button", { name: /run deep test/i }));
+    expect(onConfirm).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("disables the actions while busy", () => {
+    render(<DeepRestoreTestConfirm open busy onConfirm={noop} onCancel={noop} />);
+    expect(screen.getByRole("button", { name: /working/i })).toBeDisabled();
   });
 });

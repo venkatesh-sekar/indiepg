@@ -5,6 +5,25 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · restore-test DEEP — UI opt-in button
+The deep-restore proof (`Manager.RestoreTestDeep`, `POST /backups/restore-test?deep=true`)
+had backend + scheduler but no way to trigger it from the panel — only the cheap
+verify had a button. Closed that: added a clearly-labeled "Deep restore test"
+button on the Backups page next to "Test a restore", gated behind a
+`DeepRestoreTestConfirm` dialog that states up front exactly what it does and its
+costs before it runs (actually restores the latest backup into a throwaway copy,
+boots it, counts rows; runs longer; needs free disk ≈ DB size; live database
+never touched; scratch copy deleted; refuses rather than fill the disk) — the
+"say what will happen before it happens" invariant. The default "Test a restore"
+stays the cheap read-only verify. API client `runRestoreTest({ deep })` appends
+`?deep=true`; the existing `verified_rows > 0` "rows restored and verified"
+result branch already renders the outcome. New vitest/RTL tests
+(`DeepRestoreTestConfirm`): closed renders nothing, copy asserts each material
+claim (does-what + both costs + safety), confirm/cancel callbacks, busy disables.
+Full web gate green (typecheck/build/37 tests) + full Go gate green. Reviewed
+(feature-dev:code-reviewer): no blocking issues. Band 1.5 now has only the
+env-gated DEEP end-to-end integration test left (won't run in the loop gate).
+
 ## 2026-06-24 · band 1.5 (data durability) · restore-test DEEP proof — non-destructive scratch restore + boot + real row count
 The cheap `pgbackrest verify` (shipped earlier) checksums the repo but never
 restores, so it cannot catch recovery-time failures: a WAL gap that only

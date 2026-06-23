@@ -43,6 +43,8 @@ export function Backups() {
   const [runType, setRunType] = useState<BackupType | null>(null);
   const [runBusy, setRunBusy] = useState(false);
   const [testBusy, setTestBusy] = useState(false);
+  const [deepOpen, setDeepOpen] = useState(false);
+  const [deepBusy, setDeepBusy] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
 
   const runBackup = async () => {
@@ -70,6 +72,20 @@ export function Backups() {
       toast.error(err instanceof ApiError ? err.message : "Restore test failed to start.");
     } finally {
       setTestBusy(false);
+    }
+  };
+
+  const runDeepRestoreTest = async () => {
+    setDeepBusy(true);
+    try {
+      const res = await api.runRestoreTest({ deep: true });
+      toast.success(res.message || "Deep restore test started.");
+      setDeepOpen(false);
+      history.reload();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Deep restore test failed to start.");
+    } finally {
+      setDeepBusy(false);
     }
   };
 
@@ -106,8 +122,18 @@ export function Backups() {
               className="btn"
               onClick={runRestoreTest}
               disabled={testBusy}
+              title="Verify the backup repository is intact (fast, read-only)"
             >
               {testBusy ? "Testing…" : "Test a restore"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setDeepOpen(true)}
+              disabled={deepBusy}
+              title="Restore the latest backup into a throwaway copy and boot it (slower, needs disk headroom)"
+            >
+              {deepBusy ? "Testing…" : "Deep restore test"}
             </button>
             <div className="split-btn">
               <button
@@ -200,6 +226,14 @@ export function Backups() {
         busy={runBusy}
         onConfirm={runBackup}
         onCancel={() => setRunType(null)}
+      />
+
+      {/* Deep restore-test confirmation */}
+      <DeepRestoreTestConfirm
+        open={deepOpen}
+        busy={deepBusy}
+        onConfirm={runDeepRestoreTest}
+        onCancel={() => setDeepOpen(false)}
       />
 
       {restoreOpen ? (
@@ -452,6 +486,54 @@ export function RestoreTestStatus({ tests }: { tests: RestoreTestRecord[] }) {
       ) : null}
       .
     </Callout>
+  );
+}
+
+/**
+ * DeepRestoreTestConfirm is the opt-in confirmation for the heavier "deep"
+ * restore test. Unlike the default verify (read-only checksum check), a deep
+ * test actually restores the latest backup into a throwaway copy, boots it, and
+ * counts the rows — the strongest proof a backup is truly recoverable. The copy
+ * states up front exactly what it does and its costs (runs longer, needs disk
+ * headroom roughly the size of the database) so the operator confirms knowing
+ * the consequences, and reassures that the live database is never touched and
+ * the scratch copy is cleaned up. Kept as its own exported component so the copy
+ * is covered by a test and can't silently regress.
+ */
+export function DeepRestoreTestConfirm({
+  open,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  open: boolean;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <ConfirmDialog
+      open={open}
+      title="Run a deep restore test?"
+      confirmLabel="Run deep test"
+      busy={busy}
+      onConfirm={onConfirm}
+      onCancel={onCancel}
+      message={
+        <>
+          A deep restore test <strong>actually restores your latest backup into a throwaway
+          copy</strong>, boots it, and counts the rows — proving the backup can really be
+          recovered, not just that its files are present. It is the strongest check there is.
+          <br />
+          <br />
+          It <strong>runs longer</strong> than the regular test and needs{" "}
+          <strong>free disk space</strong> (roughly the size of your database) for the temporary
+          copy. Your live database is never touched, and the temporary copy is deleted when the
+          test finishes. If there isn&apos;t enough disk headroom, the test refuses to run rather
+          than risk filling the disk.
+        </>
+      }
+    />
   );
 }
 
