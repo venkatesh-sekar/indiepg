@@ -4,7 +4,7 @@
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api } from "@/api/client";
-import { bytes, dateTime, duration, millis } from "@/lib/format";
+import { ago, bytes, dateTime, duration, millis } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import { Modal } from "@/components/Modal";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -129,6 +129,8 @@ export function Backups() {
         }
       />
 
+      {history.data ? <BackupStatusSummary backups={history.data.backups} /> : null}
+
       {isLocal ? (
         <Callout tone="warn" title="Your backups are on this server — move them to S3">
           Backups are being written to <code>/var/lib/pgbackrest</code> on this same
@@ -216,6 +218,92 @@ export function Backups() {
         />
       ) : null}
     </div>
+  );
+}
+
+// --- Backup freshness (the at-a-glance "are my backups good?" answer) -------
+
+const SUCCESS_RESULTS = new Set(["success", "ok", "completed", "pass"]);
+const FAILURE_RESULTS = new Set(["fail", "failed", "error"]);
+
+/**
+ * BackupFreshness is the at-a-glance state of "can I restore right now, and how
+ * fresh is my last good backup?" derived from the run history.
+ *
+ *  - none:       no backups have ever run — nothing to restore from.
+ *  - good:       the most recent run succeeded.
+ *  - stale:      a good backup exists, but the MOST RECENT attempt failed — so
+ *                everything written since the last good backup is unprotected.
+ *  - never-good: backups have run but not one has ever succeeded.
+ */
+export type BackupFreshness =
+  | { kind: "none" }
+  | { kind: "good"; good: BackupRecord }
+  | { kind: "stale"; good: BackupRecord }
+  | { kind: "never-good" };
+
+/**
+ * backupFreshness classifies the history. It relies on the server contract that
+ * `backups` is newest-first (`ORDER BY started_at DESC`), so backups[0] is the
+ * most recent run and the first success encountered is the most recent good one.
+ */
+export function backupFreshness(backups: BackupRecord[]): BackupFreshness {
+  if (backups.length === 0) return { kind: "none" };
+  const good = backups.find((b) => SUCCESS_RESULTS.has(b.result.toLowerCase()));
+  if (!good) return { kind: "never-good" };
+  if (FAILURE_RESULTS.has(backups[0].result.toLowerCase())) return { kind: "stale", good };
+  return { kind: "good", good };
+}
+
+/** When a backup is considered "done": completion time, falling back to start. */
+function backupWhen(b: BackupRecord): string {
+  return b.stopped_at || b.started_at;
+}
+
+/**
+ * BackupStatusSummary is the prominent banner at the top of the Backups page: it
+ * states, in one line, whether the data is protected and how long ago the last
+ * good backup was — and shouts loudly (danger tone) when it is not, so an indie
+ * hacker never has to read the history table to learn their data is at risk.
+ */
+export function BackupStatusSummary({ backups }: { backups: BackupRecord[] }) {
+  const state = backupFreshness(backups);
+
+  if (state.kind === "none") {
+    return (
+      <Callout tone="danger" title="No backups yet — your data is not protected">
+        You haven&apos;t made a backup. If something goes wrong now, there is nothing to restore
+        from. Run your first backup to protect your data.
+      </Callout>
+    );
+  }
+
+  if (state.kind === "never-good") {
+    return (
+      <Callout tone="danger" title="No working backup yet — your data is not protected">
+        Every backup attempt so far has failed, so there is nothing to restore from. Fix the most
+        recent error below and run a backup until one succeeds.
+      </Callout>
+    );
+  }
+
+  const when = backupWhen(state.good);
+
+  if (state.kind === "stale") {
+    return (
+      <Callout tone="danger" title="Your most recent backup failed">
+        Your last <strong>working</strong> backup was <strong>{ago(when)}</strong> ({dateTime(when)}
+        ). Everything written since then is unprotected until a new backup succeeds — check the
+        failure below and run another.
+      </Callout>
+    );
+  }
+
+  return (
+    <Callout tone="ok" title="Your data is backed up">
+      Last good backup <strong>{ago(when)}</strong> ({dateTime(when)}) ·{" "}
+      <Badge tone="info">{state.good.backup_type}</Badge>
+    </Callout>
   );
 }
 

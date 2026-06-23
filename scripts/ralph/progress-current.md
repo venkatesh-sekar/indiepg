@@ -5,6 +5,27 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · surface "last good backup was N ago" on Backups page
+First band-1.5 item. The Dashboard already surfaced the latest backup prominently
+and the backend field (`store.LatestSuccessfulBackup`) was already covered by
+`TestBackupHistory`. The real gap was the **Backups page**: it buried backup
+freshness in the history table — an indie hacker had to read the rows to learn
+whether their data was protected, and there was NO loud signal when the most
+recent backup *failed* while an older one succeeded (a green row below conveys
+"fine", not "your latest backup failed and everything since is unprotected").
+Added an exported pure helper `backupFreshness(backups)` classifying the history
+(newest-first server contract) into `none` / `good` / `stale` (good backup exists
+but most recent attempt failed) / `never-good` (none ever succeeded), and a
+`BackupStatusSummary` banner rendered prominently right under the page header. It
+shouts in the danger tone for none/stale/never-good and shows an ok banner with
+"Last good backup N ago (type)" otherwise. Frontend-only; backend untouched.
+Tested with vitest/RTL (`Backups.test.tsx`, 9 tests): the helper's four
+classifications incl. the stale path pinned to the *exact* server result string
+`"fail"` (per internal/backup/manager.go), plus the rendered tone/title for each
+state. Reviewed (feature-dev:code-reviewer): no production bug; adopted its
+test-quality fixes — pin failure cases to the real `"fail"` value, reframe the
+unknown-result case, add the never-good render test. Full gate green.
+
 ## 2026-06-24 · band 1 (security) · login brute-force lockout proven end-to-end (HTTP)
 Closed the last open band-1 item. The lockout policy + read-modify-write were
 already fully built and unit-tested in `internal/auth` (LockoutPolicy default
