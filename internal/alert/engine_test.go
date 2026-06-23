@@ -289,6 +289,43 @@ func TestEngineMultipleRules(t *testing.T) {
 	require.True(t, ids["lag-high"])
 }
 
+// TestEngineFiresOnFailedBackup proves the shipped "backup-failed" default rule
+// fires loudly and immediately when the most recent backup attempt failed
+// (LastBackupFailed=1) and recovers once a backup succeeds again. This is the
+// "loud alert when a scheduled backup fails" durability guarantee.
+func TestEngineFiresOnFailedBackup(t *testing.T) {
+	st := newTestStore(t)
+	eng := NewEngine(st, nil)
+
+	var rule Rule
+	for _, r := range DefaultRules() {
+		if r.ID == "backup-failed" {
+			rule = r
+		}
+	}
+	require.Equal(t, "backup-failed", rule.ID, "default rule set must include backup-failed")
+	require.Equal(t, SeverityCritical, rule.Severity, "a failed backup is a critical durability event")
+	require.Zero(t, rule.For, "a failed backup must fire immediately, not after a sustained window")
+	saveRule(t, st, rule)
+
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+
+	// Latest backup failed: fire immediately.
+	events, err := eng.Evaluate(context.Background(),
+		telemetry.Snapshot{LastBackupFailed: 1, MaxConnections: 100}, now)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, StateFiring, events[0].State)
+	require.Equal(t, "backup-failed", events[0].Rule.ID)
+
+	// A subsequent successful backup clears the signal: recovery event.
+	events, err = eng.Evaluate(context.Background(),
+		telemetry.Snapshot{LastBackupFailed: 0, MaxConnections: 100}, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, StateResolved, events[0].State)
+}
+
 func TestEngineMalformedRuleSkippedNotFatal(t *testing.T) {
 	st := newTestStore(t)
 	eng := NewEngine(st, nil)

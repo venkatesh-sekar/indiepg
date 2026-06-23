@@ -222,6 +222,7 @@ var metricDescriptions = map[string]string{
 	MetricDeadlocks:             "Postgres deadlocks observed",
 	MetricReplicationLagSeconds: "Postgres replication lag in seconds",
 	MetricLastBackupAgeSeconds:  "Age of the last successful backup in seconds",
+	MetricLastBackupFailed:      "1 when the most recent backup attempt failed, else 0",
 }
 
 var metricUnits = map[string]string{
@@ -241,4 +242,5 @@ var metricUnits = map[string]string{
 	MetricDeadlocks:             "{deadlock}",
 	MetricReplicationLagSeconds: "s",
 	MetricLastBackupAgeSeconds:  "s",
+	MetricLastBackupFailed:      "1",
 }

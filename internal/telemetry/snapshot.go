@@ -38,6 +38,7 @@ const (
 	MetricDeadlocks             = "pg.deadlocks"
 	MetricReplicationLagSeconds = "pg.replication_lag_seconds"
 	MetricLastBackupAgeSeconds  = "backup.last_age_seconds"
+	MetricLastBackupFailed      = "backup.last_failed"
 )
 
 // MetricKeys is the ordered list of every metric key a Snapshot emits. It is
@@ -59,6 +60,7 @@ var MetricKeys = []string{
 	MetricDeadlocks,
 	MetricReplicationLagSeconds,
 	MetricLastBackupAgeSeconds,
+	MetricLastBackupFailed,
 }
 
 // Snapshot is the dashboard metric model: a point-in-time view of host health,
@@ -79,6 +81,10 @@ type Snapshot struct {
 	Deadlocks             int64
 	ReplicationLagSeconds float64
 	LastBackupAgeSeconds  float64
+	// LastBackupFailed is 1 when the most recent backup attempt did not succeed,
+	// else 0. It is the immediate "a scheduled backup just failed" signal, loud
+	// well before LastBackupAgeSeconds crosses the staleness window.
+	LastBackupFailed float64
 }
 
 // MemUsedPercent returns memory utilization in [0,100]; 0 when total is unknown.
@@ -143,6 +149,8 @@ func (s Snapshot) Value(metric string) (float64, bool) {
 		return s.ReplicationLagSeconds, true
 	case MetricLastBackupAgeSeconds:
 		return s.LastBackupAgeSeconds, true
+	case MetricLastBackupFailed:
+		return s.LastBackupFailed, true
 	default:
 		return 0, false
 	}

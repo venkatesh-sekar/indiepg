@@ -34,5 +34,6 @@ func fullSnapshot() telemetry.Snapshot {
 		Deadlocks:             2,
 		ReplicationLagSeconds: 1.0,
 		LastBackupAgeSeconds:  3600,
+		LastBackupFailed:      1,
 	}
 }

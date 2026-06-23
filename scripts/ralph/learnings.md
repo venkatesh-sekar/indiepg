@@ -60,3 +60,23 @@ the top, prune stale entries. One line each. Newest at the bottom of each group.
   (read_only_sql_transaction = the defense-in-depth GUC fired) vs `42501`
   (insufficient_privilege = the authoritative privilege-denial boundary). Assert
   42501 with the GUC off to prove the boundary isn't merely the resettable GUC.
+- ALERTING IS DORMANT: the whole alert subsystem (internal/alert engine+rules+
+  notifiers+DefaultRules, internal/telemetry Collector) is built and unit-tested
+  but NEVER RUNS — nothing in `indiepg serve`/ListenAndServe calls
+  `Collector.SampleOnce` or `Engine.Evaluate` or `scheduler.Start`. So every alert
+  rule (incl. backup-stale/backup-failed) is a no-op in production until the
+  evaluation loop is wired (top band-1.5 backlog item). Also: the real pg.Sampler
+  (internal/pg/sampler.go) only reads host /proc + PG stats; it NEVER populated
+  the backup.* snapshot fields, so `backup.last_age_seconds` was always 0.
+  `telemetry.Collector.enrichBackup` now folds backup age + last-failed from the
+  store (ListBackups(ctx,1) → newest terminal row; LatestSuccessfulBackup → age),
+  since the Collector — not the Sampler — is the seam that has the store. Mirror
+  this whenever a metric needs store/DB data the host/PG sampler can't see.
+- Two SEPARATE metric-key namespaces exist and they DIVERGE: telemetry/snapshot.go
+  uses dotted keys (`host.cpu.percent`) for buffering+OTLP; alert/metrics.go has
+  its OWN constants (`host.cpu_percent`) and its own `metricValue(snap, key)`
+  switch that reads Snapshot *fields* directly. Alert rules match against the
+  alert-package keys, NOT the telemetry ones. When adding an alert metric, add the
+  field to telemetry.Snapshot AND a case in alert/metrics.go's metricValue (+ a
+  telemetry MetricKeys/Value/exporter-metadata entry if it should also be buffered/
+  exported; exporter_test enforces description+unit for every MetricKeys entry).

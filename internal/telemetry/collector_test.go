@@ -121,6 +121,69 @@ func TestCollectorNilLoggerIsSafe(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func ptrTime(t time.Time) *time.Time { return &t }
+
+func zeroBackupSampler() Sampler {
+	// Mirror the real host/Postgres sampler, which never sets backup fields.
+	return SamplerFunc(func(context.Context) (Snapshot, error) { return Snapshot{}, nil })
+}
+
+func TestCollectorEnrichesBackupFailureFromStore(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	// An older success then a newer failure: a good backup still exists, but the
+	// latest scheduled attempt failed — failed must be loud (1) immediately while
+	// the age still reflects the last success.
+	_, err := st.InsertBackup(ctx, store.BackupRecord{
+		BackupType: "full", Result: "success",
+		StartedAt: time.Now().Add(-3 * time.Hour),
+		StoppedAt: ptrTime(time.Now().Add(-3*time.Hour + time.Minute)),
+	})
+	require.NoError(t, err)
+	_, err = st.InsertBackup(ctx, store.BackupRecord{
+		BackupType: "incr", Result: "fail",
+		StartedAt: time.Now().Add(-1 * time.Hour),
+	})
+	require.NoError(t, err)
+
+	c := NewCollector(zeroBackupSampler(), st, nil, core.Discard())
+	got, err := c.SampleOnce(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, got.LastBackupFailed, "latest attempt failed")
+	require.InDelta(t, (3 * time.Hour).Seconds(), got.LastBackupAgeSeconds, 120,
+		"age comes from the last successful backup, not the failed one")
+}
+
+func TestCollectorEnrichesBackupSuccessClearsFailed(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	_, err := st.InsertBackup(ctx, store.BackupRecord{
+		BackupType: "full", Result: "success",
+		StartedAt: time.Now().Add(-30 * time.Minute),
+		StoppedAt: ptrTime(time.Now().Add(-29 * time.Minute)),
+	})
+	require.NoError(t, err)
+
+	c := NewCollector(zeroBackupSampler(), st, nil, core.Discard())
+	got, err := c.SampleOnce(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0.0, got.LastBackupFailed, "latest attempt succeeded")
+	require.Greater(t, got.LastBackupAgeSeconds, 0.0)
+}
+
+func TestCollectorNoBackupsLeavesBackupFieldsZero(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	// A fresh box with no backups yet must not be reported as "failed".
+	c := NewCollector(zeroBackupSampler(), st, nil, core.Discard())
+	got, err := c.SampleOnce(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0.0, got.LastBackupFailed)
+	require.Equal(t, 0.0, got.LastBackupAgeSeconds)
+}
+
 func TestCollectorMultipleCyclesAccumulate(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)

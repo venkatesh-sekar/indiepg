@@ -23,6 +23,7 @@ func sampleSnapshot() Snapshot {
 		Deadlocks:             3,
 		ReplicationLagSeconds: 12.5,
 		LastBackupAgeSeconds:  3600,
+		LastBackupFailed:      1,
 	}
 }
 
@@ -88,6 +89,7 @@ func TestSnapshotValue(t *testing.T) {
 		{MetricDeadlocks, 3, true},
 		{MetricReplicationLagSeconds, 12.5, true},
 		{MetricLastBackupAgeSeconds, 3600, true},
+		{MetricLastBackupFailed, 1, true},
 		{"does.not.exist", 0, false},
 	}
 	for _, tc := range tests {

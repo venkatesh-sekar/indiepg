@@ -5,6 +5,32 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · loud immediate alert when a backup fails
+Closed the "loud alert when a scheduled backup fails or hasn't succeeded within
+its window" item. There was already a `backup-stale` default rule (no successful
+backup in 26h), but two gaps: (1) a fresh *failure* of last night's backup
+wouldn't trip staleness for ~26h — far too slow for a durability emergency; and
+(2) the metric feeding `backup-stale` (`backup.last_age_seconds`) was **silently
+always 0** because the real pg.Sampler never reads the backup tables, so the
+rule could never fire even once the loop is wired. Added `LastBackupFailed` to
+telemetry.Snapshot + a `backup.last_failed` metric (1 when the most recent
+backup attempt failed), a new `backup-failed` default rule (SeverityCritical,
+For:0 = fire immediately, 6h cooldown), and `Collector.enrichBackup` which folds
+both backup metrics in FROM THE STORE during SampleOnce (the Collector, not the
+Sampler, holds the store). Backup_history rows are terminal ("success"/"fail"),
+so the newest row is the latest attempt's outcome; age comes from
+LatestSuccessfulBackup. A box with no backups yet is left untouched (failed=0) so
+a fresh install isn't falsely alarmed. Tests: engine fires `backup-failed` on a
+failed snapshot and recovers on success; collector covers failed-latest /
+success-latest / no-backups; metric/exporter/Value coverage extended.
+**Discovered + backlogged the capstone:** the entire alert evaluation loop is
+DORMANT — nothing calls Collector.SampleOnce or Engine.Evaluate at runtime, so no
+alert fires in production yet. Wiring that loop (sample→evaluate→notify, seed
+default rules) is now the top band-1.5 item. Reviewed (feature-dev:code-reviewer):
+no blocking issues; adopted both suggestions (metricValue table coverage for the
+new key; make enrichBackup set failed=0 unconditionally on success so the store
+stays authoritative). Full Go gate green; web untouched.
+
 ## 2026-06-24 · band 1.5 (data durability) · surface "last good backup was N ago" on Backups page
 First band-1.5 item. The Dashboard already surfaced the latest backup prominently
 and the backend field (`store.LatestSuccessfulBackup`) was already covered by

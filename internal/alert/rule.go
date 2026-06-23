@@ -219,6 +219,21 @@ func DefaultRules() []Rule {
 			Enabled:   true,
 		},
 		{
+			// A failed backup is a durability emergency: fire immediately (no For
+			// window) and louder than mere staleness — you can lose data before the
+			// 26h "stale" window above ever trips. Cooldown matches backup-stale so a
+			// box that keeps failing every cycle is not a notification firehose.
+			ID:        "backup-failed",
+			Name:      "Most recent backup failed",
+			Metric:    MetricLastBackupFailed,
+			Op:        OpGTE,
+			Threshold: 1,
+			Severity:  SeverityCritical,
+			For:       0,
+			Cooldown:  6 * time.Hour,
+			Enabled:   true,
+		},
+		{
 			ID:        "connections-near-max",
 			Name:      "Connections near max",
 			Metric:    MetricConnectionsPercent,

@@ -27,6 +27,7 @@ const (
 
 	// Backup metrics.
 	MetricLastBackupAgeSecs = "backup.last_age_seconds"
+	MetricLastBackupFailed  = "backup.last_failed" // 1 when the most recent backup attempt failed
 )
 
 // metricValue extracts the named metric from a snapshot. The second return is
@@ -64,6 +65,8 @@ func metricValue(snap telemetry.Snapshot, metric string) (float64, bool) {
 		return snap.ReplicationLagSeconds, true
 	case MetricLastBackupAgeSecs:
 		return snap.LastBackupAgeSeconds, true
+	case MetricLastBackupFailed:
+		return snap.LastBackupFailed, true
 	default:
 		return 0, false
 	}

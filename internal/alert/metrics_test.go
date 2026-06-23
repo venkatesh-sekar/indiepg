@@ -28,6 +28,7 @@ func TestMetricValue(t *testing.T) {
 		{MetricDeadlocks, 2, true},
 		{MetricReplicationLagSecs, 1.0, true},
 		{MetricLastBackupAgeSecs, 3600, true},
+		{MetricLastBackupFailed, 1, true},
 		{"unknown.metric", 0, false},
 	}
 	for _, tt := range tests {
