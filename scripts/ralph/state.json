@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "iteration": 1,
-  "commits_total": 1,
+  "iteration": 2,
+  "commits_total": 2,
   "current_band": "0-foundation",
-  "last_item": "Add vitest + React Testing Library to web/; wire npm test",
-  "last_result": "done — vitest run + RTL/jsdom wired, ui.tsx component test (6 tests green); all gates pass",
-  "notes": "Foundation band still open: AGENTS.md + fresh-npm-ci web verify-gate items remain. Then move to band 1 (security).",
+  "last_item": "Add root AGENTS.md (build/test/run commands + conventions)",
+  "last_result": "done — AGENTS.md at repo root references all make targets, web verify gate, and DEFAULTS.md; reviewed (one doc fix applied); all Go gates green",
+  "notes": "Foundation band: one item left — verify the web gate (npm ci -> typecheck/build) is green from a fresh install (now documented in AGENTS.md). After that, move to band 1 (security).",
   "north_star": "An indie hacker can stand up and run a rock-solid Postgres entirely from the indiepg UI, on best defaults, with safe optional overrides."
 }

@@ -9,7 +9,7 @@ Format: `- [ ] (band) item — acceptance: how we know it's done`
 
 ## 0 · Foundation
 - [x] (0) Add vitest + React Testing Library to `web/`; wire `npm test`; add one real test for an existing component — done 2026-06-24: vitest run + RTL/jsdom, config in vite.config.ts, `ui.tsx` component test (6 tests green).
-- [ ] (0) Add root `AGENTS.md` capturing build/test/run commands + conventions (read-only role, confirm-on-risky, best-defaults) so every iteration is consistent — acceptance: file exists, references `make` targets and DEFAULTS.md.
+- [x] (0) Add root `AGENTS.md` capturing build/test/run commands + conventions (read-only role, confirm-on-risky, best-defaults) so every iteration is consistent — done 2026-06-24: `AGENTS.md` at repo root references all `make` targets, the web npm scripts/verify gate, and links `scripts/ralph/DEFAULTS.md`; conventions section mirrors README invariants. Reviewed (one doc fix applied).
 - [ ] (0) Wire the web verify gate into the loop reality: ensure `npm run typecheck && npm run build` pass clean from a fresh `npm ci` — acceptance: documented in AGENTS.md, both commands green.
 
 ## 1 · Security
