@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"os"
 	"sync"
 	"time"
 
@@ -44,6 +45,14 @@ type Manager struct {
 	// incremental). Held via TryLock so an overlap becomes a clean, typed skip
 	// (CodeConflict) with no failure row, never a false alarm.
 	backupMu sync.Mutex
+
+	// Deep restore-test seams. scratchRoot is the directory the deep restore-test
+	// restores its throwaway scratch cluster into (never the live data dir).
+	// diskFree and resolvePGBin are injectable so the orchestration is unit-testable
+	// without a real filesystem volume or a Postgres install (see restore_deep.go).
+	scratchRoot  string
+	diskFree     func(path string) (uint64, error)
+	resolvePGBin func(dataDir string) (string, error)
 }
 
 // config returns the current configuration snapshot under the read lock.
@@ -86,6 +95,10 @@ type Options struct {
 	// ConfDir overrides where the managed pgbackrest.conf is written. Empty uses
 	// the default /etc/pgbackrest. Intended for tests.
 	ConfDir string
+	// ScratchRoot is the directory under which the deep restore-test creates its
+	// throwaway scratch cluster. Empty uses the OS temp dir. Point it at a volume
+	// with headroom; the deep test never writes anywhere else and always cleans up.
+	ScratchRoot string
 }
 
 // New builds a Manager from Options. A nil logger is replaced with a discard
@@ -99,13 +112,20 @@ func New(opts Options) *Manager {
 	if confDir == "" {
 		confDir = defaultConfDir
 	}
+	scratchRoot := opts.ScratchRoot
+	if scratchRoot == "" {
+		scratchRoot = os.TempDir()
+	}
 	return &Manager{
-		runner:  opts.Runner,
-		store:   opts.Store,
-		cfg:     opts.Config,
-		owner:   opts.Owner,
-		log:     log,
-		confDir: confDir,
+		runner:       opts.Runner,
+		store:        opts.Store,
+		cfg:          opts.Config,
+		owner:        opts.Owner,
+		log:          log,
+		confDir:      confDir,
+		scratchRoot:  scratchRoot,
+		diskFree:     defaultDiskFree,
+		resolvePGBin: defaultResolvePGBin,
 	}
 }
 

@@ -5,6 +5,33 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · restore-test DEEP proof — non-destructive scratch restore + boot + real row count
+The cheap `pgbackrest verify` (shipped earlier) checksums the repo but never
+restores, so it cannot catch recovery-time failures: a WAL gap that only
+manifests at replay, a corrupt `pg_control`, an unbootable catalog. Added
+`Manager.RestoreTestDeep` (internal/backup/restore_deep.go) — the gold-standard
+durability drill: it restores the newest backup into a fresh `os.MkdirTemp`
+scratch dir (`--pg1-path` override, NEVER the live data dir), boots it with
+`pg_ctl` for a full WAL replay on a PRIVATE unix socket (`listen_addresses=`
+empty so no TCP, `unix_socket_directories=<scratch>`, `archive_mode=off` in BOTH
+the restore config and the boot opts so the scratch cluster can never push WAL
+into the live repo), counts user-table rows to prove the heap is queryable,
+records `verified_rows`, then ALWAYS tears down (deferred stop + RemoveAll on a
+detached ctx). Safety guards: foreign-owner HARD STOP, no-backup → NotFound, and
+a disk-headroom precheck (`free >= dbSize × 1.25`) that refuses with CodeSafety
+and issues NO restore when the volume is tight — a restore ≈ DB size could fill
+the box and threaten the live dir, so the test must never run without margin.
+Wired behind an explicit opt-in (`POST /backups/restore-test?deep=true`); the
+default stays the always-safe cheap verify. Unit-tested via the fake Runner
+(exact-scratch-dir isolation, never runs `backup`, isolated boot-failure records
+a fail row while cleanup still stops the cluster, headroom-refusal issues no
+restore, foreign-owner/no-backup/invalid-stanza, plus the real `defaultDiskFree`
+/`defaultResolvePGBin` OS seams). Reviewed (feature-dev:code-reviewer): fixed two
+vacuous test assertions, quoted the socket dir for space-safety, and MkdirAll the
+scratch root so the headroom statfs is reliable. The real end-to-end integration
+test (needs a populated pgBackRest repo) and the UI opt-in button are split out
+as their own band-1.5 backlog items.
+
 ## 2026-06-24 · band 1.5 (data durability) · wire the restore-test job into the runtime scheduler
 Restore verification (the verify-based `Manager.RestoreTest`, shipped last
 iteration) only ever ran when an operator clicked "Test a restore" — the

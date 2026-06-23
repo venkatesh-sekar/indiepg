@@ -170,22 +170,34 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, res)
 }
 
-// handleRestoreTest verifies that the backup repository is intact and
-// recoverable by running `pgbackrest verify` — a read-only repo integrity check
-// that never touches the live data directory and never performs a restore. The
-// pass/fail outcome is recorded in restore-test history so the durability
-// surfacing can answer "have my backups been proven recoverable?".
+// handleRestoreTest proves a backup is recoverable. By default it runs the
+// cheap, always-safe `pgbackrest verify` (a read-only repo integrity check that
+// never touches the live data dir and never restores). With the explicit opt-in
+// `?deep=true` it instead runs a full scratch restore + boot, which catches
+// recovery-time failures verify cannot but is heavier and requires disk
+// headroom. The pass/fail outcome is recorded in restore-test history so the
+// durability surfacing can answer "have my backups been proven recoverable?".
 func (s *Server) handleRestoreTest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	res, err := s.backups.RestoreTest(ctx)
+	deep := r.URL.Query().Get("deep") == "true"
+
+	var (
+		res core.Result
+		err error
+	)
+	if deep {
+		res, err = s.backups.RestoreTestDeep(ctx)
+	} else {
+		res, err = s.backups.RestoreTest(ctx)
+	}
 	if err != nil {
-		s.audit(ctx, "restore_test", "stanza", "failure", "restore-test verification failed", core.CodeOf(err))
+		s.audit(ctx, "restore_test", "stanza", "failure", "restore-test failed", core.CodeOf(err))
 		writeError(w, err)
 		return
 	}
 
-	s.audit(ctx, "restore_test", "stanza", "success", "restore-test verification passed", "")
+	s.audit(ctx, "restore_test", "stanza", "success", "restore-test passed", "")
 	writeData(w, http.StatusOK, res)
 }
 
