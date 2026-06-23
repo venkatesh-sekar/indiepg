@@ -126,3 +126,68 @@ func TestReadOnlyRole_DBLevelWriteDenial(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, rows.RowCount)
 }
+
+// TestReadOnlyPool_StatementTimeoutEnforced proves the read pool's
+// statement_timeout is honored by Postgres at runtime — not merely present in
+// the DSN string (which buildDSN's unit test already covers). The query box
+// relies on this cap so a runaway SELECT cannot pin a pooled connection forever;
+// if the param were ever silently dropped (e.g. pgx ignoring an unknown key),
+// pg_sleep would run to completion and these assertions would fail.
+//
+// Gated identically to TestReadOnlyRole_DBLevelWriteDenial (INDIEPG_TEST_SOCKET,
+// integration build tag).
+func TestReadOnlyPool_StatementTimeoutEnforced(t *testing.T) {
+	sock := os.Getenv("INDIEPG_TEST_SOCKET")
+	if sock == "" {
+		t.Skip("set INDIEPG_TEST_SOCKET to a cluster provisioned with the indiepg roles")
+	}
+	// A short server-side cap on the read pool, paired with a generous client
+	// context so the cancellation we observe is Postgres killing the statement,
+	// never the Go context deadline tripping first.
+	const stmtTimeout = 250 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	m := New(Options{Config: config.Config{
+		PGSocketDir:      sock,
+		StatementTimeout: stmtTimeout,
+	}})
+	require.NoError(t, m.Connect(ctx))
+	defer m.Close()
+
+	// (1) The real query-box path: ExecuteRead must surface the server-side
+	// statement timeout. pg_sleep(5) far exceeds the 250ms cap, so it is killed
+	// long before it returns.
+	t0 := time.Now()
+	_, err := m.ExecuteRead(ctx, "SELECT pg_sleep(5)")
+	elapsed := time.Since(t0)
+	require.Error(t, err, "a query exceeding statement_timeout must be cancelled")
+	require.Contains(t, err.Error(), "statement timeout",
+		"the read pool's statement_timeout must cancel the runaway query")
+	require.Less(t, elapsed, 5*time.Second,
+		"the query must be killed at the cap, well before pg_sleep(5) completes")
+
+	// (2) Prove it is SQLSTATE 57014 (query_canceled) raised by Postgres on the
+	// read pool itself — i.e. the cap is enforced at the DB level on the very
+	// pool the query box uses, not by a client-side deadline. ExecuteRead
+	// collapses the PgError to its message, so assert the code on a raw conn.
+	conn, err := m.ReadPool().Acquire(ctx)
+	require.NoError(t, err)
+	defer conn.Release()
+	_, err = conn.Exec(ctx, "SELECT pg_sleep(5)")
+	require.Error(t, err)
+	var pgErr *pgconn.PgError
+	require.ErrorAs(t, err, &pgErr)
+	require.Equal(t, "57014", pgErr.Code,
+		"statement_timeout must raise query_canceled (57014) on the read pool")
+
+	// Positive control: the privileged pool carries NO forced statement_timeout
+	// (so long guided maintenance like CREATE INDEX is never killed). A sleep
+	// past the read pool's 250ms cap therefore completes here — proving the cap
+	// is scoped to the read pool, not the whole Manager.
+	priv := m.PrivPool()
+	require.NotNil(t, priv)
+	_, err = priv.Exec(ctx, "SELECT pg_sleep(0.5)")
+	require.NoError(t, err,
+		"the privileged pool must not impose the read pool's statement_timeout")
+}

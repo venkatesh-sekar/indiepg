@@ -5,6 +5,30 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2 (stability) · prove read-pool statement_timeout is enforced by Postgres
+First band-2 item. The query box's runaway-query guard has two halves: auto-LIMIT
+(already thoroughly unit-tested in `internal/pg/guard`) and `statement_timeout` on
+the read pool. The timeout was only proven at the DSN-*string* level (buildDSN's
+unit test asserts `statement_timeout=30000` is present) — nothing proved Postgres
+actually honors it at runtime on the pool the query box uses. If the param were
+ever silently dropped (e.g. pgx ignoring an unknown key), a runaway SELECT could
+pin a pooled connection forever. Added `TestReadOnlyPool_StatementTimeoutEnforced`
+(`internal/pg/readonly_integration_test.go`, `//go:build integration`, env-gated on
+`INDIEPG_TEST_SOCKET` like its sibling — never runs in the untagged loop gate). It
+sets a 250ms read-pool cap with a generous 30s client context (so the cancellation
+we observe is Postgres, not the Go deadline), then: (1) the real query-box path —
+`ExecuteRead("SELECT pg_sleep(5)")` is cancelled with a "statement timeout" message
+in <5s; (2) a raw read-pool conn proves the wire-level SQLSTATE is `57014`
+(query_canceled), i.e. the cap is enforced at the DB level on that exact pool; and
+(3) a positive control — `pg_sleep(0.5)` on the privileged pool COMPLETES, proving
+the cap is scoped to the read pool (the priv pool deliberately carries no forced
+timeout so guided maintenance like CREATE INDEX is never killed). Proven green
+against a throwaway PG14 cluster provisioned with the indiepg roles (both
+integration tests pass; my test runs in ~1.0s, not 5s+, confirming the cap fired).
+Reviewed (feature-dev:code-reviewer): no blocking findings — confirmed the
+wrong-reason guard (client ctx vs server timeout) is real, the 57014 assertion hits
+the right path via the raw conn, and the positive control is correctly scoped.
+
 ## 2026-06-24 · band 1.5 (data durability) · restore-test DEEP — end-to-end integration test
 Committed the one remaining band-1.5 item: the end-to-end integration proof for
 `Manager.RestoreTestDeep` (`internal/backup/restore_deep_integration_test.go`).
