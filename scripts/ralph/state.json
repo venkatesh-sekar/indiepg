@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "iteration": 0,
+  "commits_total": 0,
+  "current_band": "0-foundation",
+  "last_item": null,
+  "last_result": null,
+  "notes": "Fresh loop. Start at band 0 (foundation), then work top-down through the priority bands in PROMPT.md.",
+  "north_star": "An indie hacker can stand up and run a rock-solid Postgres entirely from the indiepg UI, on best defaults, with safe optional overrides."
+}
