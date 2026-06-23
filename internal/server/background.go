@@ -21,6 +21,12 @@ const (
 	// biggest data-loss gap for the north star ("never lose data").
 	fullBackupJob        = "full-backup"
 	incrementalBackupJob = "incremental-backup"
+	// restoreTestJob is the scheduled restore verification. Without it registered,
+	// `pgbackrest verify` only ever ran when an operator clicked "Test a restore",
+	// so a left-alone box's "have my backups been proven recoverable?" status could
+	// sit at "never" forever while the repo silently rotted (a bit-flip, a
+	// truncated WAL). Scheduling it closes the loop on "backups proven restorable".
+	restoreTestJob = "restore-test"
 )
 
 // seedTimeout bounds the one-shot default-rule seed at startup so a slow or hung
@@ -66,21 +72,36 @@ func (s *Server) startBackgroundJobs(ctx context.Context) {
 	s.registerBackupJob(fullBackupJob, s.cfg.Schedules.FullBackup, backup.TypeFull)
 	s.registerBackupJob(incrementalBackupJob, s.cfg.Schedules.IncrementalBackup, backup.TypeIncr)
 
+	// Scheduled restore verification: prove the repo is still recoverable on a
+	// cadence (default 05:00 Sundays, after the weekly full). A read-only
+	// `pgbackrest verify` — it never touches the live cluster — so unlike a backup
+	// it cannot conflict and needs no single-flight guard.
+	s.registerJob(restoreTestJob, s.cfg.Schedules.RestoreTest, s.scheduledRestoreTest(),
+		"restore verification is disabled (empty schedule); backups will not be automatically proven recoverable")
+
 	s.sched.Start(ctx)
 }
 
-// registerBackupJob registers a scheduled backup of the given type, logging an
-// error on a bad spec (the job simply will not run) and a loud warning on an
-// empty spec (the operator has turned automatic backups of this type OFF — never
-// a silent gap, since it is a data-loss risk).
-func (s *Server) registerBackupJob(name, spec string, t backup.Type) {
-	if err := s.sched.Register(name, spec, s.scheduledBackup(t)); err != nil {
-		s.log.Error("could not schedule backup; it will not run automatically", "job", name, "spec", spec, "err", err)
+// registerJob registers a named scheduled job, logging an error on a bad cron
+// spec (the job simply will not run rather than taking the panel down) and a
+// loud warning on an empty spec (the operator has turned this job OFF — never a
+// silent gap). emptyWarn is the message logged for that opt-out case.
+func (s *Server) registerJob(name, spec string, fn scheduler.JobFunc, emptyWarn string) {
+	if err := s.sched.Register(name, spec, fn); err != nil {
+		s.log.Error("could not schedule job; it will not run automatically", "job", name, "spec", spec, "err", err)
 		return
 	}
 	if spec == "" {
-		s.log.Warn("scheduled backup is disabled (empty schedule); no automatic backups of this type will run", "job", name)
+		s.log.Warn(emptyWarn, "job", name)
 	}
+}
+
+// registerBackupJob registers a scheduled backup of the given type. An empty
+// spec is the operator's explicit opt-out and is surfaced loudly, since no
+// automatic backups is the single biggest data-loss risk.
+func (s *Server) registerBackupJob(name, spec string, t backup.Type) {
+	s.registerJob(name, spec, s.scheduledBackup(t),
+		"scheduled backup is disabled (empty schedule); no automatic backups of this type will run")
 }
 
 // scheduledBackup builds the JobFunc the scheduler runs for a backup of type t.
@@ -108,6 +129,36 @@ func (s *Server) scheduledBackup(t backup.Type) scheduler.JobFunc {
 			return err
 		}
 		s.log.Info("scheduled backup completed", "type", string(t), "message", res.Message)
+		return nil
+	}
+}
+
+// scheduledRestoreTest builds the JobFunc the scheduler runs to periodically
+// prove the backup repository is still recoverable. It runs the read-only
+// `pgbackrest verify` via the Manager, which records a pass/fail restore_tests
+// row regardless of outcome, so the durability surfacing reflects it.
+//
+// Unlike the backup jobs, it deliberately does NOT self-heal the pgBackRest
+// config: ensureBackupConfigured runs stanza-create (which takes an exclusive
+// stanza lock) and may restart Postgres to enable archiving — either would
+// collide with a backup that is still running (the default weekly full starts at
+// 03:00 with a 6h timeout and can still be in flight when this fires at 05:00).
+// Verify is a pure reader that only needs the config the backup jobs already
+// wrote, so it calls RestoreTest directly. If backups were never configured,
+// verify fails and is recorded as such — an honest "no proven-recoverable
+// backup" signal, not a crash.
+//
+// A verify failure is a genuine durability problem, not a benign skip: the
+// Manager has already recorded the fail row, and returning the error lets the
+// scheduler log the failure too. Unlike a backup, verify never writes the repo,
+// so it cannot trip the single-flight CodeConflict path.
+func (s *Server) scheduledRestoreTest() scheduler.JobFunc {
+	return func(ctx context.Context) error {
+		res, err := s.backups.RestoreTest(ctx)
+		if err != nil {
+			return err
+		}
+		s.log.Info("scheduled restore test completed", "message", res.Message)
 		return nil
 	}
 }

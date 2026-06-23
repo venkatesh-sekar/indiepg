@@ -66,7 +66,22 @@ func TestStartBackgroundJobsRegistersScheduledBackups(t *testing.T) {
 	}
 	require.True(t, names[fullBackupJob], "full backup must be scheduled so a left-alone box still backs up")
 	require.True(t, names[incrementalBackupJob], "incremental backup must be scheduled")
+	require.True(t, names[restoreTestJob], "restore verification must be scheduled so backups are proven recoverable without a manual click")
 	require.True(t, names[telemetrySampleJob], "telemetry/alert loop must remain scheduled")
+}
+
+// TestStartBackgroundJobsEmptyRestoreTestScheduleDisables proves an empty
+// restore-test schedule is the operator's explicit opt-out: the job is not
+// registered (rather than erroring or scheduling a broken job).
+func TestStartBackgroundJobsEmptyRestoreTestScheduleDisables(t *testing.T) {
+	srv, _ := newTestServer(t)
+	srv.cfg.Schedules.RestoreTest = ""
+	srv.startBackgroundJobs(context.Background())
+	defer srv.stopBackgroundJobs()
+
+	for _, j := range srv.sched.Jobs() {
+		require.NotEqual(t, restoreTestJob, j.Name, "an empty schedule must not register the job")
+	}
 }
 
 // TestStartBackgroundJobsEmptyScheduleDisablesBackup proves an empty schedule

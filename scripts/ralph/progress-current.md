@@ -5,6 +5,32 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · wire the restore-test job into the runtime scheduler
+Restore verification (the verify-based `Manager.RestoreTest`, shipped last
+iteration) only ever ran when an operator clicked "Test a restore" — the
+`restore-test` cron job was never registered in `startBackgroundJobs`, even
+though `cfg.Schedules.RestoreTest` (default `0 5 * * 0`, 05:00 Sundays, after the
+weekly full) already existed. So a left-alone box's "have my backups been proven
+recoverable?" banner could sit at "never" forever while the repo silently rotted
+(a bit-flip, a truncated WAL). Registered the job so backups are proven
+recoverable on a cadence with no manual click — closing the loop on "backups
+proven restorable". Refactored `registerBackupJob` to share a generic
+`registerJob(name, spec, fn, emptyWarn)` helper (DRY; same error-on-bad-spec /
+warn-on-empty-spec behavior). Tests: restore-test is registered alongside the
+backup + telemetry jobs; an empty schedule is the operator's opt-out (job not
+registered). DESIGN/SAFETY: unlike the backup jobs, `scheduledRestoreTest`
+deliberately does NOT call `ensureBackupConfigured` — that runs `stanza-create`
+(exclusive stanza lock) and may restart Postgres to enable archiving, either of
+which would COLLIDE with a backup still running from 03:00 (6h timeout) when the
+verify fires at 05:00. Verify is a pure reader that only needs the config the
+backup jobs already wrote, so it calls `RestoreTest` directly. This collision was
+caught by the code-reviewer (feature-dev:code-reviewer) and fixed before commit;
+the reviewer also confirmed verify correctly needs no single-flight/CodeConflict
+guard (it never writes the repo) and that returning a verify failure (vs
+swallowing) is right for a scheduled durability check. Full Go gate green; no web
+changes. NOTE the digest job is still unregistered (no digest builder exists);
+the deep scratch-restore proof (`verified_rows`) remains the one open 1.5 item.
+
 ## 2026-06-24 · band 1.5 (data durability) · restore-test EXECUTION (pgbackrest verify)
 `handleRestoreTest` was a stub returning "not implemented", so the restore-test
 surfacing could only ever show "never" — the operator had no way to prove a
