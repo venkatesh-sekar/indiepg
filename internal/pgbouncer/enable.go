@@ -15,6 +15,12 @@ const EnabledConfigKey = "pooler.enabled"
 // enabledValue is the single value EnabledConfigKey holds when the pooler is on.
 const enabledValue = "true"
 
+// disabledValue is the value EnabledConfigKey holds after the operator turns the
+// pooler off. Any value other than enabledValue already reads as OFF (see
+// IsEnabled), but recording an explicit "false" makes a deliberate disable
+// distinguishable from the never-enabled default.
+const disabledValue = "false"
+
 // VerifierSource supplies the SCRAM-SHA-256 verifiers for the login roles routed
 // through the pooler, read from pg_authid. *pg.Manager satisfies it. It is an
 // interface so the orchestrator stays decoupled from the privileged psql path
@@ -183,6 +189,37 @@ func (m *Manager) Enable(ctx context.Context, src VerifierSource, state PoolerSt
 		"roles", len(roles), "config_changed", configChanged,
 		"userlist_changed", userlistChanged, "reloaded", res.Reloaded)
 	return res, nil
+}
+
+// Disable turns the opt-in pooler back off — the inverse of Enable — so an
+// operator who enabled it is never stuck shelling in to undo it. It is
+// idempotent/re-runnable: a second call stops an already-stopped unit cleanly and
+// re-records the off state.
+//
+// The order mirrors Enable's "persist last" safety rule: stop the service FIRST,
+// then persist enabled=false. If the stop fails we return the error WITHOUT
+// touching the flag, so the panel never reports the pooler as off while it is in
+// fact still running and accepting connections — the flag only flips to off once
+// the service is confirmed down. (Recording off first, then failing to stop,
+// would tell the operator a live pooler is gone, the more dangerous lie.)
+func (m *Manager) Disable(ctx context.Context, state PoolerState) error {
+	if m.runner == nil {
+		return core.InternalError("pgbouncer: Disable requires a Runner")
+	}
+	if state == nil {
+		return core.InternalError("pgbouncer: Disable requires a state store")
+	}
+
+	if err := m.DisableNow(ctx); err != nil {
+		return err
+	}
+
+	if err := state.SetConfig(ctx, EnabledConfigKey, disabledValue); err != nil {
+		return err
+	}
+
+	m.log.InfoCtx(ctx, "PgBouncer pooler disabled")
+	return nil
 }
 
 // IsEnabled reports whether the operator has enabled the pooler. An unset key

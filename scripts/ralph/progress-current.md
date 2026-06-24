@@ -5,6 +5,28 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · operator can now DISABLE the pooler from the UI
+The opt-in PgBouncer pooler had no off switch: `internal/pgbouncer/enable.go` had only
+`Enable`/`IsEnabled` and the handlers only status+enable, so an operator who turned it on
+was stuck shelling in to undo it — "safe optional overrides" implies reversibility. Added
+`Manager.DisableNow` (`systemctl disable --now pgbouncer`, idempotent inverse of EnableNow)
+and `Manager.Disable(ctx, state)`, which stops the service FIRST then persists
+`pooler.enabled=false`. Ordering is the load-bearing safety choice: a stop failure returns
+the error WITHOUT clearing the flag, so the panel never reports the pooler off while it is
+actually still running (the inverse of Enable's "persist last" rule — recording off then
+failing to stop would be the worse lie). New CSRF-gated `POST /api/pooler/disable`
+(`handlePoolerDisable`, no body) under requireAuth, auto-covered by the band-1 route-walk
+CSRF test, audited by code. UI: a red "Disable connection pooler" button on the enabled
+view behind a `tone="danger"` confirm that states exactly what stops (service down, no
+restart on reboot, apps pointed at the pooler fail to connect until repointed at Postgres)
++ reassurance (no PG restart, no data touched, re-enable anytime); plain confirm because
+disabling is reversible. `onEnabled`→`onChanged` prop rename; new `api.disablePooler()`.
+Tests: manager (stops-then-persists, stop-failure-doesn't-persist [RED on a persist-first
+impl], idempotent, persist-failure-surfaces, requires-runner+state); handler (requires-auth,
+flag untouched on reject); web (disable button only when on, confirm copy, failed-disable
+keeps dialog open). Reviewed (feature-dev:code-reviewer): both Important findings applied.
+Go + web gates green. Band 3 now fully complete (pooler round-trips on↔off).
+
 ## 2026-06-24 · band 2 (stability) · ssh-less S3 migration no longer OOMs on a multi-GB dump
 The ssh-less (shared-bucket) migration path buffers the WHOLE pg_dump in memory —
 `ExportToSession` does `os.ReadFile`→`PutObject([]byte)` and `ImportFromSession` does

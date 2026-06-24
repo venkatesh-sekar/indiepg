@@ -54,6 +54,7 @@ func (s *Server) buildRouter() http.Handler {
 			// system-mutating enable action (installs + starts the service).
 			pr.Get("/pooler", s.handleGetPoolerStatus)
 			pr.Post("/pooler/enable", s.handlePoolerEnable)
+			pr.Post("/pooler/disable", s.handlePoolerDisable)
 
 			pr.Get("/audit", s.handleListAudit)
 

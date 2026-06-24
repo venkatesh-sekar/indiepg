@@ -132,3 +132,29 @@ func (s *Server) handlePoolerEnable(w http.ResponseWriter, r *http.Request) {
 	s.audit(ctx, "enable_pooler", "pgbouncer", "success", "PgBouncer pooler enabled", "")
 	writeData(w, http.StatusOK, result)
 }
+
+// handlePoolerDisable turns the opt-in PgBouncer pooler back off: it stops and
+// disables the service, then records the off state. Like enable it is a deliberate
+// system-mutating action, so it is a CSRF-gated POST behind requireAuth. It takes
+// no body — there is nothing to size or choose when turning the pooler off. The
+// service is stopped before the flag is cleared (see pgbouncer.Manager.Disable),
+// so the panel never reports "off" while the pooler is still actually running.
+func (s *Server) handlePoolerDisable(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	if err := s.pooler.Disable(ctx, s.store); err != nil {
+		s.audit(ctx, "disable_pooler", "pgbouncer", "failure", "disable PgBouncer pooler failed", core.CodeOf(err))
+		writeError(w, err)
+		return
+	}
+
+	s.audit(ctx, "disable_pooler", "pgbouncer", "success", "PgBouncer pooler disabled", "")
+	// Report the now-off state in the same shape GET /api/pooler returns. Pool
+	// sizing is irrelevant when the pooler is off, so it is left nil; the UI
+	// re-fetches the full status after a disable anyway.
+	writeData(w, http.StatusOK, poolerStatus{
+		Enabled:    false,
+		Host:       pgbouncer.LoopbackHost,
+		ListenPort: pgbouncer.DefaultListenPort,
+	})
+}

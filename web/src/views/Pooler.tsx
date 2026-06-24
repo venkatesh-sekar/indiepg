@@ -101,7 +101,7 @@ export function Pooler() {
           roles={roles.data ?? []}
           rolesLoading={roles.loading}
           rolesError={roles.error}
-          onEnabled={status.reload}
+          onChanged={status.reload}
         />
       ) : null}
     </Card>
@@ -115,17 +115,17 @@ export function PoolerPanel({
   roles,
   rolesLoading = false,
   rolesError,
-  onEnabled,
+  onChanged,
 }: {
   status: PoolerStatus;
   roles: RoleInfo[];
   rolesLoading?: boolean;
   rolesError?: ApiError | null;
-  onEnabled: () => void;
+  onChanged: () => void;
 }) {
   const address = `${status.host}:${status.listen_port}`;
   if (status.enabled) {
-    return <EnabledView status={status} address={address} />;
+    return <EnabledView status={status} address={address} onChanged={onChanged} />;
   }
   return (
     <DisabledView
@@ -134,19 +134,49 @@ export function PoolerPanel({
       roles={roles}
       rolesLoading={rolesLoading}
       rolesError={rolesError}
-      onEnabled={onEnabled}
+      onChanged={onChanged}
     />
   );
 }
 
-/** The pooler is on: show where apps connect and the pool sizing in force. */
+/** The pooler is on: show where apps connect, the pool sizing in force, and let
+ *  the operator turn it back off behind a confirm that states what stops. */
 function EnabledView({
   status,
   address,
+  onChanged,
 }: {
   status: PoolerStatus;
   address: string;
+  onChanged: () => void;
 }) {
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  const disable = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.disablePooler();
+      toast.success("Connection pooler disabled.");
+      // Close before reloading status so the panel doesn't re-render (loading on)
+      // while the dialog is still marked open.
+      setConfirming(false);
+      onChanged();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err
+          : new ApiError(0, { code: "internal", message: String(err) }),
+      );
+      // Keep the dialog open so the operator sees what failed, but stop "Working…".
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="tuning">
       <Callout tone="ok" title="The connection pooler is on">
@@ -163,6 +193,48 @@ function EnabledView({
           sizing. The pooler is still running.
         </Callout>
       )}
+
+      <div className="btn-row">
+        <button
+          type="button"
+          className="btn btn-danger"
+          onClick={() => {
+            setError(null);
+            setConfirming(true);
+          }}
+        >
+          Disable connection pooler
+        </button>
+      </div>
+
+      <ConfirmDialog
+        open={confirming}
+        title="Disable the connection pooler?"
+        confirmLabel="Disable pooler"
+        tone="danger"
+        busy={busy}
+        onCancel={() => setConfirming(false)}
+        onConfirm={disable}
+        message={
+          <>
+            <p>Disabling the pooler will, on this server:</p>
+            <ul>
+              <li>
+                Stop the PgBouncer service — it will no longer accept connections
+                at <code>{address}</code>.
+              </li>
+              <li>Prevent it from starting again on reboot.</li>
+            </ul>
+            <p>
+              Any app still pointed at <code>{address}</code> will fail to connect
+              until you point it back at Postgres directly. This does{" "}
+              <strong>not</strong> restart Postgres and does not touch your data.
+              You can re-enable the pooler at any time.
+            </p>
+            {error ? <ErrorNotice error={error} /> : null}
+          </>
+        }
+      />
     </div>
   );
 }
@@ -175,14 +247,14 @@ function DisabledView({
   roles,
   rolesLoading,
   rolesError,
-  onEnabled,
+  onChanged,
 }: {
   status: PoolerStatus;
   address: string;
   roles: RoleInfo[];
   rolesLoading: boolean;
   rolesError?: ApiError | null;
-  onEnabled: () => void;
+  onChanged: () => void;
 }) {
   const toast = useToast();
   // Only non-superuser login roles are app roles worth routing; superusers
@@ -208,7 +280,7 @@ function DisabledView({
       // Close the dialog before reloading status so the panel never re-renders
       // (status.reload flips loading on) while the dialog is still marked open.
       setConfirming(false);
-      onEnabled();
+      onChanged();
     } catch (err) {
       setError(
         err instanceof ApiError

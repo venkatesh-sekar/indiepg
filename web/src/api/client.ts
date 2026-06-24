@@ -284,6 +284,12 @@ export const api = {
   enablePooler(req: PoolerEnableRequest): Promise<PoolerEnableResult> {
     return request<PoolerEnableResult>("/pooler/enable", { method: "POST", body: req });
   },
+  // Turns the pooler off: stops and disables the PgBouncer service. The service is
+  // stopped before the off state is recorded server-side, so a failure leaves the
+  // pooler reported as still on. Reversible — re-enable at any time.
+  disablePooler(): Promise<PoolerStatus> {
+    return request<PoolerStatus>("/pooler/disable", { method: "POST" });
+  },
 
   // alerts -----------------------------------------------------------------
   alerts(): Promise<AlertsConfig> {

@@ -33,18 +33,18 @@ function role(name: string, over: Partial<RoleInfo> = {}): RoleInfo {
 }
 
 function renderPanel(props: Partial<Parameters<typeof PoolerPanel>[0]> = {}) {
-  const onEnabled = vi.fn();
+  const onChanged = vi.fn();
   render(
     <ToastProvider>
       <PoolerPanel
         status={status()}
         roles={[role("app")]}
-        onEnabled={onEnabled}
+        onChanged={onChanged}
         {...props}
       />
     </ToastProvider>,
   );
-  return { onEnabled };
+  return { onChanged };
 }
 
 beforeEach(() => {
@@ -137,7 +137,7 @@ describe("PoolerPanel — disabled", () => {
         reloaded: false,
         running: true,
       });
-    const { onEnabled } = renderPanel({ roles: [role("app")] });
+    const { onChanged } = renderPanel({ roles: [role("app")] });
 
     fireEvent.click(screen.getByLabelText("app"));
     fireEvent.click(
@@ -157,7 +157,7 @@ describe("PoolerPanel — disabled", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Enable pooler" }));
 
-    await waitFor(() => expect(onEnabled).toHaveBeenCalled());
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
     // Roles are sent; max_connections is NOT (server sizes the pool).
     expect(spy).toHaveBeenCalledWith({ roles: ["app"] });
   });
@@ -169,7 +169,7 @@ describe("PoolerPanel — disabled", () => {
         message: "a foreign pgbouncer.ini is present",
       }),
     );
-    const { onEnabled } = renderPanel({ roles: [role("app")] });
+    const { onChanged } = renderPanel({ roles: [role("app")] });
 
     fireEvent.click(screen.getByLabelText("app"));
     fireEvent.click(
@@ -182,8 +182,84 @@ describe("PoolerPanel — disabled", () => {
         screen.getByText("a foreign pgbouncer.ini is present"),
       ).toBeInTheDocument(),
     );
-    expect(onEnabled).not.toHaveBeenCalled();
+    expect(onChanged).not.toHaveBeenCalled();
     // Dialog stays open so the operator can read the error.
     expect(screen.getByText("Enable the connection pooler?")).toBeInTheDocument();
+  });
+});
+
+describe("PoolerPanel — disabling (enabled view)", () => {
+  it("offers a disable button only when the pooler is on", () => {
+    // On: the disable affordance is present.
+    const { rerender } = render(
+      <ToastProvider>
+        <PoolerPanel
+          status={status({ enabled: true })}
+          roles={[role("app")]}
+          onChanged={vi.fn()}
+        />
+      </ToastProvider>,
+    );
+    expect(
+      screen.getByRole("button", { name: /disable connection pooler/i }),
+    ).toBeInTheDocument();
+
+    // Off: no disable affordance (the off view offers enable instead).
+    rerender(
+      <ToastProvider>
+        <PoolerPanel status={status()} roles={[role("app")]} onChanged={vi.fn()} />
+      </ToastProvider>,
+    );
+    expect(
+      screen.queryByRole("button", { name: /disable connection pooler/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("confirm dialog states what stops, then disables on confirm", async () => {
+    const spy = vi.spyOn(api, "disablePooler").mockResolvedValue(
+      status({ enabled: false, pool: null }),
+    );
+    const { onChanged } = renderPanel({ status: status({ enabled: true }) });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /disable connection pooler/i }),
+    );
+
+    // The confirm spells out the consequences before it happens.
+    expect(screen.getByText("Disable the connection pooler?")).toBeInTheDocument();
+    expect(screen.getByText(/Stop the PgBouncer service/)).toBeInTheDocument();
+    expect(screen.getByText(/Prevent it from starting again on reboot/)).toBeInTheDocument();
+    expect(screen.getByText(/will fail to connect/i)).toBeInTheDocument();
+    // Honest about the blast radius: no Postgres restart, no data touched.
+    expect(screen.getByText(/does not touch your data/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Disable pooler" }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a failed disable without closing the dialog or signalling success", async () => {
+    vi.spyOn(api, "disablePooler").mockRejectedValue(
+      new ApiError(500, {
+        code: "exec",
+        message: "disabling the pgbouncer service failed",
+      }),
+    );
+    const { onChanged } = renderPanel({ status: status({ enabled: true }) });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /disable connection pooler/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Disable pooler" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("disabling the pgbouncer service failed"),
+      ).toBeInTheDocument(),
+    );
+    expect(onChanged).not.toHaveBeenCalled();
+    // Dialog stays open so the operator can read the error.
+    expect(screen.getByText("Disable the connection pooler?")).toBeInTheDocument();
   });
 });

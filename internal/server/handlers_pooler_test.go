@@ -127,3 +127,25 @@ func TestPoolerEnable_RefusesWhenPostgresUnreachable(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, enabled, "the pooler must stay OFF when it could not be brought up")
 }
+
+// Disabling is system-mutating (stops + disables a service), so the endpoint is
+// behind requireAuth: an unauthenticated POST is rejected before any side effect.
+// The persisted enable flag is left untouched — a rejected request must not flip
+// a running pooler's recorded state. (The side-effecting happy path is not
+// HTTP-tested by deliberate convention — the test server uses the real OSRunner,
+// like the enable/backup/migrate handlers; the orchestration is proven against a
+// fake runner in pgbouncer/disable_test.go.)
+func TestPoolerDisable_RequiresAuth(t *testing.T) {
+	srv, st := newTestServer(t)
+
+	// Pre-mark the pooler as on so we can prove the rejected request did not
+	// clear the flag.
+	require.NoError(t, st.SetConfig(context.Background(), pgbouncer.EnabledConfigKey, "true"))
+
+	rec := authedRequest(t, srv, http.MethodPost, "/api/pooler/disable", "not-a-valid-token", nil)
+	require.Equal(t, http.StatusUnauthorized, rec.Code, "body: %s", rec.Body.String())
+
+	enabled, err := pgbouncer.IsEnabled(context.Background(), st)
+	require.NoError(t, err)
+	require.True(t, enabled, "a rejected request must not change the pooler state")
+}

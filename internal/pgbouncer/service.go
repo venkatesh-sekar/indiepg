@@ -73,6 +73,25 @@ func (m *Manager) EnableNow(ctx context.Context) error {
 	return nil
 }
 
+// DisableNow stops the PgBouncer service and prevents it starting on boot — the
+// inverse of EnableNow. `systemctl disable --now` is idempotent: an
+// already-stopped, already-disabled unit is a clean no-op, so the disable flow is
+// re-runnable.
+func (m *Manager) DisableNow(ctx context.Context) error {
+	if m.runner == nil {
+		return core.InternalError("pgbouncer: DisableNow requires a Runner")
+	}
+	if _, err := m.runner.Run(ctx, exec.RunSpec{
+		Name:    "systemctl",
+		Args:    []string{"disable", "--now", serviceName},
+		Timeout: commandTimeout,
+	}); err != nil {
+		return core.ExecError("pgbouncer: disabling the pgbouncer service failed").Wrap(err)
+	}
+	m.log.InfoCtx(ctx, "disabled PgBouncer service", "service", serviceName)
+	return nil
+}
+
 // Reload applies a changed config/auth_file to a running PgBouncer with the least
 // disruption. It first tries `systemctl reload` — a SIGHUP makes PgBouncer
 // re-read pgbouncer.ini and reopen the auth_file WITHOUT dropping established
