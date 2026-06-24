@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { ResultBadge, ErrorNotice, StaleBanner, Spinner } from "./ui";
+import { fireEvent } from "@testing-library/react";
+import { ResultBadge, ErrorNotice, StaleBanner, Spinner, SecretValue } from "./ui";
 import { ApiError } from "@/api/client";
 
 describe("ResultBadge", () => {
@@ -104,5 +105,34 @@ describe("Spinner", () => {
   it("falls back to a default label", () => {
     render(<Spinner />);
     expect(screen.getByText("Loading…")).toBeInTheDocument();
+  });
+});
+
+describe("SecretValue", () => {
+  it("masks the value until revealed, then toggles back", () => {
+    render(<SecretValue label="Password" value="hunter2" />);
+    // masked by default — the raw value is not shown.
+    expect(screen.queryByText("hunter2")).not.toBeInTheDocument();
+
+    const reveal = screen.getByRole("button", { name: "Reveal" });
+    expect(reveal).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(reveal);
+    expect(screen.getByText("hunter2")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Hide" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    // toggles to a Hide affordance.
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    expect(screen.queryByText("hunter2")).not.toBeInTheDocument();
+  });
+
+  it("renders reveal/copy as shadcn outline buttons", () => {
+    render(<SecretValue label="DSN" value="postgres://x" />);
+    for (const name of ["Reveal", "Copy"]) {
+      const btn = screen.getByRole("button", { name });
+      expect(btn).toHaveAttribute("data-slot", "button");
+      expect(btn).toHaveAttribute("data-variant", "outline");
+    }
   });
 });

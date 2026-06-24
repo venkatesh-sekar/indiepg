@@ -203,11 +203,6 @@ code {
   cursor: not-allowed;
 }
 
-.btn-sm {
-  padding: 5px 10px;
-  font-size: 13px;
-}
-
 .btn-primary {
   background: var(--primary);
   border-color: var(--primary);
@@ -439,32 +434,6 @@ fieldset.field legend {
 /* --- Modal --------------------------------------------------------------- */
 /* Modal markup/animation now live in the shadcn Dialog (src/components/Modal.tsx
    wraps it). Only the dialog body's content class remains. */
-
-/* --- Secrets ------------------------------------------------------------- */
-
-.secret-label {
-  font-size: 13px;
-  font-weight: 560;
-  margin-bottom: 4px;
-}
-
-.secret-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.secret-value {
-  flex: 1;
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 8px 10px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow-x: auto;
-  white-space: nowrap;
-}
 
 /* --- States -------------------------------------------------------------- */
 

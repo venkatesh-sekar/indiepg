@@ -5,6 +5,26 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band E · shared `SecretValue` reveal/copy → shadcn `Button`
+Third band-E cleanup slice. `ui.tsx` `SecretValue({label,value})` (shown once
+after creating a role/database in RolesDatabases) was the last shared component
+using hand-rolled `<button className="btn btn-sm">` markup.
+- Reveal/Hide + Copy buttons → shadcn `Button variant="outline" size="sm"` (the
+  established secondary-action pattern). Masked `<code>` block + `.secret-*`
+  wrapper divs → Tailwind semantic tokens (`bg-muted border rounded-md font-mono
+  text-xs`; `flex`/`gap-*` layout). Public API unchanged, the single call-site
+  (RolesDatabases) untouched.
+- Deleted dead CSS: `.btn-sm` and the `.secret-label`/`.secret-row`/`.secret-value`
+  block from `styles.css`.
+- ui-heuristics-reviewer: applied the one blocking finding — `aria-pressed={revealed}`
+  on the Reveal/Hide toggle (trivially-additive a11y win; shadcn Button renders a
+  plain `<button>` and won't inject it). Declined the low-severity copy-error note
+  as pre-existing/out-of-scope per parity.
+- Added a `SecretValue` test (mask→reveal toggle + `aria-pressed` + outline
+  `data-variant`). 127 web tests green; typecheck/build/go build green.
+- Remaining before E token-delete: `PageHeader` divs → Tailwind (`.page-*`);
+  `App.boot-screen` + `Settings.callout-detail`/`-hint`.
+
 ## 2026-06-24 · band E · shared `EmptyState` → shadcn `Empty`
 Second band-E cleanup slice. `ui.tsx` `EmptyState({title,hint,children})` was the
 last shared component rendering hand-rolled `.empty`/`.empty-title`/`.empty-hint`

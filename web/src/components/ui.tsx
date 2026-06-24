@@ -4,6 +4,7 @@
 import { useState, type ComponentProps, type ReactNode } from "react";
 import { ApiError } from "@/api/client";
 import { Badge as ShadcnBadge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Spinner as ShadcnSpinner } from "@/components/ui/spinner";
 import {
   Alert,
@@ -272,16 +273,24 @@ export function SecretValue({ label, value }: { label: string; value: string }) 
   };
 
   return (
-    <div className="secret">
-      <div className="secret-label">{label}</div>
-      <div className="secret-row">
-        <code className="secret-value">{revealed ? value : "•".repeat(Math.min(value.length, 24))}</code>
-        <button type="button" className="btn btn-sm" onClick={() => setRevealed((r) => !r)}>
+    <div className="flex flex-col gap-1">
+      <div className="text-sm font-medium">{label}</div>
+      <div className="flex items-center gap-2">
+        <code className="flex-1 overflow-x-auto whitespace-nowrap rounded-md border bg-muted px-2.5 py-2 font-mono text-xs">
+          {revealed ? value : "•".repeat(Math.min(value.length, 24))}
+        </code>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-pressed={revealed}
+          onClick={() => setRevealed((r) => !r)}
+        >
           {revealed ? "Hide" : "Reveal"}
-        </button>
-        <button type="button" className="btn btn-sm" onClick={copy}>
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={copy}>
           {copied ? "Copied" : "Copy"}
-        </button>
+        </Button>
       </div>
     </div>
   );
