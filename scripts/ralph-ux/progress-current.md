@@ -3,6 +3,31 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 7 — Mode F (REJECT) (Query: surface the server's executed_sql)
+Took the top quick-win: the API returns `executed_sql` (the statement the server
+actually ran, possibly auto-LIMIT-rewritten) but it was never shown. Implemented it the
+restraint-aware way — captured the submitted SQL into state and rendered a compact
+"Executed SQL" `<pre>` block (mirroring the existing idiom in Settings.tsx) **only when**
+`normalize(executed_sql) !== normalize(submitted)`, i.e. the server actually rewrote the
+query; verbatim runs add zero surface. Updated the test fixture to a realistic
+`executed_sql` matching the submitted query, asserted the block is hidden on verbatim
+runs, and added a test asserting it appears on an auto-LIMIT rewrite. 6 Query tests green.
+Ran the full review panel. **3 SHIP** (UX heuristics — visibility of system status; Sam —
+"turns a vague 'we capped you' into 'here's exactly what ran', a trust win"; Priya —
+"exact LIMIT value made visible, zero friction"). **Restraint critic REJECTED**: redundant
+decoration — the *only* rewrite path is the auto-LIMIT injection, which always co-occurs
+with the existing "Results limited for safety" badge + "Add your own LIMIT…" copy that
+already explain a LIMIT was applied; the block restates that fact in technical form.
+**Verified the critic's load-bearing assumption** in `internal/pg/guard/guard.go`:
+`Check()` mutates the statement solely via `injectLimit`, which sets
+`cls.HasLimit → limited=true` — there is NO rewrite path that changes the SQL without also
+flipping `limited`. So the assumption holds and the REJECT stands firm; per the contract
+the restraint blocker is never overruled by the three ships. Reverted both files clean,
+recorded the lesson ("honest-state only wins when the data is otherwise hidden; here the
+`limited` copy already conveys it") in learnings.md, marked the backlog item rejected. No
+code shipped. Next top item: Alerts — add `Tooltip` definitions to the bare "Sustained" /
+"Cooldown" column headers.
+
 ## 2026-06-25 — iter 6 — Mode F (REJECT) (Dashboard: link "Backups page" in the no-backup callout)
 Took the top quick-win: the "no backup yet" warn Callout names "Backups page" as plain
 text, so the user hunts the sidebar — proposed wrapping it in `<Link to="/backups">`,

@@ -21,9 +21,12 @@ Format per item:
   restraint critic blocked (never overruled): the copy already names the page and the
   left-nav is one obvious click from every view, so the link only saves a click on an
   empty state seen ~once. Decorative payoff. See learnings.md.
-- [ ] (med/S) Query — the server returns `executed_sql` (possibly LIMIT-rewritten)
-  but it's never shown, so a user can't tell what actually ran. → Show a compact,
-  collapsed "Executed SQL" code block below results (render the value already returned).
+- ~~(med/S) Query — show the server's `executed_sql` in a compact block~~ —
+  **rejected iter 7** on restraint. 3 of 4 reviewers shipped, but the restraint critic
+  blocked (never overruled): the only thing that ever rewrites the SQL is the auto-LIMIT
+  (verified in `guard.go`), which always co-occurs with the existing "Results limited
+  for safety" + "Add your own LIMIT…" copy — so the block only restates an
+  already-explained fact. Redundant, not new signal. See learnings.md.
 - [ ] (med/S) Alerts — "Sustained" and "Cooldown" table column headers are bare
   jargon; a user can't tell what they do without opening the editor. → Add `Tooltip`
   info on the two headers with one-line plain-English definitions.
@@ -95,6 +98,14 @@ Format per item:
 
 ## Rejected
 
+- ~~(med/S) Query — show the server's `executed_sql` in a compact block~~ — iter 7.
+  Clean conditional implementation (block shows only when the SQL was actually
+  rewritten). 3 SHIP (UX heuristics, Sam, Priya) but the restraint critic blocked and is
+  never overruled: the sole rewrite path is the auto-LIMIT (verified in `guard.go` —
+  `injectLimit` always sets `limited=true`), which always co-occurs with the existing
+  "Results limited for safety" + "Add your own LIMIT…" copy. The block restates an
+  already-explained fact; the only new bit (the literal cap value) doesn't earn a code
+  block. learnings.md.
 - ~~(med/S) Dashboard — link the "no backup yet" callout's "Backups page"~~ — iter 6.
   3 SHIP (UX heuristics, Sam, Priya) but the restraint critic blocked and is never
   overruled: copy already names the destination, left-nav is one click from every view,

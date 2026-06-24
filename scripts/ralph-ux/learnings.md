@@ -53,6 +53,28 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
   cross-domain jump like Backups→Settings for S3, which the nav doesn't make obvious).
   A same-name link to a top-level nav destination is the weak case. Don't re-propose.
 
+- **Query: show the server's `executed_sql` in a compact block when it was rewritten.**
+  Rejected iter 7 on restraint. Implemented cleanly (block appears *only* when
+  `normalize(executed_sql) !== normalize(submitted)`, i.e. the server actually rewrote
+  the query; zero added surface on verbatim runs). 3 of 4 reviewers shipped (UX
+  heuristics — visibility of system status; Sam + Priya — "exact LIMIT value, trust
+  win, no friction"). But the **restraint critic blocked** and is never overruled:
+  the rewrite path is *only ever* the auto-LIMIT injection — **verified in
+  `internal/pg/guard/guard.go`**: `Check()` mutates the statement solely via
+  `injectLimit`, which sets `cls.HasLimit → limited=true`. There is no rewrite that
+  changes the SQL without also flipping `limited`. So the block can only appear when
+  the existing **"Results limited for safety"** badge + **"Add your own LIMIT…"** copy
+  are *already* present and already explain that a LIMIT was applied. The block merely
+  restates that fact in technical form. The one genuinely-new bit (the literal cap
+  value, e.g. `1000`) doesn't justify a whole code block. **Lesson:** "honest state —
+  surface data the backend already returns" is only a win when that data is *otherwise
+  hidden*. Here it isn't — the `limited` messaging already tells the story, so the
+  `executed_sql` block is redundant with existing copy, not new signal. Before
+  proposing an honest-state surface, check whether existing UI already conveys the same
+  fact; if it does, the surface is decoration. Don't re-propose unless the guard gains
+  a rewrite path that does NOT set `limited` (then "show exactly what ran" becomes
+  real). This refines the prior rule-of-thumb that listed `executed_sql` as a cheap win.
+
 ## Rules of thumb
 
 - The audit strongly corroborated the seed item: backup **config** (/settings) and
@@ -60,6 +82,10 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
   (4 of 11 agents). Co-location is the anchor improvement for this loop.
 - Empty states are the weakest spot found: prefer the shadcn `Empty`/`EmptyState`
   pattern with BOTH a title and an actionable `hint` everywhere a list can be empty.
-- "Honest state" wins are cheap and high-value here: surfacing data the backend
-  already returns (executed_sql), removing always-blank fields (Version), and warning
-  on silent failures (alert rules with no channel). Prefer these over new UI.
+- "Honest state" wins are cheap and high-value here: removing always-blank fields
+  (Version) and warning on silent failures (alert rules with no channel). Prefer these
+  over new UI. **Caveat (iter 7):** "surface data the backend already returns" only
+  wins when that data is *otherwise hidden*. `executed_sql` failed this test — it can
+  only differ via the auto-LIMIT, which the existing "limited for safety" copy already
+  explains, so surfacing it was redundant, not honest-state signal. Check existing UI
+  first.
