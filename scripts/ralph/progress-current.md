@@ -5,6 +5,43 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band D · Backups → shadcn
+Fifth band-D view. Rebuilt `Backups.tsx` on shadcn primitives:
+- PageHeader actions: hand-rolled `.btn`/`.btn-primary`/`.btn-danger-ghost` +
+  the `.split-btn`/`.split-extra` group → `Button`s (Restore… = `destructive`;
+  Test/Deep/Full = `outline`; Back up now = default; busy states compose the raw
+  `Spinner` via `data-icon`). The split "Back up now | Full" became two plain
+  buttons ("Back up now" + "Full backup") in a `flex flex-wrap gap-2` row.
+- Both history tables (`BackupTable`, `RestoreTestTable`): `.data-table`/
+  `.table-scroll` → `Table` family. Per-row error detail extracted to a small
+  `CellError` (was `.cell-error`) → `truncate`+`text-destructive` Tailwind tokens;
+  `.compression`/`.mono small` → `text-xs text-muted-foreground`/`font-mono`.
+- RestoreModal form: radio `<input>`s → `RadioGroup`/`RadioGroupItem` (added via
+  `shadcn add radio-group`); the delta `<input type=checkbox>` → shadcn `Checkbox`;
+  datetime + typed-name confirm `<input>`s → `Input`; `<fieldset>`/`<label>`
+  chrome → `FieldSet`/`FieldLegend`/`Field`/`FieldContent`/`FieldLabel`/
+  `FieldDescription`. Footer Cancel/Restore → `Button` (`outline`/`destructive`),
+  busy composes `Spinner`. The typed-stanza confirm gate is unchanged.
+- Status sub-components (`BackupStatusSummary`, `LocalBackupWarning`,
+  `RestoreTestStatus`, `DeepRestoreTestConfirm`) already use shadcn
+  `Callout`/`Badge`/`AlertDialog` — left intact.
+- ui-heuristics-reviewer: accepted #1+#2 (confirm field had no inline error /
+  SR feedback → added a `FieldError` shown on mismatch + `aria-describedby`
+  wiring; gate logic unchanged) and #3 ("Back up now" lacked the `title` its
+  "Full backup" sibling had → added "Run an incremental backup"). Declined #4
+  (spinner `aria-hidden` — the accepted Query/RolesDatabases pattern uses a bare
+  `InlineSpinner` in buttons; matched it), #5 (datetime `max` — client-side
+  future-time validation is a behavior change, out of scope), #6 (CellError
+  `tabIndex` — not a regression; the old `.cell-error` was also truncate+title,
+  and `tabIndex` on a non-interactive div is its own anti-pattern).
+- Tests: exported `RestoreModal`, added 3 tests (overwrite warning, typed-stanza
+  gate incl. the new FieldError + aria-invalid, PITR picker reveal). jsdom lacks
+  `ResizeObserver` (Radix RadioGroup reads it) → added a stub to test/setup.ts.
+  Dead CSS removed: `.split-btn`/`.split-extra`, `.cell-error`, `.compression`,
+  and `.radio` dropped from the shared `.radio,.checkbox` rule (`.checkbox` kept —
+  Settings/Pooler/Migrate/Alerts still use it). 114 web tests green (+3);
+  typecheck, build, go build all green.
+
 ## 2026-06-24 · band D · Query → shadcn
 Fourth band-D view. Rebuilt `Query.tsx` on shadcn primitives:
 - SQL editor `<textarea class="sql-editor">` → shadcn `Textarea` (added the

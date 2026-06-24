@@ -20,6 +20,16 @@ Object.defineProperty(window, "matchMedia", {
   }),
 });
 
+// jsdom doesn't implement ResizeObserver; Radix's RadioGroup (RadioBubbleInput)
+// reads it on mount.
+if (!("ResizeObserver" in globalThis)) {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
 afterEach(() => {
   cleanup();
 });

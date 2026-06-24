@@ -258,23 +258,6 @@ code {
   color: var(--text);
 }
 
-.split-btn {
-  display: inline-flex;
-}
-
-.split-btn .btn:first-child {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-}
-
-.split-btn .split-extra {
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-  border-left: 1px solid rgba(255, 255, 255, 0.3);
-  padding-left: 11px;
-  padding-right: 11px;
-}
-
 /* --- Cards & stats ------------------------------------------------------- */
 
 .card {
@@ -404,15 +387,6 @@ code {
   font-style: italic;
 }
 
-.cell-error {
-  color: var(--danger);
-  font-size: 12px;
-  margin-top: 2px;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .col-name {
   display: block;
 }
@@ -422,10 +396,6 @@ code {
   font-weight: 400;
   text-transform: none;
   letter-spacing: 0;
-}
-
-.compression {
-  font-size: 11px;
 }
 
 /* --- Forms --------------------------------------------------------------- */
@@ -512,7 +482,6 @@ fieldset.field legend {
   margin-bottom: 6px;
 }
 
-.radio,
 .checkbox {
   display: flex;
   align-items: flex-start;
@@ -521,7 +490,6 @@ fieldset.field legend {
   cursor: pointer;
 }
 
-.radio input,
 .checkbox input {
   margin-top: 3px;
 }

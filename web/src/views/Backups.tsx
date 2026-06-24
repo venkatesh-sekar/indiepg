@@ -19,6 +19,28 @@ import {
   ResultBadge,
   Spinner,
 } from "@/components/ui";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Spinner as InlineSpinner } from "@/components/ui/spinner";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import type {
   BackupHistory,
   BackupRecord,
@@ -108,49 +130,49 @@ export function Backups() {
           </>
         }
         actions={
-          <div className="btn-row">
-            <button
-              type="button"
-              className="btn btn-danger-ghost"
-              onClick={() => setRestoreOpen(true)}
-            >
+          <div className="flex flex-wrap gap-2">
+            <Button variant="destructive" onClick={() => setRestoreOpen(true)}>
               Restore…
-            </button>
-            <button
-              type="button"
-              className="btn"
+            </Button>
+            <Button
+              variant="outline"
               onClick={runRestoreTest}
               disabled={testBusy}
               title="Verify the backup repository is intact (fast, read-only)"
             >
-              {testBusy ? "Testing…" : "Test a restore"}
-            </button>
-            <button
-              type="button"
-              className="btn"
+              {testBusy ? (
+                <>
+                  <InlineSpinner data-icon="inline-start" />
+                  Testing…
+                </>
+              ) : (
+                "Test a restore"
+              )}
+            </Button>
+            <Button
+              variant="outline"
               onClick={() => setDeepOpen(true)}
               disabled={deepBusy}
               title="Restore the latest backup into a throwaway copy and boot it (slower, needs disk headroom)"
             >
-              {deepBusy ? "Testing…" : "Deep restore test"}
-            </button>
-            <div className="split-btn">
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => setRunType("incr")}
-              >
-                Back up now
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary split-extra"
-                onClick={() => setRunType("full")}
-                title="Run a full backup"
-              >
-                Full
-              </button>
-            </div>
+              {deepBusy ? (
+                <>
+                  <InlineSpinner data-icon="inline-start" />
+                  Testing…
+                </>
+              ) : (
+                "Deep restore test"
+              )}
+            </Button>
+            <Button
+              onClick={() => setRunType("incr")}
+              title="Run an incremental backup (only changed files)"
+            >
+              Back up now
+            </Button>
+            <Button variant="outline" onClick={() => setRunType("full")} title="Run a full backup">
+              Full backup
+            </Button>
           </div>
         }
       />
@@ -536,95 +558,102 @@ export function DeepRestoreTestConfirm({
   );
 }
 
+/** Truncated, danger-tinted per-row error detail (full text in the `title`). */
+function CellError({ detail }: { detail: string }) {
+  return (
+    <div className="mt-0.5 max-w-[220px] truncate text-xs text-destructive" title={detail}>
+      {detail}
+    </div>
+  );
+}
+
 function BackupTable({ backups }: { backups: BackupRecord[] }) {
   return (
-    <div className="table-scroll">
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>Label</th>
-            <th>Type</th>
-            <th>Started</th>
-            <th>Duration</th>
-            <th>Backup size</th>
-            <th>Repo (compressed)</th>
-            <th>WAL range</th>
-            <th>Result</th>
-          </tr>
-        </thead>
-        <tbody>
-          {backups.map((b) => {
-            const dur =
-              b.stopped_at && b.started_at
-                ? (new Date(b.stopped_at).getTime() - new Date(b.started_at).getTime()) / 1000
-                : null;
-            return (
-              <tr key={b.id}>
-                <td><strong>{b.label}</strong></td>
-                <td><Badge tone="info">{b.backup_type}</Badge></td>
-                <td>{dateTime(b.started_at)}</td>
-                <td>{dur != null ? duration(dur) : "—"}</td>
-                <td>{bytes(b.size_bytes)}</td>
-                <td>
-                  {bytes(b.repo_bytes)}
-                  {b.database_bytes > 0 ? (
-                    <span className="muted compression">
-                      {" "}
-                      ({Math.round((1 - b.repo_bytes / b.database_bytes) * 100)}% saved)
-                    </span>
-                  ) : null}
-                </td>
-                <td className="mono small">
-                  {b.wal_start && b.wal_stop ? `${b.wal_start} → ${b.wal_stop}` : "—"}
-                </td>
-                <td>
-                  <ResultBadge result={b.result} />
-                  {b.error ? <div className="cell-error" title={b.error}>{b.error}</div> : null}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Label</TableHead>
+          <TableHead>Type</TableHead>
+          <TableHead>Started</TableHead>
+          <TableHead>Duration</TableHead>
+          <TableHead>Backup size</TableHead>
+          <TableHead>Repo (compressed)</TableHead>
+          <TableHead>WAL range</TableHead>
+          <TableHead>Result</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {backups.map((b) => {
+          const dur =
+            b.stopped_at && b.started_at
+              ? (new Date(b.stopped_at).getTime() - new Date(b.started_at).getTime()) / 1000
+              : null;
+          return (
+            <TableRow key={b.id}>
+              <TableCell className="font-medium">{b.label}</TableCell>
+              <TableCell>
+                <Badge tone="info">{b.backup_type}</Badge>
+              </TableCell>
+              <TableCell>{dateTime(b.started_at)}</TableCell>
+              <TableCell>{dur != null ? duration(dur) : "—"}</TableCell>
+              <TableCell>{bytes(b.size_bytes)}</TableCell>
+              <TableCell>
+                {bytes(b.repo_bytes)}
+                {b.database_bytes > 0 ? (
+                  <span className="text-xs text-muted-foreground">
+                    {" "}
+                    ({Math.round((1 - b.repo_bytes / b.database_bytes) * 100)}% saved)
+                  </span>
+                ) : null}
+              </TableCell>
+              <TableCell className="font-mono text-xs">
+                {b.wal_start && b.wal_stop ? `${b.wal_start} → ${b.wal_stop}` : "—"}
+              </TableCell>
+              <TableCell>
+                <ResultBadge result={b.result} />
+                {b.error ? <CellError detail={b.error} /> : null}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }
 
 function RestoreTestTable({ tests }: { tests: BackupHistory["restore_tests"] }) {
   return (
-    <div className="table-scroll">
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>Tested</th>
-            <th>Source backup</th>
-            <th>Verified rows</th>
-            <th>Duration</th>
-            <th>Result</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tests.map((t) => (
-            <tr key={t.id}>
-              <td>{dateTime(t.tested_at)}</td>
-              <td>{t.source_label}</td>
-              <td>{t.verified_rows.toLocaleString()}</td>
-              <td>{millis(t.duration_ms)}</td>
-              <td>
-                <ResultBadge result={t.result} />
-                {t.detail ? <div className="cell-error" title={t.detail}>{t.detail}</div> : null}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Tested</TableHead>
+          <TableHead>Source backup</TableHead>
+          <TableHead>Verified rows</TableHead>
+          <TableHead>Duration</TableHead>
+          <TableHead>Result</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {tests.map((t) => (
+          <TableRow key={t.id}>
+            <TableCell>{dateTime(t.tested_at)}</TableCell>
+            <TableCell>{t.source_label}</TableCell>
+            <TableCell>{t.verified_rows.toLocaleString()}</TableCell>
+            <TableCell>{millis(t.duration_ms)}</TableCell>
+            <TableCell>
+              <ResultBadge result={t.result} />
+              {t.detail ? <CellError detail={t.detail} /> : null}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   );
 }
 
 // --- Restore (guarded) -----------------------------------------------------
 
-function RestoreModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+export function RestoreModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const [mode, setMode] = useState<"latest" | "pitr">("latest");
   const [pointInTime, setPointInTime] = useState("");
   const [delta, setDelta] = useState(true);
@@ -668,17 +697,19 @@ function RestoreModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
       onClose={busy ? () => undefined : onClose}
       footer={
         <>
-          <button type="button" className="btn" onClick={onClose} disabled={busy}>
+          <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
             Cancel
-          </button>
-          <button
-            type="submit"
-            form="restore-form"
-            className="btn btn-danger"
-            disabled={busy || !matches}
-          >
-            {busy ? "Restoring…" : "Restore now"}
-          </button>
+          </Button>
+          <Button type="submit" form="restore-form" variant="destructive" disabled={busy || !matches}>
+            {busy ? (
+              <>
+                <InlineSpinner data-icon="inline-start" />
+                Restoring…
+              </>
+            ) : (
+              "Restore now"
+            )}
+          </Button>
         </>
       }
     >
@@ -688,74 +719,76 @@ function RestoreModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
         only do this if you understand the consequences.
       </Callout>
 
-      <form id="restore-form" onSubmit={submit}>
+      <form id="restore-form" onSubmit={submit} className="mt-4 flex flex-col gap-5">
         {error ? <ErrorNotice error={error} /> : null}
 
-        <fieldset className="field">
-          <legend className="field-label">What to restore</legend>
-          <label className="radio">
-            <input
-              type="radio"
-              name="mode"
-              checked={mode === "latest"}
-              onChange={() => setMode("latest")}
-            />
-            <span>
-              <strong>Latest backup</strong>
-              <span className="muted"> — restore the most recent backup.</span>
-            </span>
-          </label>
-          <label className="radio">
-            <input
-              type="radio"
-              name="mode"
-              checked={mode === "pitr"}
-              onChange={() => setMode("pitr")}
-            />
-            <span>
-              <strong>Point in time</strong>
-              <span className="muted"> — recover the database to a specific moment.</span>
-            </span>
-          </label>
-        </fieldset>
+        <FieldSet>
+          <FieldLegend>What to restore</FieldLegend>
+          <RadioGroup value={mode} onValueChange={(v) => setMode(v as "latest" | "pitr")}>
+            <Field orientation="horizontal">
+              <RadioGroupItem value="latest" id="restore-latest" />
+              <FieldContent>
+                <FieldLabel htmlFor="restore-latest">Latest backup</FieldLabel>
+                <FieldDescription>Restore the most recent backup.</FieldDescription>
+              </FieldContent>
+            </Field>
+            <Field orientation="horizontal">
+              <RadioGroupItem value="pitr" id="restore-pitr" />
+              <FieldContent>
+                <FieldLabel htmlFor="restore-pitr">Point in time</FieldLabel>
+                <FieldDescription>Recover the database to a specific moment.</FieldDescription>
+              </FieldContent>
+            </Field>
+          </RadioGroup>
+        </FieldSet>
 
         {mode === "pitr" ? (
-          <label className="field">
-            <span className="field-label">Recover to</span>
-            <input
+          <Field>
+            <FieldLabel htmlFor="restore-pit">Recover to</FieldLabel>
+            <Input
+              id="restore-pit"
               type="datetime-local"
               value={pointInTime}
               onChange={(e) => setPointInTime(e.target.value)}
               required
             />
-            <span className="field-help muted">
-              The database will be recovered to exactly this time.
-            </span>
-          </label>
+            <FieldDescription>The database will be recovered to exactly this time.</FieldDescription>
+          </Field>
         ) : null}
 
-        <label className="checkbox">
-          <input type="checkbox" checked={delta} onChange={(e) => setDelta(e.target.checked)} />
-          <span>
-            Fast restore (only re-copy changed files)
-            <span className="muted"> — recommended; turn off to fully wipe and rebuild.</span>
-          </span>
-        </label>
+        <Field orientation="horizontal">
+          <Checkbox
+            id="restore-delta"
+            checked={delta}
+            onCheckedChange={(c) => setDelta(c === true)}
+          />
+          <FieldContent>
+            <FieldLabel htmlFor="restore-delta">Fast restore (only re-copy changed files)</FieldLabel>
+            <FieldDescription>Recommended; turn off to fully wipe and rebuild.</FieldDescription>
+          </FieldContent>
+        </Field>
 
-        <label className="field">
-          <span className="field-label">
+        <Field data-invalid={confirm.length > 0 && !matches}>
+          <FieldLabel htmlFor="restore-confirm">
             Type <code>{expected}</code> to confirm this overwrite
-          </span>
-          <input
+          </FieldLabel>
+          <Input
+            id="restore-confirm"
             type="text"
             value={confirm}
             autoComplete="off"
             spellCheck={false}
             placeholder={expected}
             aria-invalid={confirm.length > 0 && !matches}
+            aria-describedby={confirm.length > 0 && !matches ? "restore-confirm-err" : undefined}
             onChange={(e) => setConfirm(e.target.value)}
           />
-        </label>
+          {confirm.length > 0 && !matches ? (
+            <FieldError id="restore-confirm-err">
+              Must match <code>{expected}</code> exactly.
+            </FieldError>
+          ) : null}
+        </Field>
       </form>
     </Modal>
   );

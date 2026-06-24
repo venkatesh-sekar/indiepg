@@ -7,6 +7,7 @@ import {
   BackupStatusSummary,
   DeepRestoreTestConfirm,
   LocalBackupWarning,
+  RestoreModal,
   RestoreTestStatus,
   restoreTestStatus,
 } from "./Backups";
@@ -299,5 +300,40 @@ describe("DeepRestoreTestConfirm", () => {
   it("disables the actions while busy", () => {
     render(<DeepRestoreTestConfirm open busy onConfirm={noop} onCancel={noop} />);
     expect(screen.getByRole("button", { name: /working/i })).toBeDisabled();
+  });
+});
+
+describe("RestoreModal", () => {
+  const noop = () => undefined;
+
+  it("warns the restore overwrites current data", () => {
+    render(<RestoreModal onClose={noop} onDone={noop} />);
+    expect(screen.getByText(/replaces your current data/i)).toBeInTheDocument();
+  });
+
+  it("gates the destructive Restore button until the stanza name is typed exactly", () => {
+    render(<RestoreModal onClose={noop} onDone={noop} />);
+    const restore = screen.getByRole("button", { name: /restore now/i });
+    // Disabled until the typed confirmation matches the default stanza ("main").
+    expect(restore).toBeDisabled();
+
+    const confirm = screen.getByLabelText(/to confirm this overwrite/i);
+    fireEvent.change(confirm, { target: { value: "wrong" } });
+    // A mismatch surfaces an inline error and keeps the button disabled.
+    expect(restore).toBeDisabled();
+    expect(confirm).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText(/must match/i)).toBeInTheDocument();
+
+    fireEvent.change(confirm, { target: { value: "main" } });
+    expect(restore).toBeEnabled();
+    expect(confirm).toHaveAttribute("aria-invalid", "false");
+  });
+
+  it("reveals the point-in-time picker only when that mode is chosen", () => {
+    render(<RestoreModal onClose={noop} onDone={noop} />);
+    // Latest is the default; no datetime picker yet.
+    expect(screen.queryByLabelText(/recover to/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /point in time/i }));
+    expect(screen.getByLabelText(/recover to/i)).toBeInTheDocument();
   });
 });
