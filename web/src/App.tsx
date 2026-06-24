@@ -49,7 +49,7 @@ function RequireSession({ children }: { children: ReactNode }) {
 
   if (!ready) {
     return (
-      <div className="boot-screen">
+      <div className="grid h-screen place-items-center">
         <Spinner label="Starting…" />
       </div>
     );

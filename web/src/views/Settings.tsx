@@ -168,9 +168,13 @@ function BackupSettingsForm({
           <Callout tone="danger" title="Saved, but the backup target isn’t ready">
             {warning}
             {warningDetail ? (
-              <pre className="callout-detail">{warningDetail}</pre>
+              <pre className="mt-2 max-h-[180px] overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted px-2.5 py-2 font-mono text-xs leading-normal">
+                {warningDetail}
+              </pre>
             ) : null}
-            {warningHint ? <div className="callout-hint">{warningHint}</div> : null}
+            {warningHint ? (
+              <div className="mt-1.5 text-[13px] opacity-80">{warningHint}</div>
+            ) : null}
           </Callout>
         ) : configured ? (
           <Callout tone="ok" title="Backup target is ready">

@@ -5,6 +5,31 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band E · last legacy callout/boot classes → Tailwind
+Fifth band-E cleanup slice — clears the final hand-rolled `className="<legacy>"`
+strings outside `styles.css`, unblocking the E1 token-delete.
+- `App.tsx` boot screen `.boot-screen` (`height:100vh; display:grid; place-items:
+  center`) → `grid h-screen place-items-center`.
+- `Settings.tsx` warning `<pre className="callout-detail">` → Tailwind mono block
+  (`rounded-md border bg-muted px-2.5 py-2 font-mono text-xs leading-normal` +
+  `max-h-[180px] overflow-auto whitespace-pre-wrap break-words`); warning hint
+  `<div className="callout-hint">` → `mt-1.5 text-[13px] opacity-80`.
+- `ui.tsx` `ErrorNotice`/`StaleBanner` hint divs → same `mt-1.5 text-[13px]
+  opacity-80` (all `.callout-hint` usages render inside a shadcn Alert, so dropping
+  the color class inherits the variant foreground — matches the old alert-scoped
+  `color:inherit; opacity:.8` override).
+- Deleted dead `.callout-hint`/`[data-slot=alert] .callout-hint`/`.callout-detail`
+  /`.boot-screen` CSS from styles.css. `ui.test.tsx` `.callout-hint` querySelector
+  → asserts the description renders no nested div for a hintless plain Error.
+- ui-heuristics-reviewer: one blocking finding applied — `bg-muted` alone didn't
+  read as a distinct inset inside the colored danger Alert (dark-mode blend / light
+  -mode contrast reversal vs the old `rgba(0,0,0,.06)` overlay); added a semantic
+  `border` (matches the SecretValue mono-block pattern) for a background-independent
+  edge, and used `leading-normal` for closer parity with the old `line-height:1.45`.
+- 130 web tests green; typecheck/build/go build green. Remaining before E1
+  token-delete: none — all legacy classes (`.btn*`/`.field*`/`.checkbox`/`.muted`/
+  `.small`/`.mono`/etc) should now be grep-checked; next slice is the E1 sweep.
+
 ## 2026-06-24 · band E · shared `PageHeader` divs → Tailwind tokens
 Fourth band-E cleanup slice. `ui.tsx` `PageHeader({title,description,actions})`
 (the page-title row used by all 6 views) was still rendering hand-rolled

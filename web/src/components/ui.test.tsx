@@ -61,7 +61,8 @@ describe("ErrorNotice", () => {
     render(<ErrorNotice error={new Error("boom")} />);
     expect(screen.getByText("Something went wrong")).toBeInTheDocument();
     expect(screen.getByText("boom")).toBeInTheDocument();
-    expect(document.querySelector(".callout-hint")).toBeNull();
+    // A plain Error carries no hint, so the description renders no nested element.
+    expect(screen.getByText("boom").querySelector("div")).toBeNull();
   });
 });
 

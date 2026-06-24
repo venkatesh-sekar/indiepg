@@ -185,7 +185,9 @@ export function StaleBanner({ error }: { error: ApiError | Error }) {
       <AlertTitle>Live updates paused</AlertTitle>
       <AlertDescription>
         Showing the last values received — the latest refresh failed: {error.message}
-        {isApi && error.hint ? <div className="callout-hint">{error.hint}</div> : null}
+        {isApi && error.hint ? (
+          <div className="mt-1.5 text-[13px] opacity-80">{error.hint}</div>
+        ) : null}
       </AlertDescription>
     </Alert>
   );
@@ -201,7 +203,9 @@ export function ErrorNotice({ error }: { error: ApiError | Error }) {
       </AlertTitle>
       <AlertDescription>
         {error.message}
-        {isApi && error.hint ? <div className="callout-hint">{error.hint}</div> : null}
+        {isApi && error.hint ? (
+          <div className="mt-1.5 text-[13px] opacity-80">{error.hint}</div>
+        ) : null}
       </AlertDescription>
     </Alert>
   );

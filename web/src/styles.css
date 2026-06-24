@@ -215,37 +215,6 @@ code {
   color: var(--text);
 }
 
-/* --- Callout content (rendered inside shadcn Alert) ---------------------- */
-
-.callout-hint {
-  margin-top: 6px;
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-/* Inside a shadcn Alert the hint sits on a tinted background; inherit the
-   variant's foreground (dimmed) so it stays legible instead of washing out as
-   neutral grey. */
-[data-slot="alert"] .callout-hint {
-  color: inherit;
-  opacity: 0.8;
-}
-
-/* Verbatim command output (e.g. pgBackRest stderr) inside a callout. */
-.callout-detail {
-  margin: 8px 0 0;
-  padding: 8px 10px;
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 180px;
-  overflow: auto;
-  background: rgba(0, 0, 0, 0.06);
-  border-radius: var(--radius-sm);
-}
-
 /* --- Tables -------------------------------------------------------------- */
 
 .table-scroll {
@@ -406,14 +375,6 @@ fieldset.field legend {
 /* --- Modal --------------------------------------------------------------- */
 /* Modal markup/animation now live in the shadcn Dialog (src/components/Modal.tsx
    wraps it). Only the dialog body's content class remains. */
-
-/* --- States -------------------------------------------------------------- */
-
-.boot-screen {
-  height: 100vh;
-  display: grid;
-  place-items: center;
-}
 
 /* --- Responsive ---------------------------------------------------------- */
 
