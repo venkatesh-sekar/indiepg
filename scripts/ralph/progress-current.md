@@ -5,6 +5,28 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · COMPLETE · final north-star audit of the last two uncovered angles came back clean → loop done
+North-star audit over the two not-yet-deep-audited angles the iter-56 note named, run as two parallel
+read-only subagents: (1) the pg_dump/pg_restore/pgBackRest/psql/pg_ctl/systemctl **argv construction**
+traced end-to-end as a UNIT (not the exec LAYER, which was cleared iter-53), and (2) the scheduler
+**cron-spec parsing + next-fire + DST/clock-edge math**. BOTH returned a clean bill on correctness —
+no CRITICAL/HIGH/MEDIUM present-day defect. Argv: no shell anywhere, every user value sits in
+value-position after its own flag (a leading `-` is consumed as the flag's argument, never re-parsed)
+or is `=`-joined only after whitelisting (stanza `[a-z0-9-]`, type `{full,diff,incr}`, validated
+recovery targets); the recovery-target/direct-source validators do cover the argv tokens they feed.
+Scheduler: robfig/cron v3 handles spring-forward (no skip), fall-back (no double-fire — `Next` advances
+monotonically), `@every` (DST-immune), empty-spec opt-out, and never-firing specs correctly; overlapping
+backups are backstopped by the Manager single-flight TryLock. The only findings were latent /
+out-of-topology / cosmetic least-surprise notes (e.g. scheduler evaluating in implicit `time.Local` —
+the least-surprising default, behaviorally harmless on a fixed box; argv values already
+value-position-safe) — NONE load-bearing: none can lose data, wedge the panel, or confuse the operator.
+With bands 0/1/1.5/2/2.5/3 all complete and every subsystem deep-audited across iters 44–57, the only
+open backlog items are the YAGNI-gated SQLite schema-versioning LOW (wait for a real column-add) and
+band-4 cosmetic shadcn redo (mechanically blocked + rule-4/5 conflict) — neither load-bearing. This is
+exactly the completion condition the iter-53/55/56 notes set (a fresh audit over the last uncovered
+angles coming back empty), so wrote `scripts/ralph/COMPLETE.md` and stopped. Gates green: Go
+(gofmt/vet/test/build all pass), web (85 tests). Tree clean.
+
 ## 2026-06-24 · band 2 (stability) · expired session mid-use now routes to /login instead of getting stuck
 North-star audit of the SPA routing/session-context lifecycle (one of the three not-yet-deep-audited
 areas the iter-55 note named). FOUND + FIXED the one concrete "never get stuck" gap the prior web
