@@ -75,6 +75,17 @@ describe("Layout shell", () => {
     expect(await screen.findByText("Settings view")).toBeInTheDocument();
   });
 
+  it("resets the main scroll position to the top on navigation", async () => {
+    renderShell("/");
+    const main = screen.getByTestId("main-content");
+    // Simulate the user having scrolled down inside the persistent <main>.
+    main.scrollTop = 400;
+    expect(main.scrollTop).toBe(400);
+    fireEvent.click(screen.getByRole("link", { name: "Settings" }));
+    expect(await screen.findByText("Settings view")).toBeInTheDocument();
+    expect(main.scrollTop).toBe(0);
+  });
+
   it("signs out and routes to /login", async () => {
     renderShell("/");
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));

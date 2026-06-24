@@ -129,6 +129,25 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
 
 ## Rules of thumb
 
+- **Convergence is provisional — a late discovery pass can still find a real bug; don't rubber-stamp
+  the streak.** Iter 17 was the "final" check at stable_streak 2/3; four of five agents converged, but
+  the nav/IA agent found a genuine defect (the `<main overflow-y-auto>` scroll container persists
+  `scrollTop` across `<Outlet/>` route swaps, so you land mid-page in the next view). It shipped 4–0,
+  resetting the streak to 0. **Lesson:** keep each convergence pass honest — a high bar is for filtering
+  *decoration*, not for refusing to look. When an agent surfaces something, verify it against the code
+  (here: confirmed `<main>` is the scroll container and is never remounted) rather than dismissing it
+  because the prior two passes were clean. Converging early is a win; converging *blind* isn't.
+- **Behavior-correctness fixes with zero added surface are NOT the decoration the restraint critic
+  kills — and the critic agrees.** The rejected items (iters 6/7/13/14) all *added* UI/copy that
+  restated something already present. The scroll-reset fix added no UI, no control, no copy — it made
+  navigation match the universal "start at the top" expectation (what React Router's `<ScrollRestoration>`
+  provides). The restraint critic shipped it outright ("zero added surface area; the bug is real and
+  routine"). **Lesson:** "restraint" is about surface-vs-payoff, not about never touching anything. A real
+  defect fixed in ~5 lines with no new surface clears the restraint bar easily; don't pre-reject it as
+  "churn." Conversely, scope it tightly: key the reset on the route *path* (not on every render) so an
+  in-place data refresh doesn't yank a reading user to the top — that scoping is what makes it friction-free.
+
+
 - **Co-locate config with the operation it configures by *moving* it (one home), not by
   adding a second copy.** Iter 11: backup config lived on /settings, operations on /backups
   — the canonical "configure-then-run bounce." The restraint-defensible fix was to MOVE the

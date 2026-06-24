@@ -1,5 +1,6 @@
 // Application shell: shadcn Sidebar navigation + top bar + main content outlet.
 
+import { useEffect, useRef } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Archive,
@@ -52,6 +53,15 @@ export function Layout() {
   const { logout, subject } = useSession();
   const navigate = useNavigate();
   const location = useLocation();
+  const mainRef = useRef<HTMLElement>(null);
+
+  // The <main> scroll container persists across route swaps (only its <Outlet>
+  // children change), so its scroll position would otherwise carry over — land
+  // you mid-page with the new view's header off-screen. Reset to the top on
+  // every navigation so each view starts where it should.
+  useEffect(() => {
+    if (mainRef.current) mainRef.current.scrollTop = 0;
+  }, [location.pathname]);
 
   const onLogout = async () => {
     await logout();
@@ -114,7 +124,11 @@ export function Layout() {
           <Separator orientation="vertical" className="h-4" />
           <span className="text-sm font-medium">{currentLabel}</span>
         </header>
-        <main className="flex-1 overflow-y-auto p-6 lg:p-8">
+        <main
+          ref={mainRef}
+          data-testid="main-content"
+          className="flex-1 overflow-y-auto p-6 lg:p-8"
+        >
           <Outlet />
         </main>
       </SidebarInset>

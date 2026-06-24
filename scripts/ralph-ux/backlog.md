@@ -10,11 +10,11 @@ Format per item:
 
 ## Open
 
-> **Convergence status (iter 16):** backlog is actionable-empty for this frontend loop. A second
-> 5-agent Mode-S discovery pass (all views + nav/IA + cross-view consistency) again surfaced **no
-> new high/med item** — `stable_streak` is now **2/3**. The remaining open items below are either
-> NEEDS-BACKEND (out of scope) or low/watch (speculative / risk a false promise). Don't chew them to
-> look busy; run ONE more convergence check next iteration. At 3/3, write COMPLETE.md and stop.
+> **Status (iter 17):** the "final" convergence check did NOT converge — a fresh 5-agent Mode-S pass
+> surfaced a genuine new item (nav scroll position persisted across views). **Shipped it (4 SHIP).**
+> `stable_streak` reset to **0**. The remaining open items below are NEEDS-BACKEND (out of scope) or
+> low/watch (speculative). Next iteration: run a fresh discovery/convergence pass again — the
+> convergence clock restarts from 0.
 
 ### Quick wins (high/med payoff, S effort) — do these first
 - ~~(high/S) Roles & Databases — `dropBusy` disables every Delete button during a
@@ -117,6 +117,26 @@ Format per item:
   backend hint, which is out of scope).
 
 ## Done
+
+- [x] (med/S) Navigation/IA — the routed view renders inside a `<main className="… overflow-y-auto …">`
+  that is its OWN scroll container. With client-side routing only the `<Outlet/>` children swap on
+  navigation; the `<main>` element is never remounted, so its `scrollTop` carried over between views.
+  Scroll down in a long view (Backups history, a long Roles/Alerts table), click another sidebar item,
+  and you landed in the new view still scrolled down with its header off-screen — "stuck page" feel,
+  contradicting the universal web expectation that navigation starts each page at the top (React Router
+  ships `<ScrollRestoration>` for exactly this). **Shipped iter 17.** Fix in `Layout.tsx`: a `useRef`
+  on `<main>` + a `useEffect` keyed on `location.pathname` that sets `scrollTop = 0` on each route
+  change. Keyed on the *path*, so an in-place re-render of the same view (e.g. backup history
+  auto-refreshing while you read it) does NOT yank you to the top — only actual navigation does. Zero
+  added visual UI/control/copy; a `data-testid="main-content"` was added for the test (sets scrollTop
+  to 400, navigates, asserts it resets to 0). **4 SHIP, zero blockers** — UX heuristics (Consistency &
+  Standards fix, no anchor-nav/back-forward contract broken); Sam ("only worry would be getting yanked
+  off data I'm mid-read on — it doesn't, it's keyed on path"); Priya ("deep-links land at the top like a
+  fresh load; filters/selections live in state/URL not scrollTop, so nothing I care about resets");
+  restraint critic ("behavior-correctness fix with zero added surface area; the bug is real and
+  routine"). Surfaced by the iter-17 nav/IA convergence agent (the other 4 agents converged); promoted
+  because it's a genuine defect, not decoration. Gates: typecheck ✓, 142 tests ✓, build ✓ (dist
+  regenerated + staged), go build ✓ (outside sandbox). stable_streak reset 2 → 0.
 
 - [x] (med/M) Migrate — "Start another" (shown after a terminal migration job) left the
   whole form pre-filled with the prior run's values: source connection, database/target

@@ -3,6 +3,32 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 17 — Mode F (SHIP) (Navigation: reset scroll to top on route change) — stable_streak 2 → 0
+Ran what was meant to be the FINAL convergence check (a 5-agent Mode-S pass, identical coverage to
+iters 15/16). Four agents converged ("NO new high/med item") — but the nav/IA + first-run +
+cross-view-consistency agent surfaced a **genuine new defect**: the routed view renders inside
+`<main className="… overflow-y-auto …">` (Layout.tsx), which is its OWN scroll container. With
+client-side routing only the `<Outlet/>` children swap on navigation; the `<main>` element is never
+remounted, so its `scrollTop` carried over between views. Concretely: scroll down in a long view
+(Backups history, a long Roles/Alerts table), click another sidebar item, and you land in the new view
+still scrolled down with its header off-screen — the "stuck page" feel, contradicting the universal web
+expectation (React Router ships `<ScrollRestoration>` for exactly this). **Verified against the code**
+before promoting (confirmed `<main>` is the scroll container and persists across route swaps; no
+`ScrollRestoration` anywhere). Promoted to Mode F rather than converging — a discovery pass surfacing a
+real high/med item means it is NOT a convergence increment, regardless of the other four agents.
+Fix (~5 lines, zero added UI): a `useRef` on `<main>` + a `useEffect` keyed on `location.pathname`
+setting `scrollTop = 0` on each route change — keyed on the *path* so an in-place re-render of the same
+view (e.g. backup history auto-refreshing while you read it) does NOT yank you to the top; only actual
+navigation does. Added `data-testid="main-content"` and a test (scroll to 400 → navigate → assert 0).
+Review panel: **4 SHIP, zero blockers** — UX heuristics ("Consistency & Standards fix; no anchor-nav or
+back/forward scroll-restoration contract being broken"); Sam ("the only thing that'd trip me up is being
+yanked off data I'm mid-read on — it isn't, it's keyed on path"); Priya ("deep-links land at the top like
+a fresh load; filters/selections live in state/URL not scrollTop, nothing I care about resets");
+restraint critic ("behavior-correctness fix with zero added surface area; the bug is real and routine").
+Gates: typecheck ✓, 142 tests ✓ (was 141 + 1 new), build ✓ (dist regenerated + staged), go build ✓
+(outside sandbox). **stable_streak reset 2 → 0** (shipped a real improvement — the convergence clock
+restarts). Next iteration: run a fresh discovery/convergence pass again.
+
 ## 2026-06-25 — iter 16 — Mode S (convergence check) — stable_streak 1 → 2
 Backlog still actionable-empty (same NEEDS-BACKEND backup-badge item + two low/watch items as iter 15;
 none promoted). Per the contract, ran a **second Mode-S convergence pass** rather than chew the
