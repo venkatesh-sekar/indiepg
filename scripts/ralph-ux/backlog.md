@@ -10,7 +10,23 @@ Format per item:
 
 ## Open
 
-> **Status (iter 26):** backlog actionable-empty (NEEDS-BACKEND backup-badge item + low/watch nits). Ran a fresh
+> **🏁 CONVERGED (iter 27) — `stable_streak` 3/3. The loop is COMPLETE; see `COMPLETE.md`.**
+> The final Mode-S pass (5 agents, same coverage, HIGH bar + full digest) again surfaced no high/med
+> frontend-only item. Four agents hard-converged. The Dashboard/Query agent floated **one candidate that
+> collapsed as a FALSE PREMISE** on code inspection (self-rejected, no panel — iter-7/14/26 precedent):
+> **Dashboard — change the Disk StatCard danger threshold `diskPct > 90` → `>= 90` to "match the backend
+> health verdict."** **FALSE:** the agent claimed the card "shows *neutral* color" at exactly 90% while the
+> badge shows Needs-attention. At `diskPct === 90.0` the card is **`warn` (yellow)**, not neutral (`90 > 80`
+> is true, `Dashboard.tsx:150`); the backend flags `pct >= 90` (`handlers_dashboard.go:127`) → red badge **+**
+> a "disk nearly full" line in the "Things to look at" Callout — three concurrent signals, nothing hidden.
+> Stripped of the false "neutral" framing it's "turn the card red at the single float value `90.0`" — a
+> practical no-op that would also de-align the disk gauge from its three sibling gauges (CPU/Mem/Connections
+> all use `>`, an independent gradient heuristic, not a mirror of the backend's binary verdict). Backlog
+> actionable-empty AND fresh discovery surfaced no high/med item → **third `stable_streak` increment, 2 → 3**.
+> Per the contract, the UX has converged — `COMPLETE.md` written, loop stops.
+>
+> ---
+> _Prior status (iter 26):_ backlog actionable-empty (NEEDS-BACKEND backup-badge item + low/watch nits). Ran a fresh
 > **Mode-S discovery/convergence pass** (5 agents, same coverage as iters 15–25, HIGH bar + full shipped/rejected
 > digest). **All five views converged.** Three agents hard-converged (Dashboard+Query; Alerts+Migrate;
 > Settings+Tuning+Pooler+Login — the last correctly self-rejected the low/watch lockout-duration copy nit on

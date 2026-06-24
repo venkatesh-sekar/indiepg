@@ -3,6 +3,38 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 27 — Mode S (FINAL convergence check) — stable_streak 2 → 3 — 🏁 CONVERGED
+Backlog actionable-empty (NEEDS-BACKEND backup-badge item + low/watch nits). Ran the final **Mode-S
+discovery/convergence pass**: a 5-agent parallel panel, same coverage as iters 15–26, HIGH bar + full
+shipped/rejected digest. **Four agents hard-converged** (Roles+Backups+BackupStorageForm — re-verified the PITR
+`required` gate, SecretsModal `dismissible={false}`, gated rotate; Alerts+Migrate — re-verified the 3-stage
+overwrite gate, the safe-dismiss confirm, the controlled rule Switch; Settings+Tuning+Pooler+Login — re-verified
+the lockout recovery, the threefold tuning reassurance, the Pooler repoint copy; nav/IA — re-verified scroll
+reset + offcanvas sidebar). The **Dashboard/Query agent floated ONE candidate that collapsed as a FALSE PREMISE**
+on code inspection (self-rejected, no panel — iter-7/14/26 precedent):
+- **Dashboard — change the Disk StatCard danger threshold `diskPct > 90` → `>= 90`** to "match the backend
+  health verdict," self-rated medium on a "the StatCard shows *neutral* color while the badge shows
+  Needs-attention" framing. **FALSE.** The backend flags `pct >= 90.0` (`handlers_dashboard.go:127`) →
+  `health_ok=false` + a `health_reasons` line *"disk nearly full"*; the frontend card
+  (`Dashboard.tsx:150`) is `diskPct > 90 ? "danger" : diskPct > 80 ? "warn" : "neutral"`. At exactly
+  `diskPct === 90.0` the card is **`warn` (yellow)**, NOT neutral (`90 > 80` is true) — so the load-bearing
+  word ("neutral") is false: the disk card is already attention-tinted, the badge is red, and the Callout names
+  *"disk nearly full"* — three concurrent signals. Stripped of the false framing it's "turn the card red at the
+  single float value `90.0`," a practical **no-op** (a real `disk_used/disk_total*100` essentially never lands on
+  exactly 90.000) that would also **de-align the disk gauge from its three siblings** (CPU/Mem/Connections all
+  use `>`, the frontend's own *gradient* heuristic — deliberately not a mirror of the backend's *binary* verdict;
+  there's no backend CPU/Mem threshold to match anyway).
+No code shipped, docs-only commit, no hard gates needed. Per the contract (backlog actionable-empty AND a fresh
+discovery pass surfaced no high/med item) this is the **third `stable_streak` increment → 3/3 → CONVERGED.**
+Wrote `scripts/ralph-ux/COMPLETE.md` summarizing the final state (12 shipped, 8 rejected, capability parity
+held, parked NEEDS-BACKEND + low/watch items). **The loop stops here.** **LESSON:** a tint-band boundary that
+differs from a backend health constant by `>` vs `>=` is not a defect when the off-by-one value essentially
+never occurs, the "wrong" state is still attention-tinted (warn) with the reason named elsewhere, and the
+frontend bands are an independent gradient (not a mirror of the backend's binary check). Iter-7's "honest-state
+only wins when the fact is otherwise hidden," applied to a threshold boundary. To restart: if new views/flows
+ship or backend capabilities land (e.g. target-health on `GET /config`), delete `COMPLETE.md` and run a fresh
+Mode-S seed pass.
+
 ## 2026-06-25 — iter 26 — Mode S (convergence check) — stable_streak 1 → 2
 Backlog actionable-empty (NEEDS-BACKEND backup-badge item + low/watch nits — Query write-detector, Login
 lockout-duration copy, Settings grouping). Per the contract, ran a fresh **Mode-S discovery/convergence pass**

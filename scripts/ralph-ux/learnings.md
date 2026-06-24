@@ -8,6 +8,32 @@ loop doesn't re-propose them. Newest at top.
 These surfaced in the Mode-S audit (iter 1) but were dropped before reaching the
 backlog — they violate the loop's anti-over-design / one-view-per-iteration rules.
 
+- **Dashboard: change the Disk StatCard danger threshold from `diskPct > 90` to `diskPct >= 90`
+  to "match the backend health verdict" at exactly 90% disk.** Surfaced iter 27 (the final
+  convergence pass) by the Dashboard/Query audit agent, self-rated medium on a "the StatCard shows
+  *neutral* color while the overall badge shows Needs-attention" framing. **Self-rejected on a FALSE
+  premise** (decisive code evidence, no panel — iter-7/14/26 precedent). The backend
+  (`handlers_dashboard.go:127`) flags `pct >= 90.0` → `health_ok=false` + a `health_reasons` entry
+  *"disk nearly full"*; the frontend Disk card (`Dashboard.tsx:150`) is
+  `diskPct > 90 ? "danger" : diskPct > 80 ? "warn" : "neutral"`. At exactly `diskPct === 90.0` the
+  card is **`warn` (yellow)**, NOT "neutral" as the agent claimed — `90 > 80` is true. So the
+  load-bearing word ("neutral") is false: the disk card is already tinted attention-yellow, the
+  overall badge is red, AND the "Things to look at" Callout (`:68`) lists *"disk nearly full"*
+  verbatim — three concurrent signals, nothing silent or hidden. Stripped of the false framing the
+  proposal is "make the card turn red at the single floating-point value `diskPct === 90.0`" — a
+  practical **no-op** (a real `disk_used/disk_total*100` essentially never lands on exactly 90.000),
+  and it would **de-align the disk gauge from its three siblings** (CPU/Memory/Connections all use
+  `>`), which are the frontend's own *gradient* heuristic, deliberately NOT a mirror of the backend's
+  *binary* verdict (there is no backend CPU/Memory health threshold to match, so "align the tints to
+  the backend" doesn't generalize). **Lesson:** a tint-band boundary that differs from a backend
+  health constant by `>` vs `>=` is not a defect when (a) the off-by-one value essentially never
+  occurs, (b) the "wrong" state is still attention-tinted (warn) and the specific reason is named
+  elsewhere on screen, and (c) the frontend bands are an independent gradient, not a mirror of the
+  backend's binary check. This is the iter-7 rule ("honest-state surface only wins when the fact is
+  otherwise hidden") applied to a *threshold boundary*: the fact is not hidden, and the change is a
+  no-op. Contrast iter-17's scroll-reset — a real, *frequently-occurring*, observably-wrong defect;
+  this is a never-occurring boundary with no false signal.
+
 - **Backups RestoreModal: gate the "Restore now" button on a non-empty datetime when "Point in time" mode is
   selected, to stop a "silent fallback to the latest backup."** Surfaced iter 26 by the Roles/Backups audit
   agent, **self-rated HIGH/S** on a "silent destructive wrong-action" framing. **Self-rejected on a FALSE
