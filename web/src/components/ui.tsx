@@ -4,6 +4,7 @@
 import { useState, type ReactNode } from "react";
 import { ApiError } from "@/api/client";
 import { Badge as ShadcnBadge } from "@/components/ui/badge";
+import { Spinner as ShadcnSpinner } from "@/components/ui/spinner";
 import {
   Alert,
   AlertDescription,
@@ -139,8 +140,16 @@ export function Callout({
 
 export function Spinner({ label }: { label?: string }) {
   return (
-    <div className="loading" role="status">
-      <span className="spinner" aria-hidden="true" />
+    <div
+      className="flex items-center gap-2.5 px-1 py-6 text-muted-foreground"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      {/* Decorative — the row's status role owns the announcement, so the
+          icon's own role="status"/aria-label are suppressed to avoid a nested
+          live region. (props spread last in the primitive, so this wins.) */}
+      <ShadcnSpinner role="presentation" aria-hidden="true" />
       <span>{label ?? "Loading…"}</span>
     </div>
   );

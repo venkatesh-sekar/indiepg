@@ -905,29 +905,6 @@ fieldset.field legend {
 
 /* --- States -------------------------------------------------------------- */
 
-.loading {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text-muted);
-  padding: 24px 4px;
-}
-
-.spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid var(--border-strong);
-  border-top-color: var(--primary);
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .empty {
   text-align: center;
   padding: 36px 16px;

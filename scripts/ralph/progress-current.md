@@ -5,6 +5,21 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band C · Spinner → shadcn Spinner
+Recomposed the hand-rolled loading `Spinner` (`ui.tsx`, a `<div className="loading">`
+with a CSS-`border`-spun `<span className="spinner">`) over the shadcn `Spinner`
+primitive (`ui/spinner.tsx` — a `Loader2Icon` with `animate-spin`). The wrapper keeps
+its `{ label }` public API and the muted status row, now styled with Tailwind semantic
+tokens (`flex items-center gap-2.5 px-1 py-6 text-muted-foreground`); all 14 callsites
+across App + 9 views untouched. Deleted the dead `.loading`/`.spinner`/`@keyframes spin`
+CSS from `styles.css` (the `spin` keyframe had no other user). Accessibility: kept the
+row's `role="status"` and made it an explicit live region (`aria-live="polite"`,
+`aria-atomic="true"`); the inner icon is suppressed to decorative (`role="presentation"`
+`aria-hidden="true"`) so there's no nested `role="status"` collision — props spread last
+in the primitive, so the wrapper wins without editing the shared primitive. Added a
+`Spinner` test to `ui.test.tsx` (status role + label + composed-over-`data-slot="spinner"`,
+default-label fallback). 95 web tests green (was 93).
+
 ## 2026-06-24 · band C · Alert family → shadcn Alert
 Migrated the hand-rolled callouts (`Callout`/`ErrorNotice`/`StaleBanner` in `ui.tsx`,
 rendered as `<div className="callout callout-*">`) onto the shadcn `Alert`. Extended

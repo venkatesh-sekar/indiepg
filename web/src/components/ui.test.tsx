@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { ResultBadge, ErrorNotice, StaleBanner } from "./ui";
+import { ResultBadge, ErrorNotice, StaleBanner, Spinner } from "./ui";
 import { ApiError } from "@/api/client";
 
 describe("ResultBadge", () => {
@@ -86,5 +86,23 @@ describe("StaleBanner", () => {
     expect(
       screen.getByText("Sign in again to resume live updates"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("Spinner", () => {
+  it("announces a loading status with the given label", () => {
+    render(<Spinner label="Loading backup history…" />);
+    const status = screen.getByRole("status");
+    expect(status).toBeInTheDocument();
+    expect(
+      screen.getByText("Loading backup history…"),
+    ).toBeInTheDocument();
+    // composed over the shadcn Spinner primitive, not the dead .spinner span.
+    expect(status.querySelector('[data-slot="spinner"]')).toBeInTheDocument();
+  });
+
+  it("falls back to a default label", () => {
+    render(<Spinner />);
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
   });
 });
