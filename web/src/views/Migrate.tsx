@@ -472,7 +472,7 @@ function isTerminal(status: MigrationStatus): boolean {
   return status === "completed" || status === "failed" || status === "expired";
 }
 
-function DirectJobProgress({ id, onReset }: { id: number; onReset: () => void }) {
+export function DirectJobProgress({ id, onReset }: { id: number; onReset: () => void }) {
   const { data: job, error } = usePolling<MigrationRecord>(
     (signal) => api.getMigration(id, signal),
     2000,
@@ -497,7 +497,8 @@ function DirectJobProgress({ id, onReset }: { id: number; onReset: () => void })
           looking like progress; say the status check stalled. */}
       {error && job && !terminal ? <StaleBanner error={error} /> : null}
       {!job ? (
-        <Spinner label="Starting…" />
+        // First poll: the error above OR a spinner, never both.
+        error ? null : <Spinner label="Starting…" />
       ) : job.status === "failed" ? (
         <Callout tone="danger" title="Migration failed">
           {job.error || "The migration could not complete."}
@@ -650,7 +651,7 @@ function SessionReceive() {
   );
 }
 
-function SessionProgress({ code, onReset }: { code: string; onReset: () => void }) {
+export function SessionProgress({ code, onReset }: { code: string; onReset: () => void }) {
   const toast = useToast();
   const { data: session, error } = usePolling<MigrationSession>(
     (signal) => api.getSession(code, signal),
@@ -710,7 +711,8 @@ function SessionProgress({ code, onReset }: { code: string; onReset: () => void 
       </div>
 
       {!session ? (
-        <Spinner label="Connecting…" />
+        // First poll: the error above OR a spinner, never both.
+        error ? null : <Spinner label="Connecting…" />
       ) : (
         <>
           <ol className="progress-steps">
@@ -834,14 +836,19 @@ function SessionSend() {
 // History
 // ---------------------------------------------------------------------------
 
-function MigrationHistory() {
+export function MigrationHistory() {
   const { data, error } = usePolling<MigrationRecord[]>((signal) => api.listMigrations(signal), 5000);
 
   return (
     <Card title="Recent migrations">
       {error && !data ? <ErrorNotice error={error} /> : null}
+      {/* Poll failed after the list already loaded — keep it visible but say the
+          refresh stalled, rather than silently showing a possibly-stale log. */}
+      {error && data ? <StaleBanner error={error} /> : null}
       {!data ? (
-        <Spinner label="Loading…" />
+        // First load: a spinner OR the error above, never both (a spinner beside
+        // an error implies progress that isn't happening).
+        error ? null : <Spinner label="Loading…" />
       ) : data.length === 0 ? (
         <EmptyState title="No migrations yet" hint="Started migrations appear here with live status." />
       ) : (

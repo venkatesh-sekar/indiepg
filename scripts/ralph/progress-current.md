@@ -5,6 +5,35 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2 (stability) · Migrate.tsx pollers no longer show an error AND an infinite spinner together
+North-star audit iteration over three NOT-YET-COVERED areas (owner-claim/instance-bootstrap,
+alert/metrics evaluation math, web SPA/api-client error-handling) — the three candidates the
+iter-53 note named. The first two came back with a CLEAN bill (no present-day CRITICAL/HIGH/MEDIUM;
+only latent/out-of-topology findings — e.g. replication-lag false-positive needs a replica
+topology indiepg never provisions, so on the supported single-primary box that metric is always 0
+and never fires). The web audit found ONE genuine present-day defect (LOW but real): all three
+polling sub-components in `web/src/views/Migrate.tsx` (`MigrationHistory`, `DirectJobProgress`,
+`SessionProgress`) rendered a first-load error notice AND a perpetual loading `Spinner`
+simultaneously on first-load failure — `{error && !X ? <ErrorNotice/> : null}` followed by
+`{!X ? <Spinner/> : …}`, both true when `X` is null and `error` is set — exactly the
+"infinite-spinner-beside-an-error" confusion the band-2 stability work exists to kill, but this
+file's three pollers were missed when StaleBanner shipped. Fixed by gating the spinner to show
+ONLY while genuinely loading: `error ? null : <Spinner/>` (the error notice above already speaks).
+Also closed a sibling-inconsistency: `MigrationHistory` had NO `StaleBanner`, so a poll that failed
+AFTER first success silently kept a possibly-stale log on screen — added
+`{error && data ? <StaleBanner error={error}/> : null}` mirroring `DirectJobProgress`/`SessionProgress`.
+Exported the three previously-internal components as the test seam (consistent with the codebase's
+"export helper for tests" convention). Test-first `web/src/views/Migrate.test.tsx` (10 tests): the
+3 first-load cases proven RED on the old double-render (asserts the error text shows AND
+`queryByRole("status")` — Spinner's role, nothing else uses it — is absent), the post-success
+stale cases (cached row stays + "Live updates paused" banner shows; clean poll shows neither
+error nor banner nor any `role="alert"`), and 3 positive "still spins while genuinely loading"
+cases. Reviewed (feature-dev:code-reviewer): NO blocking findings — confirmed no blank-stuck state,
+StaleBanner split symmetric with siblings, exports safe, tests non-vacuous; applied both
+non-blocking suggestions (positive spinner tests for the other two pollers + a zero-state poll
+default to remove a future-contributor footgun). Web gate green (typecheck/build/77 tests, was 67);
+Go gate green (gofmt/vet/test/build); committed dist. Tree clean.
+
 ## 2026-06-24 · band 2 (stability) · direct-migration source Port/User/SSLMode validated fail-fast
 `validateDirectSource` (internal/server/handlers_migrate.go) checked only `Host != ""` +
 `ValidateIdentifier(Database)`, leaving the source connection's `Port`/`User`/`SSLMode`
