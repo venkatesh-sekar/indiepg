@@ -570,6 +570,30 @@ func TestExportToSession_dumpFails(t *testing.T) {
 	require.Equal(t, StatusFailed, reloaded.Status)
 }
 
+func TestExportToSession_dumpTooLargeRefusedBeforeUpload(t *testing.T) {
+	svc, fs := newSessionSvc(t)
+	sess, err := svc.CreateSession(context.Background(), "appdb", time.Hour)
+	require.NoError(t, err)
+
+	// A dump whose size exceeds the in-memory ceiling must be refused BEFORE it is
+	// read into RAM and uploaded, so the single binary cannot OOM mid-migration.
+	eng := &fakeEngine{dumpInfo: DumpInfo{SizeBytes: 2 * MaxSessionDumpBytes, Checksum: "deadbeef"}}
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, svc, fs)
+
+	err = o.ExportToSession(context.Background(), sess, srcConn("appdb"), rec)
+	require.Error(t, err)
+	require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	require.Contains(t, err.Error(), "direct-pull")
+	// Nothing was uploaded — the guard fired before the ReadFile/PutObject.
+	_, ok := fs.objects[DumpKey(sess.Code)]
+	require.False(t, ok, "an oversized dump must never be uploaded")
+	require.NotContains(t, rec.phases(), PhaseUploading, "must not reach the uploading phase")
+	// The cross-panel session is moved to failed, not left stuck in "exporting".
+	require.Equal(t, StatusFailed, sess.Status)
+	require.NotEmpty(t, sess.Error)
+}
+
 // ---------------------------------------------------------------------------
 // ssh-less ImportFromSession (TARGET side)
 // ---------------------------------------------------------------------------
@@ -676,6 +700,29 @@ func TestImportFromSession_rowMismatch(t *testing.T) {
 	reloaded, gerr := svc.GetSession(context.Background(), sess.Code)
 	require.NoError(t, gerr)
 	require.Equal(t, StatusFailed, reloaded.Status)
+}
+
+func TestImportFromSession_dumpTooLargeRefusedBeforeDownload(t *testing.T) {
+	svc, fs := newSessionSvc(t)
+	sess := exportedSession(t, svc, fs, map[string]int64{"public.users": 4})
+	// The recorded dump size exceeds the in-memory ceiling (e.g. a tampered or
+	// foreign upload — the exporter enforces the same limit). The target must
+	// refuse before pulling the object into RAM.
+	sess.DumpSize = 2 * MaxSessionDumpBytes
+
+	eng := &fakeEngine{}
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, svc, fs)
+
+	err := o.ImportFromSession(context.Background(), sess, tgtConn(), rec)
+	require.Error(t, err)
+	require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	require.Contains(t, err.Error(), "direct-pull")
+	require.Empty(t, eng.restores, "an oversized dump must never be downloaded or restored")
+	require.NotContains(t, rec.phases(), PhaseDownloading, "must not reach the downloading phase")
+	// The cross-panel session is moved to failed, not left stuck in "importing".
+	require.Equal(t, StatusFailed, sess.Status)
+	require.NotEmpty(t, sess.Error)
 }
 
 func TestImportFromSession_notExported(t *testing.T) {

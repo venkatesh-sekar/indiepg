@@ -5,6 +5,22 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2 (stability) · ssh-less S3 migration no longer OOMs on a multi-GB dump
+The ssh-less (shared-bucket) migration path buffers the WHOLE pg_dump in memory —
+`ExportToSession` does `os.ReadFile`→`PutObject([]byte)` and `ImportFromSession` does
+`GetObject`→`[]byte`→`WriteFile` — so a multi-GB DB could OOM-kill the single binary
+mid-migration (direct-pull streams to a file and was unaffected). Took the minimal
+interim per the backlog: a 1 GiB cap (`MaxSessionDumpBytes`, internal/migrate/orchestrator.go)
+checked on EXPORT against `info.SizeBytes` BEFORE `os.ReadFile`, and on IMPORT against
+the exporter-recorded `sess.DumpSize` BEFORE `GetObject` — over-cap fails the (cross-panel)
+session and returns a CodeValidation error pointing the operator at direct-pull. Honestly
+documented residual: the import guard trusts the recorded size, so a lying peer recording
+a small size could still OOM — acceptable interim (trusted builds, short-lived bucket);
+full fix needs streaming GetObject. Test-first (RED→GREEN): export/import each refuse before
+the upload/download phase, fail the session, and surface the direct-pull pointer. Reviewed
+(feature-dev:code-reviewer): fixed an inverted-threat comment; guard placement + failSession
+coverage + tests confirmed sound. Go gate green.
+
 ## 2026-06-24 · band 2 (stability) · migration workers can no longer hang forever on a stalled source
 North-star audit HIGH defect. The three detached migration workers
 (`runDirectJob`/`runExportJob`/`runImportWorker`, internal/server/migrate_worker.go)

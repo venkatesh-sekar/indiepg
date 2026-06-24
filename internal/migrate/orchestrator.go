@@ -282,6 +282,27 @@ func (o *Orchestrator) directCluster(ctx context.Context, job Job, rec Recorder)
 	return nil
 }
 
+// MaxSessionDumpBytes caps the size of a dump moved through the ssh-less
+// (shared S3 bucket) migration path. That path buffers the WHOLE dump in memory
+// — ExportToSession reads the dump file into a []byte to upload it and
+// ImportFromSession downloads it into a []byte — so an unbounded dump can
+// OOM-kill the single indiepg binary mid-migration. A dump over this limit is
+// refused (before it is read into RAM) with a clear pointer to the direct-pull
+// migration, which streams the dump to a file and has no such ceiling. 1 GiB is
+// generous for the small boxes indiepg targets while bounding the worst-case
+// memory spike to something a modest host can absorb.
+const MaxSessionDumpBytes int64 = 1 << 30
+
+// errDumpTooLarge builds the consistent error returned when a dump exceeds the
+// ssh-less in-memory transfer ceiling, on both the export and import sides. It
+// points the operator at direct-pull, which streams the dump to disk.
+func errDumpTooLarge(code string, size int64) error {
+	return core.ValidationError(
+		"dump for session %s is %d MiB, over the %d MiB limit for the shared-bucket (ssh-less) transfer, which buffers the whole dump in memory — use the direct-pull migration instead",
+		code, size>>20, MaxSessionDumpBytes>>20).
+		WithHint("direct-pull streams the dump to disk and has no size limit")
+}
+
 // ExportToSession is the SOURCE side of an ssh-less migration: it dumps the
 // session's database locally, uploads the dump to the shared S3 bucket, records
 // the dump size/checksum/source row counts on the session document, and
@@ -322,6 +343,13 @@ func (o *Orchestrator) ExportToSession(ctx context.Context, sess *MigrationSessi
 		return o.failSession(ctx, sess, rec, err)
 	}
 	_ = rec.Progress(ctx, 0, 1, info.SizeBytes)
+
+	// The ssh-less path buffers the whole dump in memory to upload it, so refuse
+	// an oversized dump HERE — before reading it into RAM — rather than risk an
+	// OOM mid-migration. Direct-pull streams to disk and has no such ceiling.
+	if info.SizeBytes > MaxSessionDumpBytes {
+		return o.failSession(ctx, sess, rec, errDumpTooLarge(sess.Code, info.SizeBytes))
+	}
 
 	// Capture source row counts now, while we hold the source connection, so the
 	// target can verify after restore without ever talking to the source.
@@ -393,6 +421,17 @@ func (o *Orchestrator) ImportFromSession(ctx context.Context, sess *MigrationSes
 	// "importing".
 
 	// --- downloading -----------------------------------------------------
+	// Refuse an oversized dump before pulling it into memory (GetObject buffers
+	// the whole object as a []byte). DumpSize is what the exporter recorded; the
+	// exporter enforces the same ceiling before uploading, so an honest counterpart
+	// never records an over-cap value. NOTE this guard TRUSTS the recorded size: a
+	// peer that records a small DumpSize but uploads a large object would still OOM
+	// here. That residual is acceptable for the interim fix (both panels run trusted
+	// indiepg builds and the bucket is short-lived per session); closing it fully
+	// needs streaming GetObject. Direct-pull has no ceiling because it streams.
+	if sess.DumpSize > MaxSessionDumpBytes {
+		return o.failSession(ctx, sess, rec, errDumpTooLarge(sess.Code, sess.DumpSize))
+	}
 	o.stage(ctx, rec, StatusImporting, PhaseDownloading)
 	data, err := o.os.GetObject(ctx, sess.DumpKey)
 	if err != nil {
