@@ -32,7 +32,7 @@ export function Settings() {
   const config = useAsync<ConfigResponse>(() => api.getConfig(), []);
 
   return (
-    <div className="view">
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-5">
       <PageHeader
         title="Settings"
         description="Backups are stored on this server until you connect an S3-compatible bucket here — recommended for real, off-server protection."

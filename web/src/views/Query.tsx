@@ -63,7 +63,7 @@ export function Query() {
   };
 
   return (
-    <div className="view">
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-5">
       <PageHeader
         title="Query"
         description="Run SELECT queries against your database. This is a safe, look-only window."

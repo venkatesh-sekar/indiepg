@@ -122,7 +122,7 @@ export function Alerts() {
   };
 
   return (
-    <div className="view">
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-5">
       <PageHeader
         title="Alerts"
         description="Get notified when something needs attention — and confirm it works with a test."

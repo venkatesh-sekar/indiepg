@@ -48,7 +48,7 @@ export function Dashboard() {
   const connPct = s.max_connections ? (s.connections / s.max_connections) * 100 : 0;
 
   return (
-    <div className="view">
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-5">
       <PageHeader
         title="Dashboard"
         description="A live look at your database and server."
@@ -211,7 +211,7 @@ function StatCard({
 /** Skeleton placeholder shown on first load, before any data arrives. */
 function DashboardSkeleton() {
   return (
-    <div className="view" role="status" aria-label="Loading dashboard…">
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-5" role="status" aria-label="Loading dashboard…">
       <div className="flex items-start justify-between gap-4">
         <div className="flex flex-col gap-2">
           <Skeleton className="h-7 w-40" />

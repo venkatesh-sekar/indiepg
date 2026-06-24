@@ -114,7 +114,7 @@ export function RolesDatabases() {
   };
 
   return (
-    <div className="view">
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-5">
       <PageHeader
         title="Roles & Databases"
         description="Create databases and users safely. Every action here is guided and confirmed."

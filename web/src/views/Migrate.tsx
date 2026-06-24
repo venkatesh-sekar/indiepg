@@ -63,7 +63,7 @@ export function Migrate() {
   const [mode, setMode] = useState<MigrationMode>("single-db");
 
   return (
-    <div className="view">
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-5">
       <PageHeader
         title="Migrate"
         description="Move a database onto this server from another host — safely, with verification."

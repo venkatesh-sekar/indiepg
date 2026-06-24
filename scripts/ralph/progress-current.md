@@ -5,6 +5,31 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band E · last legacy class `.view` → Tailwind + dead legacy CSS purged
+Sixth band-E cleanup slice. The prior slice's "last legacy `className` cleared"
+claim missed one straggler: the `.view` page-wrapper class, still used by all 8
+views. Cleared it, then deleted every now-dead hand-rolled class rule from
+`styles.css`.
+- 8 views: root `<div className="view">` → `mx-auto flex max-w-[1100px] flex-col
+  gap-5` — a 1:1 equivalence of the old `.view` rule (`max-width:1100px;
+  margin:0 auto; display:flex; flex-direction:column; gap:20px`; gap-5 = 20px).
+  Identical rendering; Dashboard's `role="status"` loading wrapper swapped too.
+- `styles.css`: removed all dead legacy *class* rules now that nothing references
+  them — `.muted`/`.small`/`.mono`, `.view`, `.btn*`/`.icon-btn`, the whole
+  `.data-table*`/`.table-scroll`/`.col-*`/`.row-num`/`.cell-null` table block,
+  the `.field*`/`.checkbox`/`fieldset.field` form block, the dead Modal comment,
+  and the `.field-row` responsive media query. Replaced with a one-line note.
+  Kept the `:root` design-token vars + global element styles + `@theme inline` +
+  `.dark` + `@layer base` (token-var prune is the next E item — those vars are
+  still consumed by `@theme inline`).
+- Grep-proven dead before deleting: remaining "hits" for btn/field/checkbox/etc.
+  were all shadcn import paths, `[role=checkbox]` selectors, or prose — `.view`
+  was the only real consumer left.
+- ui-heuristics-reviewer: confirmed exact CSS equivalence, no layout regression
+  (verified the `Layout` `<main>` still lets `mx-auto` center the wrapper).
+- 130 web tests green; typecheck/build/go build green. **E1 token-var prune is
+  now fully unblocked — zero legacy `className` strings remain anywhere.**
+
 ## 2026-06-24 · band E · last legacy callout/boot classes → Tailwind
 Fifth band-E cleanup slice — clears the final hand-rolled `className="<legacy>"`
 strings outside `styles.css`, unblocking the E1 token-delete.

@@ -111,7 +111,7 @@ export function Backups() {
   };
 
   return (
-    <div className="view">
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-5">
       <PageHeader
         title="Backups"
         description={
