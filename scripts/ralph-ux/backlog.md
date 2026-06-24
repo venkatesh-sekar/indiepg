@@ -16,9 +16,11 @@ Format per item:
   `TypedConfirmDialog` is open, which makes the background inert/`aria-hidden`; no
   user can see or click an "unrelated frozen row," so per-row scoping has zero
   payoff. See learnings.md.
-- [ ] (med/S) Dashboard — the "no backup yet" callout says "Run one from the Backups
-  page" as plain text with no link; user has to hunt the sidebar. → Make "Backups
-  page" a `<Link to="/backups">` (Link already imported).
+- ~~(med/S) Dashboard — make the "no backup yet" callout's "Backups page" a
+  `<Link>`~~ — **rejected iter 6** on restraint. 3 of 4 reviewers shipped, but the
+  restraint critic blocked (never overruled): the copy already names the page and the
+  left-nav is one obvious click from every view, so the link only saves a click on an
+  empty state seen ~once. Decorative payoff. See learnings.md.
 - [ ] (med/S) Query — the server returns `executed_sql` (possibly LIMIT-rewritten)
   but it's never shown, so a user can't tell what actually ran. → Show a compact,
   collapsed "Executed SQL" code block below results (render the value already returned).
@@ -93,6 +95,10 @@ Format per item:
 
 ## Rejected
 
+- ~~(med/S) Dashboard — link the "no backup yet" callout's "Backups page"~~ — iter 6.
+  3 SHIP (UX heuristics, Sam, Priya) but the restraint critic blocked and is never
+  overruled: copy already names the destination, left-nav is one click from every view,
+  so the link only saves a click on an empty state seen ~once. Decorative. learnings.md.
 - ~~(high/S) Roles & Databases — scope `dropBusy` per-row~~ — iter 5. No observable
   payoff: a drop only runs while the modal `TypedConfirmDialog` is open, so the
   background table is already inert/`aria-hidden` and the user can't see or click the

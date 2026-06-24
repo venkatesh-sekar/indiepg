@@ -39,6 +39,20 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
   only flips while a modal is up is already effectively scoped — the modal does the
   gating. Don't "fix" disabled-state breadth on rows a modal already covers.
 
+- **Dashboard: make the "no backup yet" callout's "Backups page" an actual `<Link>`.**
+  Rejected iter 6 on restraint. The change was genuinely minimal and clean (3 of 4
+  reviewers shipped — UX heuristics, Sam, Priya — citing recognition-over-recall and
+  consistency with the existing inline `<Link>` in Backups.tsx). But the **restraint
+  critic blocked**, and that blocker is never overruled: the copy *already names* the
+  destination ("Backups page") and the persistent left-nav is one click from every
+  view, so the link only shaves one click off an empty state most users see at most
+  once. No task was blocked or meaningfully harder before; the payoff is decorative.
+  **Lesson:** "matches an existing pattern" justifies a link you're adding for a real
+  need — it does not, by itself, manufacture the need. An inline `<Link>` earns its
+  place only when the target is *not* otherwise one obvious click away (e.g. a
+  cross-domain jump like Backups→Settings for S3, which the nav doesn't make obvious).
+  A same-name link to a top-level nav destination is the weak case. Don't re-propose.
+
 ## Rules of thumb
 
 - The audit strongly corroborated the seed item: backup **config** (/settings) and

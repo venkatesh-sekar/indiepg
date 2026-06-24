@@ -3,6 +3,24 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 6 — Mode F (REJECT) (Dashboard: link "Backups page" in the no-backup callout)
+Took the top quick-win: the "no backup yet" warn Callout names "Backups page" as plain
+text, so the user hunts the sidebar — proposed wrapping it in `<Link to="/backups">`,
+matching the existing inline `<Link to="/settings">` in Backups.tsx. Implemented it
+(added the import, wrapped the words, wrapped the test renders in `MemoryRouter`, asserted
+`href="/backups"`); test passed. Ran the full review panel. **3 SHIP** (UX heuristics —
+recognition-over-recall + consistency; Sam — one-click trail that doesn't dead-end; Priya
+— "gets out of my way, no new control"). **Restraint critic REJECTED**: decorative payoff —
+the copy already names the destination and the persistent left-nav is one obvious click
+from every view, so the link only shaves a click off an empty state most users see at
+most once; no task was blocked or harder before. Per the contract the restraint blocker is
+never overruled by the other ships, so the change does NOT ship. Reverted both files clean,
+recorded the lesson ("'matches an existing pattern' justifies a link you're adding for a
+real need — it doesn't manufacture the need; a same-name link to a top-level nav
+destination is the weak case") in learnings.md, marked the backlog item rejected. No code
+shipped. Next top item: Query — surface the server's `executed_sql` (possibly
+LIMIT-rewritten) so a user can see what actually ran.
+
 ## 2026-06-25 — iter 5 — Mode F (REJECT) (Roles & DBs: scope `dropBusy` per-row)
 Took the top quick-win: the audit claimed a single `dropBusy` boolean disables *every*
 Delete button during any one drop, "freezing" unrelated rows. Implemented the scoped fix
