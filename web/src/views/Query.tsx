@@ -5,14 +5,25 @@
 import { useState, type KeyboardEvent } from "react";
 import { ApiError, api } from "@/api/client";
 import { millis, count } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import {
   Badge,
   Callout,
   ErrorNotice,
   PageHeader,
   ReadOnlyBadge,
-  Spinner,
 } from "@/components/ui";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Spinner as InlineSpinner } from "@/components/ui/spinner";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import type { QueryResult } from "@/api/types";
 
 const SAMPLES: Array<{ label: string; sql: string }> = [
@@ -65,46 +76,47 @@ export function Query() {
         slow down your database. To change data, use the guided actions under Roles &amp; Databases.
       </Callout>
 
-      <div className="query-toolbar">
-        <div className="query-samples">
-          <span className="muted">Try:</span>
-          {SAMPLES.map((sample) => (
-            <button
-              key={sample.label}
-              type="button"
-              className="chip"
-              onClick={() => setSql(sample.sql)}
-            >
-              {sample.label}
-            </button>
-          ))}
-        </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm text-muted-foreground">Try:</span>
+        {SAMPLES.map((sample) => (
+          <Button
+            key={sample.label}
+            type="button"
+            variant="outline"
+            size="sm"
+            title="Replace the editor with this query"
+            onClick={() => setSql(sample.sql)}
+          >
+            {sample.label}
+          </Button>
+        ))}
       </div>
 
-      <div className="editor-wrap">
-        <textarea
-          className="sql-editor"
+      <div className="flex flex-col gap-3">
+        <Textarea
           value={sql}
           spellCheck={false}
           onChange={(e) => setSql(e.target.value)}
           onKeyDown={onEditorKey}
           placeholder="SELECT * FROM your_table;"
-          aria-label="Read-only SQL editor"
+          aria-label="SQL query editor"
+          className="min-h-40 font-mono text-sm leading-relaxed"
         />
-        <div className="editor-actions">
-          <span className="muted kbd-hint">⌘/Ctrl + Enter to run</span>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={run}
-            disabled={busy || !sql.trim()}
-          >
-            {busy ? "Running…" : "Run query"}
-          </button>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs text-muted-foreground">⌘/Ctrl + Enter to run</span>
+          <Button onClick={run} disabled={busy || !sql.trim()}>
+            {busy ? (
+              <>
+                <InlineSpinner data-icon="inline-start" />
+                Running…
+              </>
+            ) : (
+              "Run query"
+            )}
+          </Button>
         </div>
       </div>
 
-      {busy ? <Spinner label="Running query…" /> : null}
       {error ? <ErrorNotice error={error} /> : null}
       {result && !busy ? <ResultsTable result={result} /> : null}
     </div>
@@ -121,52 +133,55 @@ function ResultsTable({ result }: { result: QueryResult }) {
   }
 
   return (
-    <div className="results">
-      <div className="results-meta">
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2.5">
         <Badge tone="ok">{count(result.row_count)} rows</Badge>
-        <span className="muted">{millis(result.duration_ms)}</span>
-        {result.limited ? (
-          <Badge tone="warn" >Results limited for safety</Badge>
-        ) : null}
+        <span className="text-sm text-muted-foreground">{millis(result.duration_ms)}</span>
+        {result.limited ? <Badge tone="warn">Results limited for safety</Badge> : null}
       </div>
 
       {result.limited ? (
-        <p className="muted results-note">
+        <p className="text-xs text-muted-foreground">
           Only the first {count(result.row_count)} rows are shown. Add your own{" "}
           <code>LIMIT</code> or a <code>WHERE</code> filter to narrow results.
         </p>
       ) : null}
 
-      <div className="table-scroll">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th className="row-num">#</th>
-              {result.columns.map((col) => (
-                <th key={col.name}>
-                  <span className="col-name">{col.name}</span>
-                  <span className="col-type muted">{col.data_type}</span>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {result.rows.map((row, i) => (
-              <tr key={i}>
-                <td className="row-num">{i + 1}</td>
-                {row.map((cell, j) => (
-                  <td key={j} className={cell === null ? "cell-null" : ""}>
-                    {cell === null ? "NULL" : String(cell)}
-                  </td>
-                ))}
-              </tr>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-0 text-right">#</TableHead>
+            {result.columns.map((col) => (
+              <TableHead key={col.name} className="align-top">
+                <span className="block">{col.name}</span>
+                <span className="block text-[10px] font-normal text-muted-foreground">
+                  {col.data_type}
+                </span>
+              </TableHead>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {result.rows.map((row, i) => (
+            <TableRow key={i}>
+              <TableCell className="text-right text-muted-foreground tabular-nums">
+                {i + 1}
+              </TableCell>
+              {row.map((cell, j) => (
+                <TableCell
+                  key={j}
+                  className={cn(cell === null && "text-muted-foreground italic")}
+                >
+                  {cell === null ? "NULL" : String(cell)}
+                </TableCell>
+              ))}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
 
       {result.rows.length === 0 ? (
-        <p className="muted results-note">No rows matched.</p>
+        <p className="text-xs text-muted-foreground">No rows matched.</p>
       ) : null}
     </div>
   );

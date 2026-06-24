@@ -5,6 +5,30 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band D · Query → shadcn
+Fourth band-D view. Rebuilt `Query.tsx` on shadcn primitives:
+- SQL editor `<textarea class="sql-editor">` → shadcn `Textarea` (added the
+  component via `shadcn add textarea`); editor + actions row now flex/`gap-*`
+  instead of the `.editor-wrap`/`.editor-actions` chrome.
+- Sample `.chip` buttons → `Button variant="outline" size="sm"` (with a `title`
+  disclosing they replace the editor — review finding #2).
+- Run button → `Button` composing the raw `Spinner` (`data-icon="inline-start"`)
+  + "Running…" busy state; dropped the redundant standalone results spinner so
+  the inline busy state matches the app-wide pattern (review finding #1).
+- Results `.data-table` → `Table` family; `.row-num`/`.cell-null`/`.col-name`/
+  `.col-type` markup → Tailwind tokens (`tabular-nums`, `text-muted-foreground`,
+  `italic`). Limited/zero-row/zero-column messaging unchanged.
+- A11y: editor `aria-label` "Read-only SQL editor" → "SQL query editor" — the
+  field is editable; the read-only DB constraint is already carried by the
+  `ReadOnlyBadge` + `Callout` (review finding #3). Declined finding #4 (replace
+  the zero-row table with a Callout) — the column headers convey result shape at
+  zero rows and that matches prior behavior.
+- Behavior identical: Cmd/Ctrl+Enter to run, read-first guard, auto-LIMIT badge
+  + note, error via `ErrorNotice`. Deleted dead Query-only CSS (`.chip`,
+  `.query-*`, `.editor-*`, `.sql-editor`, `.kbd-hint`, `.results*`). Shared
+  `.data-table`/`.table-scroll`/`.row-num` etc. CSS kept (still used by Alerts/
+  Backups/Migrate). Added `Query.test.tsx` (5 tests). 111 web tests green.
+
 ## 2026-06-24 · band D · RolesDatabases → shadcn
 Third band-D view. Rebuilt `RolesDatabases.tsx` on shadcn primitives:
 - All `.btn*` buttons → `Button` (variants: primary CTA = default; card/table
