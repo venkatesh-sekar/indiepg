@@ -27,6 +27,7 @@ import (
 	"github.com/venkatesh-sekar/indiepg/internal/migrate"
 	"github.com/venkatesh-sekar/indiepg/internal/pg"
 	"github.com/venkatesh-sekar/indiepg/internal/pg/guard"
+	"github.com/venkatesh-sekar/indiepg/internal/pgbouncer"
 	"github.com/venkatesh-sekar/indiepg/internal/scheduler"
 	"github.com/venkatesh-sekar/indiepg/internal/server/web"
 	"github.com/venkatesh-sekar/indiepg/internal/store"
@@ -64,6 +65,11 @@ type Server struct {
 	guard   *guard.Guard
 	backups *backup.Manager
 	sampler *pg.Sampler
+
+	// pooler drives the opt-in PgBouncer pooler (package install + config/auth_file
+	// + service lifecycle). It is OFF by default and does nothing until the operator
+	// explicitly enables it via POST /api/pooler/enable.
+	pooler *pgbouncer.Manager
 
 	// migrateEngine wraps pg_dump/pg_restore/psql for both migration modes; it is
 	// always built (direct pull needs no S3). migrate is the S3-backed session
@@ -303,6 +309,10 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 			Owner: backupOwnerFor(context.Background(), st, cfg, log),
 		}),
 		sampler: pg.NewSampler(pgmgr),
+
+		// Opt-in pooler: shares the same OS runner; constructed pure (no IO until an
+		// explicit Enable), so building it here is free for test servers.
+		pooler: pgbouncer.New(pgbouncer.Options{Runner: runner, Logger: log}),
 
 		// Migration: the dump/restore engine is always available (direct pull needs
 		// no S3); the S3 session Service is built only when an S3 target exists.

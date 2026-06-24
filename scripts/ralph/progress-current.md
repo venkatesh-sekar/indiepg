@@ -5,6 +5,26 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · PgBouncer pooler — enable endpoint (UI slice 2 of 3)
+The status endpoint shipped last iteration gave the UI something to read; this
+adds the action it will call. `POST /api/pooler/enable` (`handlePoolerEnable`)
+wires the already-built, already-tested `pgbouncer.Manager.Enable` orchestrator
+into the HTTP surface: a new `pooler *pgbouncer.Manager` field is constructed in
+`newServer` over the shared OS runner (`s.pg` as VerifierSource, `s.store` as
+PoolerState), and the route sits under `requireAuth` so it inherits the CSRF gate
+for cookie flows — system-mutating (apt install + systemctl), so a deliberate
+POST. Input is `{roles, profile}` only: `max_connections` is NOT client-supplied;
+the pool is sized server-side from the live `s.pg.CurrentTuning().Applied`, so a
+forged value can't widen the pool past what Postgres can serve (security
+tie-break). Guards run cheap→costly: empty roles → 400 (an empty auth_file would
+lock every app out), unknown profile → 400 (no silent mis-size), then
+PG-unreachable → 409 with NO side effect rather than guess-then-install. Audited
+by code only (never role names/verifiers). Tests cover the four guard paths
+(auth/empty-roles/bad-profile/PG-unreachable, each asserting the flag stays off);
+the full side-effecting happy path stays in `pgbouncer/enable_test.go` (fake
+runner) by the same convention backups/migrate handlers follow. Reviewed
+(feature-dev:code-reviewer): no findings. REMAINING: the React UI toggle (slice 3).
+
 ## 2026-06-24 · band 3 (usability) · PgBouncer pooler — read-only status endpoint (UI slice 1 of 3)
 The remaining pooler item was "the UI toggle", but the panel had no backend for
 it to read — `Manager.Enable` exists but is unexposed. Built the safe, no-side-
