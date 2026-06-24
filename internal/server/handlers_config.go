@@ -23,6 +23,19 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleGetTuning returns the read-only host-sized tuning surface: the detected
+// RAM/CPU, the live applied settings (best-effort — absent if Postgres is
+// unreachable), and the recommendation for each workload profile so the UI can
+// label every override by its effect. It never mutates Postgres.
+func (s *Server) handleGetTuning(w http.ResponseWriter, r *http.Request) {
+	status, err := s.pg.CurrentTuning(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, status)
+}
+
 // updateConfigRequest is the mutable subset of configuration exposed to the UI.
 // Network bind and PG socket settings are deliberately excluded from the API:
 // changing the bind address over the network could lock the operator out, so it

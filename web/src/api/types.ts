@@ -319,6 +319,42 @@ export interface ConfigResponse {
   backup_detail?: string;
 }
 
+/** pg.TuningRecommendation — host-sized settings for one workload profile.
+ *  Memory figures are in megabytes; computing it touches no Postgres. */
+export interface TuningRecommendation {
+  profile: WorkloadProfile;
+  memory_mb: number;
+  cpu_count: number;
+  shared_buffers_mb: number;
+  effective_cache_size_mb: number;
+  work_mem_mb: number;
+  maintenance_work_mem_mb: number;
+  max_connections: number;
+}
+
+/** pg.AppliedTuning — the live value of each host-sized setting in force now,
+ *  read from pg_settings and rendered in whole MB (max_connections is a count). */
+export interface AppliedTuning {
+  shared_buffers_mb: number;
+  effective_cache_size_mb: number;
+  work_mem_mb: number;
+  maintenance_work_mem_mb: number;
+  max_connections: number;
+}
+
+/** The workload profile Postgres is sized for. Mixed is the best default. */
+export type WorkloadProfile = "oltp" | "mixed" | "olap";
+
+/** pg.TuningStatus — the read-only tuning surface from GET /api/tuning.
+ *  `applied` is null when Postgres is unreachable (recommendations still load). */
+export interface TuningStatus {
+  memory_mb: number;
+  cpu_count: number;
+  active_profile: WorkloadProfile;
+  applied: AppliedTuning | null;
+  profiles: TuningRecommendation[];
+}
+
 /** Editable S3 fields. Secrets are write-only: omit (or send empty) to keep the
  *  stored value; send a non-empty value to replace it. */
 export interface BackupTargetUpdate {

@@ -5,6 +5,38 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2.5 (resource & config safety) · APPLY host-sized tuning — UI surface
+Closed the **last open band-2.5 item**: the operator can now SEE how Postgres is
+sized to their box. Provisioning is CLI-driven (`indiepg install`), so the
+`recommended_tuning`/`tuning` fields the Provision result carries were only ever
+logged — never surfaced. Added a **read-only** surface:
+- Backend `Manager.CurrentTuning(ctx)` (`internal/pg/tuning_status.go`) returns
+  detected RAM/CPU, the live applied settings (read from `pg_settings` via the
+  existing `readTunableSettings`, normalised to whole MB), and the host-sized
+  recommendation for each workload profile (oltp/mixed/olap, via the pure
+  `RecommendTuning` through the `hostTuning` seam). **Best-effort**: if Postgres
+  is unreachable it returns `Applied=nil` (no error) so the recommendations still
+  load. `GET /api/tuning` (`handleGetTuning`); never mutates Postgres.
+- Frontend "Database tuning (host-sized)" card on Settings
+  (`web/src/views/DatabaseTuning.tsx`): shows the box's RAM/CPU + active profile,
+  the applied settings (each with a plain-English meaning), and a profile selector
+  that **previews** what each profile would size the box to, every profile labeled
+  by its effect. A non-default selection clearly says it's a preview that changes
+  nothing and that a real switch needs a brief Postgres restart — so it's an
+  install/provision-time action, not a button here (security tie-break: no
+  restart-trigger surface in the panel).
+Why read-only/preview, not apply: a profile switch resizes
+shared_buffers/max_connections and must funnel through ApplyTuning's
+`restartWithRollback`; exposing that as a one-click panel button is a separate,
+riskier feature. This iteration removes the most risk (operator can finally see +
+understand their tuning) with zero new mutation surface. Tests:
+`TestCurrentTuning_*` (applied + all profiles; degrades when PG unreachable) and
+`DatabaseTuning.test.tsx` (mbLabel units; host/active render; applied values;
+null-applied calm warn + recommendations still shown; profile preview describes
+effect + says nothing changes). All gates green; reviewed (feature-dev:code-reviewer:
+no blocking issues; tidied one redundant detection call). **Band 2.5 COMPLETE →
+next is band 3 (usability).**
+
 ## 2026-06-24 · band 2.5 (resource & config safety) · APPLY host-sized tuning — real-PG integration test
 Closed the first of the two ApplyTuning apply-follow-up items: proved
 `Manager.ApplyTuning` works against REAL Postgres, the one thing the fake-Runner

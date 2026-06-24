@@ -46,6 +46,10 @@ func (s *Server) buildRouter() http.Handler {
 			pr.Get("/config", s.handleGetConfig)
 			pr.Put("/config", s.handleUpdateConfig)
 
+			// Host-sized tuning surface (read-only): applied settings + the
+			// recommendation for each workload profile.
+			pr.Get("/tuning", s.handleGetTuning)
+
 			pr.Get("/audit", s.handleListAudit)
 
 			// Dashboard (host + Postgres telemetry snapshot).

@@ -13,6 +13,7 @@ import type {
   ChannelConfig,
   ClusterMigrationRequest,
   ConfigResponse,
+  TuningStatus,
   CreateDatabaseRequest,
   CreateReadonlyUserRequest,
   CreateRoleRequest,
@@ -265,6 +266,9 @@ export const api = {
   },
   updateConfig(req: UpdateConfigRequest): Promise<ConfigResponse> {
     return request<ConfigResponse>("/config", { method: "PUT", body: req });
+  },
+  getTuning(): Promise<TuningStatus> {
+    return request<TuningStatus>("/tuning");
   },
 
   // alerts -----------------------------------------------------------------

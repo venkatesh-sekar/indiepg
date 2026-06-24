@@ -15,6 +15,7 @@ import {
   Spinner,
 } from "@/components/ui";
 import type { ConfigResponse, UpdateConfigRequest } from "@/api/types";
+import { DatabaseTuning } from "./DatabaseTuning";
 
 export function Settings() {
   const config = useAsync<ConfigResponse>(() => api.getConfig(), []);
@@ -32,6 +33,7 @@ export function Settings() {
       ) : config.data ? (
         <BackupSettingsForm initial={config.data} onSaved={config.reload} />
       ) : null}
+      <DatabaseTuning />
     </div>
   );
 }
