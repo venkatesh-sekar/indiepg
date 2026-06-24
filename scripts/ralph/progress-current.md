@@ -5,6 +5,38 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · PgBouncer pooler — auth_file atomic installer (slice 4b)
+Carved the next install slice off the enable-flow item: the atomic `userlist.txt`
+installer, mirroring how the `.ini` installer (slice 3) split the atomic write out
+from service lifecycle. Added `Manager.EnsureUserlist(ctx, []UserlistEntry)
+(changed bool, err)` in `internal/pgbouncer/install.go`:
+- Renders via the (already-built) `RenderUserlist` then installs atomically —
+  temp+rename, 0640 owned by the pgbouncer user (the auth_file holds
+  secret-adjacent SCRAM verifiers, so never world-readable), O_NOFOLLOW symlink
+  guard → `CodeConflict`, deterministic no-op when content is byte-identical so
+  the enable flow can skip a needless reload. Logs only the user COUNT.
+- KEY DECISION: NO foreign-file marker guard (unlike the .ini). The userlist.txt
+  format is pure `"user" "verifier"` lines and cannot carry an in-file marker
+  (confirmed against the `sm` source). Ownership is gated upstream by
+  EnsureConfig's marker guard on pgbouncer.ini — the enable flow only reaches the
+  auth_file once indiepg owns the .ini, and the auth_file is a fully
+  indiepg-derived satellite of that managed config. RenderUserlist's
+  SCRAM-only/injection validation still hard-stops any bad entry before a write.
+- DRYed the shared atomic-install logic out of `writeConfigFile` into a
+  package-level `atomicInstall(path, data, mode)` used by both the .ini and the
+  auth_file (EnsureConfig behavior unchanged — pure mechanical extraction).
+Tests `userlist_install_test.go`: writes-0640 (exact RenderUserlist bytes),
+idempotent-no-rewrite (mtime-stable; a two-user set re-submitted in reverse input
+order proves the sort-stable no-op at the install level), rewrites-on-change,
+refuses-symlink (target untouched), rejects-non-SCRAM + rejects-empty before any
+write, requires-runner, default-path.
+Reviewed (feature-dev:code-reviewer): no blocking findings; applied the one
+Important test fix (idempotency test now actually reorders a two-user set rather
+than re-submitting a single entry). Gates: gofmt clean, go vet, go test ./...,
+CGO_ENABLED=0 build all green; no web/ touched.
+REMAINING for the enable flow: query pg_authid for the app role(s)' verifiers,
+package install (apt) + service lifecycle.
+
 ## 2026-06-24 · band 3 (usability) · PgBouncer pooler — SCRAM userlist render (slice 4a)
 Carved the substantive sub-piece the backlog flagged out of the enable-flow
 item: the pure SCRAM `userlist.txt` render, mirroring how every prior pgbouncer

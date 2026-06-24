@@ -20,11 +20,19 @@ const (
 	defaultConfDir = "/etc/pgbouncer"
 	// confFileName is the managed config file name within confDir.
 	confFileName = "pgbouncer.ini"
+	// userlistFileName is the managed auth_file within confDir; it holds the SCRAM
+	// verifiers and must match the auth_file path in the rendered pgbouncer.ini
+	// (defaultAuthFile in config.go).
+	userlistFileName = "userlist.txt"
 	// confFileMode matches the `sm` default (DEFAULTS.md): owner read/write,
 	// group read, no other access. The file carries no secret (SCRAM verifiers
 	// live in the separate auth_file), but the PgBouncer process runs as the
 	// pgbouncer group, so group-read lets it read the config without world access.
 	confFileMode os.FileMode = 0o640
+	// userlistFileMode matches confFileMode (0640, owner pgbouncer): the auth_file
+	// holds SCRAM verifiers (secret-adjacent), so it is never world-readable, but
+	// the pgbouncer process reads it via its group.
+	userlistFileMode os.FileMode = 0o640
 	// confDirMode is the managed directory mode (no secrets in the dir itself).
 	confDirMode os.FileMode = 0o755
 	// bouncerUser is the OS user/group the PgBouncer service runs as; the managed
@@ -120,12 +128,70 @@ func (m *Manager) EnsureConfig(ctx context.Context, p ConfigParams) (bool, error
 		return false, core.InternalError("pgbouncer: read config %q", path).Wrap(err)
 	}
 
-	if err := m.writeConfigFile(path, []byte(desired)); err != nil {
+	if err := atomicInstall(path, []byte(desired), confFileMode); err != nil {
 		return false, err
 	}
 
 	m.log.InfoCtx(ctx, "wrote PgBouncer config", "path", path,
 		"pool_size", p.Pool.DefaultPoolSize, "max_client_conn", p.Pool.MaxClientConn)
+	return true, nil
+}
+
+// UserlistPath is the absolute path to the managed auth_file (userlist.txt).
+func (m *Manager) UserlistPath() string {
+	return filepath.Join(m.confDir, userlistFileName)
+}
+
+// EnsureUserlist renders the auth_file (userlist.txt) from entries and installs
+// it atomically, returning whether the file changed. It does NOT touch the
+// service — reload/restart is the enable flow's concern, which can skip a reload
+// when nothing changed.
+//
+// It mirrors EnsureConfig's install contract: atomic temp+rename at 0640 owned by
+// the pgbouncer user, an O_NOFOLLOW guard that refuses a symlink planted at the
+// path, and a deterministic no-op when the rendered content is byte-identical
+// (RenderUserlist sorts entries) so an unchanged user set skips a needless reload.
+//
+// Unlike pgbouncer.ini, the userlist.txt format is pure `"user" "verifier"` lines
+// (the `sm` format) and CANNOT carry an in-file ownership marker, so there is no
+// foreign-file marker guard here. Ownership of the pooler is established upstream:
+// the enable flow only reaches the auth_file after EnsureConfig's marker guard has
+// confirmed indiepg owns the pgbouncer.ini, and the auth_file is a fully
+// indiepg-derived satellite of that managed config. The verifier/username
+// validation in RenderUserlist still hard-stops any injection before a write.
+func (m *Manager) EnsureUserlist(ctx context.Context, entries []UserlistEntry) (bool, error) {
+	if m.runner == nil {
+		return false, core.InternalError("pgbouncer: EnsureUserlist requires a Runner")
+	}
+
+	desired, err := RenderUserlist(entries)
+	if err != nil {
+		return false, err
+	}
+
+	path := m.UserlistPath()
+	existing, err := readNoFollow(path)
+	switch {
+	case err == nil:
+		if string(existing) == desired {
+			return false, nil // already current; no rewrite, no reload.
+		}
+	case os.IsNotExist(err):
+		// First write; fall through.
+	case errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENOTDIR):
+		return false, core.ConflictError(
+			"refusing to follow a symlink at the PgBouncer auth_file path %q", path,
+		).WithHint("remove the symlink so indiepg can write a real userlist.txt")
+	default:
+		return false, core.InternalError("pgbouncer: read auth_file %q", path).Wrap(err)
+	}
+
+	if err := atomicInstall(path, []byte(desired), userlistFileMode); err != nil {
+		return false, err
+	}
+
+	// Never log the verifiers themselves — only the count of users written.
+	m.log.InfoCtx(ctx, "wrote PgBouncer auth_file", "path", path, "users", len(entries))
 	return true, nil
 }
 
@@ -142,9 +208,12 @@ func readNoFollow(path string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
-// writeConfigFile creates confDir if needed and atomically replaces the config
-// file with data at confFileMode, owned by the pgbouncer user.
-func (m *Manager) writeConfigFile(path string, data []byte) error {
+// atomicInstall creates the parent dir if needed and atomically replaces the file
+// at path with data at mode, owned by the pgbouncer user. It backs both managed
+// files (pgbouncer.ini and userlist.txt), which share the same install contract:
+// temp + rename so a reader never sees a partial file, 0640 owned by the pgbouncer
+// user so the (non-root) pooler process can read it without world access.
+func atomicInstall(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, confDirMode); err != nil {
 		return core.InternalError("pgbouncer: create config dir %q", dir).Wrap(err)
@@ -152,7 +221,7 @@ func (m *Manager) writeConfigFile(path string, data []byte) error {
 
 	tmp, err := os.CreateTemp(dir, ".indiepg-pgbouncer-*.tmp")
 	if err != nil {
-		return core.InternalError("pgbouncer: create temp config in %q", dir).Wrap(err)
+		return core.InternalError("pgbouncer: create temp file in %q", dir).Wrap(err)
 	}
 	tmpName := tmp.Name()
 	// Best-effort cleanup if we bail before the rename (no-op once renamed).
@@ -160,23 +229,23 @@ func (m *Manager) writeConfigFile(path string, data []byte) error {
 
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return core.InternalError("pgbouncer: write temp config").Wrap(err)
+		return core.InternalError("pgbouncer: write temp file").Wrap(err)
 	}
 	if err := tmp.Close(); err != nil {
-		return core.InternalError("pgbouncer: close temp config").Wrap(err)
+		return core.InternalError("pgbouncer: close temp file").Wrap(err)
 	}
 
 	// Set the mode explicitly: CreateTemp makes the file 0600, but the pgbouncer
-	// process reads via its group, so the managed config is 0640.
-	if err := os.Chmod(tmpName, confFileMode); err != nil {
-		return core.InternalError("pgbouncer: chmod temp config").Wrap(err)
+	// process reads via its group, so the managed files are 0640.
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return core.InternalError("pgbouncer: chmod temp file").Wrap(err)
 	}
 	if err := chownToBouncerUser(tmpName); err != nil {
 		return err
 	}
 
 	if err := os.Rename(tmpName, path); err != nil {
-		return core.InternalError("pgbouncer: install config %q", path).Wrap(err)
+		return core.InternalError("pgbouncer: install file %q", path).Wrap(err)
 	}
 	return nil
 }
