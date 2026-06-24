@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +62,48 @@ func TestOpenTightensExistingStateFile(t *testing.T) {
 	fi, err := os.Stat(path)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), fi.Mode().Perm(), "existing state file must be tightened to 0600")
+}
+
+func TestConnectionPragmasApplyToEveryConnection(t *testing.T) {
+	// The connection pragmas (busy_timeout, foreign_keys, ...) must be set on
+	// EVERY connection the pool opens, not just the first. database/sql may
+	// discard the underlying connection (e.g. after a driver error) and open a
+	// fresh one; if the pragmas were applied only once on the pooled *sql.DB,
+	// that fresh connection would silently revert busy_timeout to 0 — turning a
+	// transient lock into an immediate "database is locked" error. Encoding them
+	// in the DSN makes the driver re-apply them on each open. Forcing
+	// MaxIdleConns(0) makes the pool open a brand-new connection per query, so
+	// reading the pragma back here proves a fresh connection carries it.
+	path := filepath.Join(t.TempDir(), "indiepg.db")
+	s, err := Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	// Drop any retained idle connection so the next query opens a fresh one.
+	s.DB().SetMaxIdleConns(0)
+
+	ctx := context.Background()
+	var busyTimeout int
+	require.NoError(t, s.DB().QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout))
+	require.Equal(t, 5000, busyTimeout, "busy_timeout must be set on every fresh connection (never get stuck)")
+
+	var foreignKeys int
+	require.NoError(t, s.DB().QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys))
+	require.Equal(t, 1, foreignKeys, "foreign_keys must be ON on every fresh connection")
+
+	var journalMode string
+	require.NoError(t, s.DB().QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journalMode))
+	require.Equal(t, "wal", journalMode)
+}
+
+func TestBuildDSNEncodesPragmas(t *testing.T) {
+	dsn := buildDSN("/var/lib/indiepg/state.db")
+	require.True(t, strings.HasPrefix(dsn, "/var/lib/indiepg/state.db?"), "path must be preserved before the query")
+	for _, want := range connectionPragmas {
+		require.Contains(t, dsn, "_pragma="+url.QueryEscape(want))
+	}
+	// An empty DSN has no '?' to anchor query params, so it is left unchanged.
+	require.Equal(t, "", buildDSN(""))
 }
 
 func TestMigrateIsIdempotent(t *testing.T) {

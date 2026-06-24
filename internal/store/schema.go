@@ -7,7 +7,8 @@ package store
 // This mirrors the "Local data model" in the design doc (§8): instance, config,
 // auth, audit_log, backup_history, restore_tests, alerts, telemetry_buffer.
 var schemaStatements = []string{
-	// PRAGMAs are set on the connection in Open; kept out of the schema list.
+	// PRAGMAs are applied per-connection via the DSN in Open (see buildDSN); kept
+	// out of the schema list.
 
 	// instance — the panel's stable identity (one row).
 	`CREATE TABLE IF NOT EXISTS instance (
@@ -129,10 +130,15 @@ var schemaStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_migrations_created ON migrations (created_at)`,
 }
 
-// connectionPragmas are PRAGMA statements applied to the connection on Open.
+// connectionPragmas are encoded into the DSN by buildDSN so the driver applies
+// them to EVERY connection it opens, not just the first. Each value is run as
+// "PRAGMA <value>" by the modernc.org/sqlite driver on connection open.
+// journal_mode is persistent (file-header), but the rest (busy_timeout,
+// foreign_keys, synchronous) are per-connection and would silently revert on a
+// reopened connection if applied only once on the pooled *sql.DB.
 var connectionPragmas = []string{
-	`PRAGMA journal_mode = WAL`,
-	`PRAGMA busy_timeout = 5000`,
-	`PRAGMA foreign_keys = ON`,
-	`PRAGMA synchronous = NORMAL`,
+	"journal_mode(WAL)",
+	"busy_timeout(5000)",
+	"foreign_keys(on)",
+	"synchronous(NORMAL)",
 }

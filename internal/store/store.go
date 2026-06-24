@@ -10,6 +10,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -39,7 +40,9 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 
-	db, err := sql.Open("sqlite", path)
+	// Pragmas are encoded into the DSN (not run once on the pool) so the driver
+	// re-applies them to every connection it opens — see buildDSN.
+	db, err := sql.Open("sqlite", buildDSN(path))
 	if err != nil {
 		return nil, core.InternalError("open sqlite at %q", path).Wrap(err)
 	}
@@ -47,10 +50,6 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 
 	s := &Store{db: db}
-	if err := s.applyPragmas(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -109,13 +108,24 @@ func (s *Store) Ping(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) applyPragmas() error {
-	for _, p := range connectionPragmas {
-		if _, err := s.db.Exec(p); err != nil {
-			return core.InternalError("apply pragma %q", p).Wrap(err)
-		}
+// buildDSN appends the connection pragmas to the SQLite path as _pragma query
+// parameters. The modernc.org/sqlite driver runs each as a "PRAGMA ..."
+// statement when it opens a connection, so they apply to EVERY connection the
+// pool opens — not just the first, as a one-time db.Exec on the pooled *sql.DB
+// would. That matters because database/sql can discard the underlying
+// connection (e.g. after a driver error) and open a fresh one; without this a
+// fresh connection would silently revert busy_timeout to 0 and foreign_keys to
+// off. The empty DSN is returned unchanged (the driver only parses query
+// params when '?' is not the first character, and there is no file to tune).
+func buildDSN(path string) string {
+	if path == "" {
+		return path
 	}
-	return nil
+	q := url.Values{}
+	for _, p := range connectionPragmas {
+		q.Add("_pragma", p)
+	}
+	return path + "?" + q.Encode()
 }
 
 // migrate applies the schema statements idempotently inside a transaction.

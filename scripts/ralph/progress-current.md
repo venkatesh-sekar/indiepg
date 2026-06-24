@@ -5,6 +5,32 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2 (stability) · SQLite connection pragmas now apply to EVERY connection
+North-star audit (store/config/notifier — areas prior audits skipped) found a MEDIUM "never
+get stuck" defect: the four connection pragmas (`busy_timeout=5000`, `foreign_keys=on`,
+`synchronous=NORMAL`, `journal_mode=WAL`) were applied ONCE via `db.Exec` on the pooled
+`*sql.DB` (`store.go applyPragmas`). With `SetMaxOpenConns(1)` the single connection normally
+persists, but `database/sql` can discard and reopen it (driver error, idle eviction) — and a
+fresh connection then silently reverts the PER-CONNECTION pragmas. The load-bearing one is
+`busy_timeout`: reverting to 0 turns a transient lock into an immediate "database is locked"
+surfaced to the operator instead of the intended 5s wait. (`foreign_keys` is currently inert —
+the schema declares no FKs — but encoding it costs nothing and is correct for future columns;
+`journal_mode=WAL` is file-header-persistent so it survived regardless.)
+FIX: encode the pragmas into the DSN as `_pragma=...` query params (`buildDSN`), which the
+modernc.org/sqlite v1.52.0 driver re-runs as `PRAGMA ...` on every connection open (verified:
+`applyQueryParams` is called inside the per-connection open path in the driver's `conn.go`).
+Removed `applyPragmas`; `sql.Open` is lazy so a bad-pragma error now surfaces at first use,
+with the `db.Close` on the `migrate()` error path unchanged. Empty-path guard returns the DSN
+unchanged (driver only parses query params when `?` is not the first char, and there's no file
+to tune). Tests (test-first, non-vacuous — proven RED with `buildDSN` neutered to return the
+bare path: busy_timeout read back as 0): `TestConnectionPragmasApplyToEveryConnection` forces
+`SetMaxIdleConns(0)` so each query opens a brand-new connection, then asserts busy_timeout=5000
++ foreign_keys=1 + journal_mode=wal on that fresh conn; `TestBuildDSNEncodesPragmas` pins the
+path-preserved + each pragma encoded + empty-path passthrough. Reviewed
+(feature-dev:code-reviewer): no high-confidence findings — DSN parsing, `:memory:`/space-path
+safety, non-regression on WAL, secret-handling unchanged (no secret ever in the DSN), and
+test non-vacuousness all confirmed sound. Go gates green (gofmt/vet/test/build); web untouched.
+
 ## 2026-06-24 · band 3 (usability) · operator can now DISABLE the pooler from the UI
 The opt-in PgBouncer pooler had no off switch: `internal/pgbouncer/enable.go` had only
 `Enable`/`IsEnabled` and the handlers only status+enable, so an operator who turned it on
