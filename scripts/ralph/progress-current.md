@@ -5,6 +5,30 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2 (stability) · one rule's persist failure no longer drops sibling alert events
+Audit-surfaced gap (state.json notes, iter 44): `alert/engine.go` `Evaluate`
+appended each rule's event AFTER its store write and did `return nil, err` on a
+persist failure — so a single rule's failed write discarded every firing/recovery
+already computed for OTHER rules that cycle, and `runTelemetryCycle` then returned
+early without dispatching anything. Under store pressure a real critical page
+(e.g. `disk-almost-full`) could be silently lost because an unrelated rule could
+not be saved — defeating the alert subsystem at the worst moment.
+
+Fix: `Evaluate` now appends each event BEFORE the best-effort persist; a persist
+failure logs the per-rule error, accumulates it, and presses on rather than
+aborting, returning all computed events + `errors.Join(persistErrs...)`. The
+caller treats that error as non-fatal and dispatches the events anyway (only a
+sampling error still aborts the cycle). Unpersisted state self-heals next tick (at
+worst a sustained breach re-notifies — strictly safer than a dropped alert).
+Added a narrow `alertStore` interface (ListAlerts/UpsertAlert; `*store.Store`
+satisfies it, no caller change) so a persist failure can be injected in tests.
+
+Test-first: `TestEvaluateOneRulePersistFailureKeepsSiblingEvents` — the failing
+rule sorts FIRST so it's processed before the good one, proving the loop doesn't
+abort on the first error. Proven RED against the old code (sibling event dropped
+to `""`), GREEN after. Reviewed (feature-dev:code-reviewer): no blocking issues.
+Go gate green incl. `-race` on alert + server.
+
 ## 2026-06-24 · band 1.5 (data durability) · backup-failed alert can no longer go silent when the failure-row insert also fails
 Audit-surfaced gap (state.json notes, iter 44): the immediate critical
 `backup-failed` alert is derived by the telemetry collector SOLELY from the

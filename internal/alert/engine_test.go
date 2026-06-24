@@ -2,6 +2,7 @@ package alert
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -514,4 +515,82 @@ func TestEngineStatePersistsAcrossEngines(t *testing.T) {
 	events, err = eng2.Evaluate(context.Background(), snapCPU(96), base.Add(5*time.Minute))
 	require.NoError(t, err)
 	require.Empty(t, events, "cooldown should carry over across a restart")
+}
+
+// failingUpsertStore wraps an in-memory rule list and fails UpsertAlert for one
+// chosen rule ID, so a test can prove a single rule's persist failure does not
+// take down the rest of the cycle. Records are returned in the same name order
+// the real store guarantees (ORDER BY name).
+type failingUpsertStore struct {
+	records      []store.AlertRecord
+	failUpsertID string
+	upserted     map[string]store.AlertRecord // successful writes, by ID
+}
+
+func (f *failingUpsertStore) ListAlerts(context.Context) ([]store.AlertRecord, error) {
+	return f.records, nil
+}
+
+func (f *failingUpsertStore) UpsertAlert(_ context.Context, a store.AlertRecord) error {
+	if a.ID == f.failUpsertID {
+		return errors.New("simulated store write failure")
+	}
+	if f.upserted == nil {
+		f.upserted = map[string]store.AlertRecord{}
+	}
+	f.upserted[a.ID] = a
+	return nil
+}
+
+// TestEvaluateOneRulePersistFailureKeepsSiblingEvents proves that when one rule's
+// state cannot be written back (a transient store error mid-cycle), the engine
+// still returns and persists every OTHER rule's firing — and still surfaces the
+// failing rule's own event. Before the fix, a single persist error did
+// `return nil, err`, discarding every already-computed event for that cycle, so a
+// critical page (e.g. disk-almost-full) could be silently dropped because an
+// unrelated rule could not be saved.
+func TestEvaluateOneRulePersistFailureKeepsSiblingEvents(t *testing.T) {
+	// The failing rule sorts FIRST by name, so it is processed before the good
+	// one — proving the loop does not abort on the first persist failure.
+	failRule := Rule{
+		ID: "aaa-fail", Name: "AAA failing rule",
+		Metric: MetricCPUPercent, Op: OpGT, Threshold: 80,
+		Severity: SeverityWarning, Enabled: true,
+	}
+	goodRule := Rule{
+		ID: "zzz-good", Name: "ZZZ good rule",
+		Metric: MetricDiskPercent, Op: OpGT, Threshold: 80,
+		Severity: SeverityCritical, Enabled: true,
+	}
+	failRec, err := failRule.ToRecord()
+	require.NoError(t, err)
+	goodRec, err := goodRule.ToRecord()
+	require.NoError(t, err)
+
+	st := &failingUpsertStore{
+		records:      []store.AlertRecord{failRec, goodRec}, // name order
+		failUpsertID: "aaa-fail",
+	}
+	eng := NewEngine(st, nil)
+
+	// Both rules breach and fire immediately (no For window).
+	snap := telemetry.Snapshot{CPUPercent: 95, DiskUsedBytes: 95, DiskTotalBytes: 100, MaxConnections: 100}
+	events, err := eng.Evaluate(context.Background(), snap, time.Now().UTC())
+
+	// The cycle reports the persist failure...
+	require.Error(t, err, "the failing rule's persist error must be surfaced, not swallowed")
+	// ...but BOTH events are still returned for dispatch (append-before-persist):
+	// the sibling's event must never be lost to the other rule's bad write.
+	ids := map[string]State{}
+	for _, ev := range events {
+		ids[ev.Rule.ID] = ev.State
+	}
+	require.Equal(t, StateFiring, ids["zzz-good"], "sibling rule's firing must survive the other rule's persist failure")
+	require.Equal(t, StateFiring, ids["aaa-fail"], "the failing rule's own event must still be dispatched")
+	require.Len(t, events, 2)
+
+	// The sibling's state was actually persisted (the loop continued past the
+	// failure), while the failing rule was not written.
+	require.Contains(t, st.upserted, "zzz-good", "the sibling rule's state must be persisted")
+	require.NotContains(t, st.upserted, "aaa-fail", "the failing rule's write did not succeed")
 }

@@ -2,6 +2,7 @@ package alert
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,6 +11,15 @@ import (
 	"github.com/venkatesh-sekar/indiepg/internal/store"
 	"github.com/venkatesh-sekar/indiepg/internal/telemetry"
 )
+
+// alertStore is the narrow slice of the store the engine needs: list the
+// persisted rules and write back a rule's evaluated state. *store.Store
+// satisfies it; a test can substitute a fake that fails a specific upsert to
+// prove one rule's persist failure never drops a sibling rule's event.
+type alertStore interface {
+	ListAlerts(ctx context.Context) ([]store.AlertRecord, error)
+	UpsertAlert(ctx context.Context, a store.AlertRecord) error
+}
 
 // State is the persisted evaluation state of a rule.
 type State string
@@ -43,7 +53,7 @@ type Event struct {
 // implement the For window; this is rebuilt naturally as snapshots arrive and a
 // cold start simply treats an ongoing breach as starting now.
 type Engine struct {
-	st  *store.Store
+	st  alertStore
 	log *core.Logger
 
 	mu          sync.Mutex
@@ -51,7 +61,7 @@ type Engine struct {
 }
 
 // NewEngine constructs an Engine over the store.
-func NewEngine(st *store.Store, log *core.Logger) *Engine {
+func NewEngine(st alertStore, log *core.Logger) *Engine {
 	if log == nil {
 		log = core.Discard()
 	}
@@ -82,6 +92,7 @@ func (e *Engine) Evaluate(ctx context.Context, snap telemetry.Snapshot, now time
 	defer e.mu.Unlock()
 
 	var events []Event
+	var persistErrs []error
 	for _, rec := range records {
 		if !rec.Enabled {
 			// Clear any lingering breach timer for a disabled rule.
@@ -102,16 +113,26 @@ func (e *Engine) Evaluate(ctx context.Context, snap telemetry.Snapshot, now time
 		}
 
 		ev, changed := e.evaluateRule(rec, rule, value, now)
-		if changed != nil {
-			if err := e.persist(ctx, rec, changed); err != nil {
-				return nil, err
-			}
-		}
+		// Collect the event BEFORE attempting the (best-effort) persist: a single
+		// rule's store-write failure must never discard a firing/recovery already
+		// computed for this rule or its siblings this cycle — losing a critical
+		// page (e.g. disk-almost-full) because an unrelated rule could not be
+		// written would defeat the whole alert subsystem.
 		if ev != nil {
 			events = append(events, *ev)
 		}
+		if changed != nil {
+			if err := e.persist(ctx, rec, changed); err != nil {
+				// Press on with the remaining rules. The unpersisted state self-heals
+				// on the next tick (at worst a sustained breach re-notifies, which is
+				// strictly safer than a silently dropped alert).
+				e.log.Error("failed to persist alert rule state; event still dispatched",
+					"id", rec.ID, "err", err.Error())
+				persistErrs = append(persistErrs, err)
+			}
+		}
 	}
-	return events, nil
+	return events, errors.Join(persistErrs...)
 }
 
 // stateUpdate captures the columns to write back for a rule after an eval cycle.

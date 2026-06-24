@@ -214,8 +214,11 @@ func (s *Server) seedDefaultAlertRules(ctx context.Context) error {
 // runTelemetryCycle is the scheduled unit of work: take one telemetry sample
 // (which also folds in backup health from the store), evaluate every persisted
 // rule against it, and dispatch the resulting firing/recovery events to the
-// configured notification channels. A sampling or evaluation error aborts this
-// cycle and is returned so the scheduler logs it; the next tick retries.
+// configured notification channels. A sampling error aborts this cycle and is
+// returned so the scheduler logs it; the next tick retries. An evaluation error
+// is a non-fatal per-rule persistence failure — the events that were computed
+// are still dispatched (a real firing must never be lost to one rule's bad store
+// write), and the next tick re-persists the unsaved state.
 func (s *Server) runTelemetryCycle(ctx context.Context) error {
 	snap, err := s.collector.SampleOnce(ctx)
 	if err != nil {
@@ -224,7 +227,11 @@ func (s *Server) runTelemetryCycle(ctx context.Context) error {
 
 	events, err := s.engine.Evaluate(ctx, snap, time.Now())
 	if err != nil {
-		return err
+		// Evaluate's error is now a non-fatal, per-rule persistence failure: the
+		// events it could compute are still returned and MUST be dispatched, or a
+		// real firing would be lost to an unrelated rule's store-write error. The
+		// rule detail is already logged inside Evaluate; note it and press on.
+		s.log.Warn("alert evaluation had a persistence error; dispatching computed events anyway", "err", err)
 	}
 	if len(events) == 0 {
 		return nil
