@@ -5,6 +5,31 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2.5 (config safety) · IsRunning judges PG liveness by a real probe, not the lying systemd wrapper
+Closed the last open band-2.5 follow-up (the audit-found LOW item). `Manager.IsRunning`
+(internal/pg/manager.go) trusted `systemctl is-active postgresql`, but on the
+apt-provisioned Debian/Ubuntu platform that unit is a oneshot wrapper that reports
+"active" even when the real `postgresql@<ver>-main.service` failed to start — so a
+down cluster could masquerade as running on the dashboard health badge (its only
+caller, handlers_dashboard.go:63).
+
+Fix: IsRunning now reuses the existing `confirmAcceptingConnections` helper — a real
+`SELECT 1` over the local socket as the postgres OS user (bounded 30s) — as the
+authoritative "is PG up?" signal, the same probe restartWithRollback uses. A probe
+failure (down or unreachable) stays a clean `(false, nil)`, preserving the
+documented "not running is a normal queryable state" contract; the caller already
+discards the error. This is the third and final code path (after restartWithRollback's
+initial + post-rollback restarts) hardened against the wrapper lie.
+
+Test-first: new is_running_test.go `TestIsRunning_ProbesPostmasterNotSystemdWrapper`
+proves a down postmaster reports not-running even when an `is-active` responder would
+say "active", asserts the SELECT 1 probe runs as the postgres user, and (reviewer-
+hardened) asserts IsRunning NEVER calls `systemctl is-active`. Proven RED→GREEN.
+Removed the obsolete table-driven `TestIsRunning` (tested the deleted is-active
+path); `TestIsRunning_NoRunner` kept for the error-code path. Reviewed
+(feature-dev:code-reviewer): the one finding — add the negative `is-active`
+assertion — applied. Go gate green incl. `-race`; no web changes.
+
 ## 2026-06-24 · band 2 (stability) · one rule's persist failure no longer drops sibling alert events
 Audit-surfaced gap (state.json notes, iter 44): `alert/engine.go` `Evaluate`
 appended each rule's event AFTER its store write and did `return nil, err` on a

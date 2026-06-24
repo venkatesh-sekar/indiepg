@@ -245,32 +245,23 @@ func (m *Manager) Provision(ctx context.Context) (core.Result, error) {
 	return result, nil
 }
 
-// IsRunning reports whether the postgresql systemd service is active. It treats
-// a non-zero "is-active" exit (i.e. inactive/failed) as a clean false rather
-// than an error, since "not running" is a normal, queryable state.
+// IsRunning reports whether Postgres is actually up and accepting connections.
+// It probes the postmaster directly with a real `SELECT 1` over the local socket
+// (confirmAcceptingConnections), NOT `systemctl is-active postgresql`: on
+// Debian/Ubuntu — exactly the platform we provision via apt — that unit is a
+// oneshot wrapper that reports "active" even when the real
+// postgresql@<ver>-main.service failed to start, so is-active can claim "running"
+// while the cluster is down. A probe failure (Postgres down or unreachable) is a
+// normal, queryable "not running" answer, returned as a clean (false, nil)
+// rather than an error.
 func (m *Manager) IsRunning(ctx context.Context) (bool, error) {
 	if m.runner == nil {
 		return false, core.InternalError("pg: IsRunning requires a Runner")
 	}
-	res, err := m.runner.Run(ctx, exec.RunSpec{
-		Name:    "systemctl",
-		Args:    []string{"is-active", serviceName},
-		Timeout: 30 * time.Second,
-	})
-	out := strings.TrimSpace(res.Stdout)
-	if out == "active" {
-		return true, nil
-	}
-	if err != nil {
-		// systemctl is-active exits non-zero for inactive/failed/unknown; those
-		// are legitimate "not running" answers, not a Runner failure. Only an
-		// empty stdout with an error means we could not determine the state.
-		if out == "" {
-			return false, nil
-		}
+	if err := m.confirmAcceptingConnections(ctx); err != nil {
 		return false, nil
 	}
-	return false, nil
+	return true, nil
 }
 
 // SystemIdentifier returns the Postgres cluster's stable 64-bit system

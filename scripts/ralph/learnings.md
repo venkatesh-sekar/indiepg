@@ -48,8 +48,9 @@ the top, prune stale entries. One line each. Newest at the bottom of each group.
   actual cluster failed to start. NEVER trust that exit code as a "PG came back up"
   signal — judge real liveness with a `SELECT 1`/`pg_isready` over the socket
   (`confirmAcceptingConnections` in safeconfig.go is the worked example; reused by
-  restartWithRollback for both the initial AND post-rollback restart). `IsRunning`
-  has the same latent flaw (backlog follow-up; only feeds a best-effort dashboard).
+  restartWithRollback for both the initial AND post-rollback restart, and by
+  `IsRunning` as of iter 47 — it now probes via confirmAcceptingConnections too,
+  no longer trusting the wrapper's is-active).
 - Integration tests that boot a throwaway cluster via the OSRunner: `pg_ctl
   start/restart` MUST get `-l <logfile>`, else the daemonized postmaster inherits
   the runner's captured stdout pipe and never closes it → `cmd.Run` blocks FOREVER

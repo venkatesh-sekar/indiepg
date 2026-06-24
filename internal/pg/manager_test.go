@@ -195,30 +195,11 @@ func TestProvision_NoRunner(t *testing.T) {
 	require.Equal(t, core.CodeInternal, core.CodeOf(err))
 }
 
-func TestIsRunning(t *testing.T) {
-	tests := []struct {
-		name   string
-		stdout string
-		resp   exec.FakeResponse
-		want   bool
-	}{
-		{"active", "active\n", exec.FakeResponse{Stdout: "active\n"}, true},
-		{"inactive", "inactive\n", exec.FakeResponse{Stdout: "inactive\n", ExitCode: 3, Err: errFake("inactive")}, false},
-		{"failed", "failed\n", exec.FakeResponse{Stdout: "failed\n", ExitCode: 3, Err: errFake("failed")}, false},
-		{"unknown empty", "", exec.FakeResponse{ExitCode: 4, Err: errFake("unknown")}, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := exec.NewFakeRunner()
-			r.On("is-active", tt.resp)
-			m := newManager(r)
-			got, err := m.IsRunning(context.Background())
-			require.NoError(t, err)
-			require.Equal(t, tt.want, got)
-		})
-	}
-}
-
+// IsRunning's running/down/no-runner contract is exercised in
+// is_running_test.go (TestIsRunning_ProbesPostmasterNotSystemdWrapper), which
+// proves it keys off a real SELECT 1 liveness probe rather than the lying
+// systemd wrapper. This case pins the specific error code for the
+// runner-misconfigured path.
 func TestIsRunning_NoRunner(t *testing.T) {
 	m := New(Options{Config: config.Default()})
 	_, err := m.IsRunning(context.Background())
