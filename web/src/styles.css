@@ -14,12 +14,10 @@
    incoherent partial-dark — dark chrome behind light shadcn surfaces). */
 
 :root {
-  /* Legacy tokens still consumed by global element rules (--bg/--text/--surface-2/
-     --mono/--sans) or by @theme inline (--border/--primary/--ok*/--warn*/--info*). */
-  --bg: #f6f7f9;
-  --surface-2: #f1f3f6;
+  /* Legacy tokens still consumed by @theme inline: --border, --primary, and the
+     --ok / --warn / --info families. The global element rules now use shadcn
+     semantic tokens, so --bg, --text, --surface-2, --mono and --sans are gone. */
   --border: oklch(0.922 0 0);
-  --text: #1c2530;
   --primary: oklch(0.205 0 0);
   --warn: #b9740a;
   --warn-soft: #fdf3e2;
@@ -28,8 +26,6 @@
   --info: #2f6fed;
   --info-soft: #e7efff;
   --radius: 0.625rem;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -73,11 +69,11 @@ body,
 }
 
 body {
-  font-family: var(--sans);
+  /* color/background/font-family now come from @layer base (bg-background /
+     text-foreground) + the html font-sans rule (Geist). Only non-token base
+     typography lives here. */
   font-size: 14px;
   line-height: 1.5;
-  color: var(--text);
-  background: var(--bg);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -91,13 +87,12 @@ h4 {
 }
 
 a {
-  color: var(--primary);
+  @apply text-primary;
 }
 
 code {
-  font-family: var(--mono);
+  @apply bg-muted font-mono;
   font-size: 0.9em;
-  background: var(--surface-2);
   padding: 0.1em 0.35em;
   border-radius: 4px;
 }

@@ -5,6 +5,32 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band E · global body/code/a element rules → semantic tokens
+Migrated the last legacy-var-consuming CSS — the global `body`/`code`/`a` element
+rules — onto shadcn semantic tokens, then deleted the now-freed legacy vars
+(`--bg`, `--surface-2`, `--text`, `--mono`, `--sans`). `body`: dropped
+`font-family: var(--sans)` + `color: var(--text)` + `background: var(--bg)` so the
+existing `@layer base body { @apply bg-background text-foreground }` and the `html`
+`font-sans` (Geist) rule take over (kept the non-token `font-size: 14px` /
+`line-height` / `-webkit-font-smoothing`). `a`: `color: var(--primary)` → `@apply
+text-primary`. `code`: `font-family: var(--mono)` + `background: var(--surface-2)` →
+`@apply bg-muted font-mono` (kept the literal `font-size`/`padding`/`border-radius`).
+**Cascade note:** the *unlayered* `body` rule was overriding the layered
+`bg-background`/`text-foreground` and the `html` `font-sans`, so removing the token
+props is what lets the shadcn baseline finally apply. **Deliberate visible change:**
+page bg gray (`#f6f7f9`) → white (`--background`), and app font system-ui → Geist
+Variable — both are the shadcn baseline the scaffold already imported + set on `html`
+but which the legacy `body` rule had been shadowing all along; white bg + bordered
+shadcn cards + Geist is the coherent shadcn-default look. code/text-color deltas are
+negligible (muted ≈ old surface-2, foreground ≈ old text). Grep-proven the 5 vars had
+zero refs outside the 5 edited lines before deleting. Also reworded the `:root` comment
+to drop the `*` glob chars that tripped a (harmless) lightningcss optimize warning.
+Pure semantic-token swap, no view markup/state/affordance change → ui-heuristics-reviewer
+N/A (same precedent as the dark-mode/next-themes prunes); self-checked against UI-RULES
+"semantic tokens only" ✓. 130 web tests green; typecheck/build/go build (sandbox-off)
+green. Tracked diff = `styles.css` + regenerated embedded `dist`. **This was the last
+remaining legacy-var consumer** → NEXT: band-E consistency sweep, then COMPLETE.md.
+
 ## 2026-06-24 · band E · remove non-functional dark-mode CSS → light-only
 Converged the panel to a single coherent **light-only** theme. Removed two blocks
 from `styles.css`: (1) the legacy `@media (prefers-color-scheme: dark)` overrides,
