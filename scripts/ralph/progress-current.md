@@ -5,6 +5,29 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band E · shared `EmptyState` → shadcn `Empty`
+Second band-E cleanup slice. `ui.tsx` `EmptyState({title,hint,children})` was the
+last shared component rendering hand-rolled `.empty`/`.empty-title`/`.empty-hint`
+markup, keeping that CSS block alive.
+- Recomposed over shadcn `Empty`/`EmptyHeader`/`EmptyTitle`/`EmptyDescription`/
+  `EmptyContent` — public API unchanged, so all 6 call-sites (RolesDatabases ×2,
+  Alerts, Backups ×2, Pooler, Migrate) stay untouched. They all pass only
+  `title`+`hint`; `children` is mapped to `EmptyContent` for API parity.
+- Deleted the dead `.empty`/`.empty-title`/`.empty-hint` CSS from `styles.css`.
+- ui-heuristics-reviewer raised 4 findings; all declined as non-regressions:
+  (1) "EmptyTitle should be `<h3>` + role=status" — the OLD markup was a `<p>`,
+  *not* a heading, so a heading would BREAK parity (inverse of the Card case
+  where the old `.card-head` was already an `<h3>`); shadcn's `<div>` preserves
+  the non-heading semantics. (2) "double border inside Card" — shadcn `Empty` has
+  `border-dashed` but no `border` *width* utility; Tailwind preflight sets
+  `border:0 solid`, so width stays 0 → no visible border (verified in built CSS),
+  same as the old `.empty`. (3) `EmptyDescription` typed `<p>` renders `<div>` —
+  pre-existing stock-shadcn quirk, all call-sites pass string hints. (4) no change
+  needed.
+- No test churn: `RolesDatabases.test` asserts empty states by title text
+  (`findByText("No databases yet")`), which `EmptyTitle`'s text still satisfies.
+- 125 web tests green; typecheck/build/go build green.
+
 ## 2026-06-24 · band E · shared `Card` wrapper → shadcn `Card`
 First band-E cleanup slice. The `ui.tsx` `Card({title,actions,children,className})`
 wrapper was the last shared component still rendering hand-rolled `.card`/

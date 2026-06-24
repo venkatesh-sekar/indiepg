@@ -17,6 +17,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
 
 // --- Badges ----------------------------------------------------------------
 
@@ -152,11 +159,13 @@ export function EmptyState({
   children?: ReactNode;
 }) {
   return (
-    <div className="empty">
-      <p className="empty-title">{title}</p>
-      {hint ? <p className="empty-hint">{hint}</p> : null}
-      {children}
-    </div>
+    <Empty>
+      <EmptyHeader>
+        <EmptyTitle>{title}</EmptyTitle>
+        {hint ? <EmptyDescription>{hint}</EmptyDescription> : null}
+      </EmptyHeader>
+      {children ? <EmptyContent>{children}</EmptyContent> : null}
+    </Empty>
   );
 }
 

@@ -468,22 +468,6 @@ fieldset.field legend {
 
 /* --- States -------------------------------------------------------------- */
 
-.empty {
-  text-align: center;
-  padding: 36px 16px;
-  color: var(--text-muted);
-}
-
-.empty-title {
-  font-weight: 600;
-  color: var(--text);
-  margin: 0 0 4px;
-}
-
-.empty-hint {
-  margin: 0;
-}
-
 .boot-screen {
   height: 100vh;
   display: grid;
