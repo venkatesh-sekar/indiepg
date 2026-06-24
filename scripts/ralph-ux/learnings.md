@@ -8,6 +8,24 @@ loop doesn't re-propose them. Newest at top.
 These surfaced in the Mode-S audit (iter 1) but were dropped before reaching the
 backlog — they violate the loop's anti-over-design / one-view-per-iteration rules.
 
+- **Query: clear the results panel when the SQL changes (sample-button click or editor edit).**
+  Rejected iter 23 on a **false premise about the expected behavior**, self-rejected with code evidence
+  (no panel). An audit agent noticed that clicking a "Try:" sample (`Query.tsx:88` `setSql(sample.sql)`)
+  or editing the textarea (`:99` `onChange`) changes `sql` but leaves the prior `result` (`:38`) visible —
+  "the editor shows query B while query A's results are still shown below" — and proposed
+  `useEffect(() => { setResult(null); setError(null); }, [sql])`. **This is backwards.** That effect fires on
+  **every keystroke**, so it would wipe your result table the instant you edit a query to refine it (add a
+  `WHERE`, fix a typo, append a `LIMIT`) — actively hostile to the most common Query workflow (run → read →
+  refine → run again). The "stale result" is the **universally-expected SQL-console convention**: psql,
+  pgAdmin, DataGrip, Jupyter, and browser devtools all keep the last-executed result visible while you compose
+  the next statement; the result panel means "last run," not "current editor text," and it carries its own
+  row-count + duration metadata so a user never mistakes un-run editor text for a fresh result. **Lesson:**
+  before "fixing" stale UI state, ask whether the staleness is the *expected* convention for that control —
+  a results/output panel that persists across edits is a feature, not a bug, and clearing it on input change
+  breaks the edit-and-rerun loop. This is the iter-22 "which direction is dangerous?" rule applied to state
+  freshness: clearing-on-change is right only when the stale value could be *acted on as if current*; a
+  read-only results table that the user must explicitly Run to refresh isn't that case.
+
 - **Migrate: make the overwrite typed-confirm `Modal` non-dismissible (`dismissible={false}`).**
   Rejected iter 22 on a **false premise**, self-rejected with decisive code evidence (no panel).
   A nav/IA audit agent argued that letting Escape/click-outside dismiss the typed-confirm dialog

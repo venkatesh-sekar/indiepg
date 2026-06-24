@@ -3,6 +3,35 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 23 — Mode S (convergence check) — stable_streak 1 → 2
+Backlog still actionable-empty after iter 22 (only the NEEDS-BACKEND backup-badge item + low/watch nits:
+Query write-detector, Login lockout-duration copy, Settings grouping). Per the contract, ran a fresh **Mode-S
+discovery/convergence pass** rather than chew the low-value items: a 5-agent parallel panel, each given its
+view(s) + the full already-shipped/already-rejected digest + a deliberately HIGH bar. Coverage identical to
+iters 15–22: (1) Dashboard + Query, (2) Roles & Databases + Backups + BackupStorageForm, (3) Alerts + Migrate,
+(4) Settings + DatabaseTuning + Pooler + Login, (5) nav/IA + first-run + cross-view consistency.
+**All five views converged.** Three candidates surfaced and **all three collapsed on code-level inspection**,
+self-rejected with decisive evidence and no panel (iter-5/13/14 precedent):
+- **Query — clear the results panel when the SQL changes** (Dashboard/Query agent). **FALSE PREMISE about the
+  expected behavior.** Clicking a "Try:" sample (`Query.tsx:88` `setSql`) or editing the textarea (`:99`)
+  changes `sql` but leaves the prior `result` (`:38`) visible. The proposed `useEffect(() => { setResult(null);
+  setError(null); }, [sql])` fires on **every keystroke** and would wipe the result table the instant you edit a
+  query to refine it (add a WHERE, fix a typo) — hostile to the run→read→refine→run loop. The persisted result
+  is the **universal SQL-console convention** (psql, pgAdmin, DataGrip, Jupyter, devtools all keep last-run
+  output while you compose the next query); the panel means "last run," not "current editor text," and carries
+  its own row-count/duration. The agent itself ended on CONVERGED.
+- **Backups — "Back up now" destination awareness** (Roles/Backups agent). Agent self-rated **low payoff** —
+  the destination badge is already in the header and the run is confirmed; not promoted.
+- **Backups — "redundant" empty-state messaging** (nav/IA agent). On inspection it's **intentional two-layer
+  design** (danger Callout = status warning; EmptyState = next step) — not duplication. Agent ended on CONVERGED.
+No code shipped, docs-only commit, no hard gates needed. Per the contract (backlog actionable-empty AND a fresh
+discovery pass surfaced no high/med item) this is the **second `stable_streak` increment → 2/3**. One more clean
+pass → write COMPLETE.md and stop the loop. **LESSON:** before "fixing" stale UI state, ask whether the
+staleness is the *expected convention* for that control — a read-only results/output panel that persists across
+edits is a feature (the edit-and-rerun loop depends on it), not a bug; clearing it on input change is right only
+when the stale value could be acted on as if current. Next iteration: run the final Mode-S convergence check
+(don't manufacture low-value work to avoid converging — converging early is a win).
+
 ## 2026-06-25 — iter 22 — Mode S (convergence check) — stable_streak 0 → 1
 Backlog was actionable-empty after iter 21 (only the NEEDS-BACKEND backup-badge item + two low/watch nits —
 Query write-detector, Login lockout-duration copy). Per the contract, ran a fresh **Mode-S discovery /

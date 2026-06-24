@@ -10,24 +10,27 @@ Format per item:
 
 ## Open
 
-> **Status (iter 22):** ran a fresh 5-agent Mode-S discovery/convergence pass (same coverage as iters 15–21).
-> **All five views converged** ("no new high/med item"). Two candidates surfaced and BOTH collapsed on
-> code-level inspection (self-rejected, no panel — iter-5/13/14 precedent: don't run a panel to rubber-stamp a
-> provably-zero-payoff or false-premise change):
-> - **Migrate overwrite confirm — add `dismissible={false}`** (nav/IA agent). **FALSE PREMISE.** The agent
->   claimed an Escape/click-outside could "proceed without typing the confirmation." Verified in `Migrate.tsx`
->   (lines 336–361): the destructive action fires ONLY via the "Overwrite & migrate" button
->   (`onClick={start}`, `disabled={busy || !overwriteMatches}` — you must type the target name); dismissing
->   calls `setConfirmOpen(false)` and executes nothing. Dismissing is the SAFE escape — the mirror opposite of
->   iter-20's SecretsModal (where dismiss = irreversible credential loss). Non-dismissible here would trap a
->   user inside a destructive dialog. Negative payoff. See learnings.md.
-> - **BackupStorageForm — "clear saved credential" affordance** (Roles/Backups agent). Speculative +
->   backend-dependent: the agent couldn't confirm the API accepts an empty/clear signal; *changing* a credential
->   already works (type a new key). Out of scope for this frontend-only loop. Not promoted.
+> **Status (iter 23):** ran a fresh 5-agent Mode-S discovery/convergence pass (same coverage as iters 15–22).
+> **All five views converged** ("no new high/med item"). Three candidates surfaced and ALL collapsed on
+> code-level inspection (self-rejected, no panel — iter-5/13/14 precedent):
+> - **Query — clear the results panel when the SQL changes** (Dashboard/Query agent). **FALSE PREMISE about
+>   expected behavior.** Clicking a "Try:" sample (`Query.tsx:88`) or editing the textarea (`:99`) changes
+>   `sql` but leaves the prior `result` (`:38`) visible. The proposed `useEffect(…, [sql])` fires on every
+>   keystroke and would wipe the result table the moment you edit a query to refine it — hostile to the
+>   run→read→refine→run loop. The persisted result is the universal SQL-console convention (psql, pgAdmin,
+>   DataGrip, Jupyter, devtools all keep the last-run output while you type the next query); the panel means
+>   "last run," not "current editor text," and carries its own row-count/duration. The agent itself ended on
+>   CONVERGED. See learnings.md.
+> - **Backups — "Back up now" destination awareness** (Roles/Backups agent). Agent self-rated **low payoff**:
+>   the destination badge is already in the page header and the run is confirmed; surfacing the destination on
+>   the button too is incremental polish, not structural. Not promoted.
+> - **Backups — "redundant" empty-state messaging** (nav/IA agent). On inspection it's **intentional two-layer
+>   design**: the danger-tone Callout is the *status warning* ("your data is not protected"), the EmptyState is
+>   the *next step* ("run your first backup"). Different purposes, not duplication. Agent ended on CONVERGED.
 >
-> Backlog actionable-empty AND a fresh discovery pass surfaced no high/med item → **first `stable_streak`
-> increment, 0 → 1/3**. Two more clean convergence passes → write COMPLETE.md and stop. Next iteration: run a
-> fresh Mode-S convergence check (don't manufacture low-value work to avoid converging — converging early is a
+> Backlog actionable-empty AND a fresh discovery pass surfaced no high/med item → **second `stable_streak`
+> increment, 1 → 2/3**. One more clean convergence pass → write COMPLETE.md and stop. Next iteration: run a
+> final Mode-S convergence check (don't manufacture low-value work to avoid converging — converging early is a
 > win).
 
 ### Quick wins (high/med payoff, S effort) — do these first
