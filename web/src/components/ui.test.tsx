@@ -1,7 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
-import { ResultBadge, ErrorNotice, StaleBanner, Spinner, SecretValue } from "./ui";
+import {
+  ResultBadge,
+  ErrorNotice,
+  StaleBanner,
+  Spinner,
+  SecretValue,
+  PageHeader,
+} from "./ui";
 import { ApiError } from "@/api/client";
 
 describe("ResultBadge", () => {
@@ -134,5 +141,33 @@ describe("SecretValue", () => {
       expect(btn).toHaveAttribute("data-slot", "button");
       expect(btn).toHaveAttribute("data-variant", "outline");
     }
+  });
+});
+
+describe("PageHeader", () => {
+  it("renders the title as a level-1 heading", () => {
+    render(<PageHeader title="Backups" />);
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Backups" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the description and actions when provided", () => {
+    render(
+      <PageHeader
+        title="Roles"
+        description="Manage database roles"
+        actions={<button>Create</button>}
+      />,
+    );
+    expect(screen.getByText("Manage database roles")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Create" }),
+    ).toBeInTheDocument();
+  });
+
+  it("omits the description and actions when not provided", () => {
+    render(<PageHeader title="Alerts" />);
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });

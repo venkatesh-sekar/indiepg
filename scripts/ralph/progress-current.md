@@ -5,6 +5,27 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band E · shared `PageHeader` divs → Tailwind tokens
+Fourth band-E cleanup slice. `ui.tsx` `PageHeader({title,description,actions})`
+(the page-title row used by all 6 views) was still rendering hand-rolled
+`.page-header`/`.page-desc`/`.page-actions` divs.
+- Outer row `.page-header` → `flex items-start justify-between gap-4`; `.page-desc`
+  → `mt-1 max-w-[60ch] text-muted-foreground`; `.page-actions` → `flex shrink-0
+  flex-wrap justify-end gap-2`. `h1` given explicit `text-2xl font-semibold
+  text-foreground` (matches the shadcn `CardTitle`/`EmptyTitle` peer convention and
+  drops the fragile reliance on the global `h1` weight rule band E will prune).
+- Public API unchanged; all 6 call-sites untouched. Deleted dead
+  `.page-header`/`.page-header h1`/`.page-desc`/`.page-actions`/`.page-header
+  .btn-row` CSS from styles.css (standalone `.btn-row` kept — separate band-E
+  concern, only referenced inside that block).
+- ui-heuristics-reviewer: one blocking finding applied (explicit `font-semibold
+  text-foreground` for robustness + peer consistency); no other issues — confirmed
+  a clean like-for-like migration.
+- Added a `PageHeader` test (heading level + description/actions render + omission).
+  130 web tests green (+3); typecheck/build/go build green.
+- Remaining legacy-class holders before E token-delete: App.tsx `.boot-screen`,
+  Settings.tsx `.callout-detail`/`.callout-hint`.
+
 ## 2026-06-24 · band E · shared `SecretValue` reveal/copy → shadcn `Button`
 Third band-E cleanup slice. `ui.tsx` `SecretValue({label,value})` (shown once
 after creating a role/database in RolesDatabases) was the last shared component
