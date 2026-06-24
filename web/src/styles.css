@@ -228,16 +228,6 @@ code {
   background: var(--danger-hover);
 }
 
-.btn-danger-ghost {
-  color: var(--danger);
-  border-color: var(--border-strong);
-}
-
-.btn-danger-ghost:hover:not(:disabled) {
-  background: var(--danger-soft);
-  border-color: var(--danger);
-}
-
 .btn-row {
   display: flex;
   gap: 8px;
@@ -360,10 +350,6 @@ code {
 .data-table.compact th,
 .data-table.compact td {
   padding: 5px 10px;
-}
-
-.row-disabled {
-  opacity: 0.55;
 }
 
 .col-actions {
@@ -546,33 +532,6 @@ fieldset.field legend {
   height: 100vh;
   display: grid;
   place-items: center;
-}
-
-/* --- Channels ------------------------------------------------------------ */
-
-.channel-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 16px;
-  margin-top: 12px;
-}
-
-.channel-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 16px;
-  background: var(--surface-2);
-}
-
-.channel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-}
-
-.channel-card p {
-  margin: 0 0 12px;
 }
 
 /* --- Responsive ---------------------------------------------------------- */

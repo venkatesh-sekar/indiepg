@@ -5,6 +5,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { ApiError, api } from "@/api/client";
 import { duration, dateTime } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
+import { cn } from "@/lib/utils";
 import { Modal } from "@/components/Modal";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { toast } from "sonner";
@@ -17,6 +18,39 @@ import {
   PageHeader,
   Spinner,
 } from "@/components/ui";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
+import { Spinner as InlineSpinner } from "@/components/ui/spinner";
+import {
+  Card as ChannelCardShell,
+  CardAction,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Field,
+  FieldDescription,
+  FieldLabel,
+} from "@/components/ui/field";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import type {
   AlertOp,
   AlertRule,
@@ -92,11 +126,7 @@ export function Alerts() {
       <PageHeader
         title="Alerts"
         description="Get notified when something needs attention — and confirm it works with a test."
-        actions={
-          <button type="button" className="btn btn-primary" onClick={() => setEditRule("new")}>
-            + Add rule
-          </button>
-        }
+        actions={<Button onClick={() => setEditRule("new")}>+ Add rule</Button>}
       />
 
       {cfg.loading ? (
@@ -107,11 +137,11 @@ export function Alerts() {
         <>
           {/* Channels */}
           <Card title="Where alerts go">
-            <p className="muted">
+            <p className="text-muted-foreground">
               Set up at least one channel so you actually hear about problems. Use{" "}
               <strong>Send test</strong> to make sure it reaches your phone before you rely on it.
             </p>
-            <div className="channel-grid">
+            <div className="mt-3 grid gap-4 sm:grid-cols-2">
               <ChannelCard
                 title="Pushover"
                 desc="Push notifications to your phone."
@@ -139,55 +169,68 @@ export function Alerts() {
                 hint="Add a rule to be notified when a metric crosses a threshold."
               />
             ) : (
-              <div className="table-scroll">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Condition</th>
-                      <th>Severity</th>
-                      <th>Sustained</th>
-                      <th>Cooldown</th>
-                      <th>State</th>
-                      <th className="col-actions">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cfg.data.rules.map((rule) => (
-                      <tr key={rule.id} className={rule.enabled ? "" : "row-disabled"}>
-                        <td>
-                          <strong>{rule.name}</strong>
-                          {rule.last_fired_at ? (
-                            <div className="muted small">last fired {dateTime(rule.last_fired_at)}</div>
-                          ) : null}
-                        </td>
-                        <td className="mono small">
-                          {METRIC_LABELS[rule.metric] ?? rule.metric} {rule.op} {rule.threshold}
-                        </td>
-                        <td><SeverityBadge severity={rule.severity} /></td>
-                        <td>{rule.for_seconds > 0 ? duration(rule.for_seconds) : "instant"}</td>
-                        <td>{duration(rule.cooldown_seconds)}</td>
-                        <td><StateBadge state={rule.state} enabled={rule.enabled} /></td>
-                        <td className="col-actions">
-                          <button type="button" className="btn btn-sm" onClick={() => toggleRule(rule)}>
-                            {rule.enabled ? "Disable" : "Enable"}
-                          </button>
-                          <button type="button" className="btn btn-sm" onClick={() => setEditRule(rule)}>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Condition</TableHead>
+                    <TableHead>Severity</TableHead>
+                    <TableHead>Sustained</TableHead>
+                    <TableHead>Cooldown</TableHead>
+                    <TableHead>State</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {cfg.data.rules.map((rule) => (
+                    <TableRow key={rule.id} className={cn(!rule.enabled && "opacity-60")}>
+                      <TableCell>
+                        <span className="font-medium">{rule.name}</span>
+                        {rule.last_fired_at ? (
+                          <div className="text-xs text-muted-foreground">
+                            last fired {dateTime(rule.last_fired_at)}
+                          </div>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="font-mono text-sm">
+                        {METRIC_LABELS[rule.metric] ?? rule.metric} {rule.op} {rule.threshold}
+                      </TableCell>
+                      <TableCell>
+                        <SeverityBadge severity={rule.severity} />
+                      </TableCell>
+                      <TableCell>
+                        {rule.for_seconds > 0 ? duration(rule.for_seconds) : "instant"}
+                      </TableCell>
+                      <TableCell>{duration(rule.cooldown_seconds)}</TableCell>
+                      <TableCell>
+                        <StateBadge state={rule.state} enabled={rule.enabled} />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <Switch
+                            checked={rule.enabled}
+                            onCheckedChange={() => toggleRule(rule)}
+                            aria-label={
+                              rule.enabled ? `Disable ${rule.name}` : `Enable ${rule.name}`
+                            }
+                          />
+                          <Button variant="outline" size="sm" onClick={() => setEditRule(rule)}>
                             Edit
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-danger-ghost"
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive"
                             onClick={() => setDeleteRule(rule)}
                           >
                             Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             )}
           </Card>
         </>
@@ -247,27 +290,35 @@ function ChannelCard({
 }) {
   const configured = Boolean(config?.enabled);
   return (
-    <div className="channel-card">
-      <div className="channel-head">
-        <h4>{title}</h4>
-        {configured ? <Badge tone="ok">Configured</Badge> : <Badge>Not set up</Badge>}
-      </div>
-      <p className="muted">{desc}</p>
-      <div className="btn-row">
-        <button type="button" className="btn btn-sm" onClick={onEdit}>
+    <ChannelCardShell>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{desc}</CardDescription>
+        <CardAction>
+          {configured ? <Badge tone="ok">Configured</Badge> : <Badge>Not set up</Badge>}
+        </CardAction>
+      </CardHeader>
+      <CardFooter className="gap-2">
+        <Button variant="outline" size="sm" onClick={onEdit}>
           {configured ? "Edit" : "Set up"}
-        </button>
-        <button
-          type="button"
-          className="btn btn-sm btn-primary"
+        </Button>
+        <Button
+          size="sm"
           onClick={onTest}
           disabled={!configured || testing}
           title={configured ? "Send a test notification" : "Set up this channel first"}
         >
-          {testing ? "Sending…" : "Send test"}
-        </button>
-      </div>
-    </div>
+          {testing ? (
+            <>
+              <InlineSpinner data-icon="inline-start" />
+              Sending…
+            </>
+          ) : (
+            "Send test"
+          )}
+        </Button>
+      </CardFooter>
+    </ChannelCardShell>
   );
 }
 
@@ -315,16 +366,23 @@ function ChannelModal({
       onClose={onClose}
       footer={
         <>
-          <button type="button" className="btn" onClick={onClose} disabled={busy}>
+          <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
             Cancel
-          </button>
-          <button type="submit" form="channel-form" className="btn btn-primary" disabled={busy}>
-            {busy ? "Saving…" : "Save channel"}
-          </button>
+          </Button>
+          <Button type="submit" form="channel-form" disabled={busy}>
+            {busy ? (
+              <>
+                <InlineSpinner data-icon="inline-start" />
+                Saving…
+              </>
+            ) : (
+              "Save channel"
+            )}
+          </Button>
         </>
       }
     >
-      <form id="channel-form" onSubmit={submit}>
+      <form id="channel-form" onSubmit={submit} className="flex flex-col gap-5">
         {error ? <ErrorNotice error={error} /> : null}
         {kind === "pushover" ? (
           <>
@@ -332,24 +390,26 @@ function ChannelModal({
               Find your <strong>user key</strong> on the Pushover dashboard and create an{" "}
               <strong>application token</strong> for indiepg.
             </Callout>
-            <label className="field">
-              <span className="field-label">Application token</span>
-              <input
+            <Field>
+              <FieldLabel htmlFor="channel-token">Application token</FieldLabel>
+              <Input
+                id="channel-token"
                 type="text"
                 value={token}
                 autoComplete="off"
                 onChange={(e) => setToken(e.target.value)}
               />
-            </label>
-            <label className="field">
-              <span className="field-label">User key</span>
-              <input
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="channel-user">User key</FieldLabel>
+              <Input
+                id="channel-user"
                 type="text"
                 value={user}
                 autoComplete="off"
                 onChange={(e) => setUser(e.target.value)}
               />
-            </label>
+            </Field>
           </>
         ) : (
           <>
@@ -357,22 +417,29 @@ function ChannelModal({
               Paste any incoming-webhook URL — Slack, Discord, n8n, or your own endpoint. We send a
               small JSON payload describing the alert.
             </Callout>
-            <label className="field">
-              <span className="field-label">Webhook URL</span>
-              <input
+            <Field>
+              <FieldLabel htmlFor="channel-url">Webhook URL</FieldLabel>
+              <Input
+                id="channel-url"
                 type="url"
                 value={url}
                 placeholder="https://hooks.example.com/…"
                 autoComplete="off"
                 onChange={(e) => setUrl(e.target.value)}
               />
-            </label>
+            </Field>
           </>
         )}
-        <label className="checkbox">
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          <span>Enabled</span>
-        </label>
+        <Field orientation="horizontal">
+          <Checkbox
+            id="channel-enabled"
+            checked={enabled}
+            onCheckedChange={(c) => setEnabled(c === true)}
+          />
+          <FieldLabel htmlFor="channel-enabled" className="font-normal">
+            Enabled
+          </FieldLabel>
+        </Field>
       </form>
     </Modal>
   );
@@ -436,72 +503,125 @@ function RuleModal({
       onClose={onClose}
       footer={
         <>
-          <button type="button" className="btn" onClick={onClose} disabled={busy}>
+          <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
             Cancel
-          </button>
-          <button type="submit" form="rule-form" className="btn btn-primary" disabled={busy}>
-            {busy ? "Saving…" : "Save rule"}
-          </button>
+          </Button>
+          <Button type="submit" form="rule-form" disabled={busy}>
+            {busy ? (
+              <>
+                <InlineSpinner data-icon="inline-start" />
+                Saving…
+              </>
+            ) : (
+              "Save rule"
+            )}
+          </Button>
         </>
       }
     >
-      <form id="rule-form" onSubmit={submit}>
+      <form id="rule-form" onSubmit={submit} className="flex flex-col gap-5">
         {error ? <ErrorNotice error={error} /> : null}
-        <label className="field">
-          <span className="field-label">Rule name</span>
-          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Disk almost full" />
-        </label>
+        <Field>
+          <FieldLabel htmlFor="rule-name">Rule name</FieldLabel>
+          <Input
+            id="rule-name"
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Disk almost full"
+          />
+        </Field>
 
-        <div className="field-row">
-          <label className="field">
-            <span className="field-label">When this metric</span>
-            <select value={metric} onChange={(e) => setMetric(e.target.value)}>
-              {METRIC_OPTIONS.map((m) => (
-                <option key={m} value={m}>
-                  {METRIC_LABELS[m]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field field-narrow">
-            <span className="field-label">is</span>
-            <select value={op} onChange={(e) => setOp(e.target.value as AlertOp)}>
-              <option value=">">above</option>
-              <option value=">=">at or above</option>
-              <option value="<">below</option>
-              <option value="<=">at or below</option>
-            </select>
-          </label>
-          <label className="field field-narrow">
-            <span className="field-label">value</span>
-            <input
+        <div className="grid gap-4 sm:grid-cols-[2fr_1fr_1fr]">
+          <Field>
+            <FieldLabel htmlFor="rule-metric" id="rule-metric-label">
+              When this metric
+            </FieldLabel>
+            <Select value={metric} onValueChange={setMetric}>
+              <SelectTrigger id="rule-metric" aria-labelledby="rule-metric-label" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {METRIC_OPTIONS.map((m) => (
+                  <SelectItem key={m} value={m}>
+                    {METRIC_LABELS[m]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="rule-op" id="rule-op-label">
+              is
+            </FieldLabel>
+            <Select value={op} onValueChange={(v) => setOp(v as AlertOp)}>
+              <SelectTrigger id="rule-op" aria-labelledby="rule-op-label" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value=">">above</SelectItem>
+                <SelectItem value=">=">at or above</SelectItem>
+                <SelectItem value="<">below</SelectItem>
+                <SelectItem value="<=">at or below</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="rule-threshold">value</FieldLabel>
+            <Input
+              id="rule-threshold"
               type="number"
               step="any"
               value={threshold}
               onChange={(e) => setThreshold(e.target.value)}
             />
-          </label>
+          </Field>
         </div>
 
-        <div className="field-row">
-          <label className="field">
-            <span className="field-label">Severity</span>
-            <select value={severity} onChange={(e) => setSeverity(e.target.value as Severity)}>
-              <option value="info">Info</option>
-              <option value="warning">Warning</option>
-              <option value="critical">Critical</option>
-            </select>
-          </label>
-          <label className="field">
-            <span className="field-label">Must hold for (minutes)</span>
-            <input type="number" min="0" value={forMin} onChange={(e) => setForMin(e.target.value)} />
-            <span className="field-help muted">Avoids alerting on brief spikes. 0 = alert immediately.</span>
-          </label>
-          <label className="field">
-            <span className="field-label">Re-notify after (minutes)</span>
-            <input type="number" min="0" value={cooldownMin} onChange={(e) => setCooldownMin(e.target.value)} />
-            <span className="field-help muted">Quiet period before repeating the same alert.</span>
-          </label>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <Field>
+            <FieldLabel htmlFor="rule-severity" id="rule-severity-label">
+              Severity
+            </FieldLabel>
+            <Select value={severity} onValueChange={(v) => setSeverity(v as Severity)}>
+              <SelectTrigger id="rule-severity" aria-labelledby="rule-severity-label" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="info">Info</SelectItem>
+                <SelectItem value="warning">Warning</SelectItem>
+                <SelectItem value="critical">Critical</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="rule-for">Must hold for (minutes)</FieldLabel>
+            <Input
+              id="rule-for"
+              type="number"
+              min="0"
+              value={forMin}
+              aria-describedby="rule-for-help"
+              onChange={(e) => setForMin(e.target.value)}
+            />
+            <FieldDescription id="rule-for-help">
+              Avoids alerting on brief spikes. 0 = alert immediately.
+            </FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="rule-cooldown">Re-notify after (minutes)</FieldLabel>
+            <Input
+              id="rule-cooldown"
+              type="number"
+              min="0"
+              value={cooldownMin}
+              aria-describedby="rule-cooldown-help"
+              onChange={(e) => setCooldownMin(e.target.value)}
+            />
+            <FieldDescription id="rule-cooldown-help">
+              Quiet period before repeating the same alert.
+            </FieldDescription>
+          </Field>
         </div>
       </form>
     </Modal>

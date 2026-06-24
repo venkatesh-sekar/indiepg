@@ -5,6 +5,42 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band D · Alerts → shadcn
+Seventh band-D view. Rebuilt `Alerts.tsx` on shadcn primitives:
+- Channel cards (`.channel-grid`/`.channel-card`/`.channel-head` custom divs) →
+  shadcn `Card` composition: `CardHeader` (`CardTitle` + `CardDescription` +
+  `CardAction` holding the Configured/Not-set-up `Badge`) + `CardFooter` (Edit/
+  Set-up `outline` + Send-test default `Button`, busy composes `InlineSpinner`).
+  Grid → `grid gap-4 sm:grid-cols-2`.
+- Rules table `.data-table`/`.table-scroll` → `Table` family. The Enable/Disable
+  button → shadcn `Switch` (backlog's "Switch to enable") with
+  `aria-label="Enable|Disable <name>"`, calling the unchanged `toggleRule`. Edit
+  → `outline sm`; Delete (`.btn-danger-ghost`) → `ghost sm` + `text-destructive`
+  (Migrate precedent). `.row-disabled` dim → `cn(!enabled && "opacity-60")`.
+- ChannelModal + RuleModal forms → `Field`/`FieldLabel`/`Input`/`FieldDescription`;
+  native `<select>`s (metric/op/severity) → shadcn `Select`; Enabled checkbox →
+  `Field orientation=horizontal` + `Checkbox`; `.btn*` → `Button`. Field rows →
+  responsive `grid` (`sm:grid-cols-[2fr_1fr_1fr]`, `sm:grid-cols-3`).
+- `.muted`/`.mono small` content → Tailwind tokens (`text-muted-foreground`,
+  `font-mono text-sm`, `text-xs`). Badges (Severity/State) already on shared
+  `Badge` — untouched.
+- Behavior identical (channel save/test, rule CRUD, toggle, typed-name delete
+  ConfirmDialog, toasts, loading/empty/error states).
+- ui-heuristics-reviewer: applied #2 (purely-additive `aria-labelledby` wiring
+  the three Select triggers to their `FieldLabel` ids — Radix doesn't auto-wire
+  it). Declined #1 (sr-only span redundant with the Switch `aria-label`; state is
+  already visible via switch position + State badge; Switch was backlog-mandated),
+  #3 (matches accepted Migrate `Field orientation=horizontal` checkbox pattern),
+  #4 (`title` byte-identical to pre-migration; disabled buttons aren't focusable),
+  #5 (self-flagged behavior change).
+- Added `Alerts.test.tsx` (5 tests): channel badges + Send-test gating, rule-row
+  condition/severity/switch, Switch toggle → `saveRule({enabled:false})`, empty
+  state, Add-rule opens editor. 121 web tests green (+5).
+- Dead Alerts-only CSS removed (`.channel-grid`/`.channel-card`/`.channel-head`/
+  `.channel-card p`/`.btn-danger-ghost`/`.row-disabled`). Kept shared `.btn-row`
+  (Settings/Pooler), `.data-table`/`.field*`/`.checkbox` (band E).
+- typecheck / 121 tests / build / go build all green.
+
 ## 2026-06-24 · band D · Migrate → shadcn
 Sixth band-D view. Rebuilt `Migrate.tsx` on shadcn primitives:
 - Mode selector (`.mode-tabs`/`ModeTab` custom buttons) → shadcn `Tabs`/
