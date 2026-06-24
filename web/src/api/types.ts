@@ -355,6 +355,46 @@ export interface TuningStatus {
   profiles: TuningRecommendation[];
 }
 
+/** pgbouncer.PoolRecommendation — host-sized PgBouncer pool sizing, coordinated
+ *  with Postgres' max_connections. Computing it touches no host state. */
+export interface PoolRecommendation {
+  profile: WorkloadProfile;
+  pg_max_connections: number;
+  default_pool_size: number;
+  min_pool_size: number;
+  reserve_pool_size: number;
+  max_client_conn: number;
+  server_idle_timeout: number;
+}
+
+/** GET /api/pooler — the read-only status of the opt-in PgBouncer pooler. `pool`
+ *  is null when Postgres is unreachable (sizing is then computed at enable time).
+ *  Reading this never mutates anything. */
+export interface PoolerStatus {
+  enabled: boolean;
+  host: string;
+  listen_port: number;
+  pool: PoolRecommendation | null;
+}
+
+/** POST /api/pooler/enable input. `max_connections` is intentionally NOT sent —
+ *  the server sizes the pool from the live Postgres so a forged value can't widen
+ *  it. `profile` empty defaults to the mixed best default. */
+export interface PoolerEnableRequest {
+  roles: string[];
+  profile?: WorkloadProfile;
+}
+
+/** pgbouncer.EnableResult — the outcome of turning the pooler on. */
+export interface PoolerEnableResult {
+  pooled_roles: string[];
+  pool: PoolRecommendation;
+  config_changed: boolean;
+  userlist_changed: boolean;
+  reloaded: boolean;
+  running: boolean;
+}
+
 /** Editable S3 fields. Secrets are write-only: omit (or send empty) to keep the
  *  stored value; send a non-empty value to replace it. */
 export interface BackupTargetUpdate {

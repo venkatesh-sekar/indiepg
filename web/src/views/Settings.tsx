@@ -16,6 +16,7 @@ import {
 } from "@/components/ui";
 import type { ConfigResponse, UpdateConfigRequest } from "@/api/types";
 import { DatabaseTuning } from "./DatabaseTuning";
+import { Pooler } from "./Pooler";
 
 export function Settings() {
   const config = useAsync<ConfigResponse>(() => api.getConfig(), []);
@@ -34,6 +35,7 @@ export function Settings() {
         <BackupSettingsForm initial={config.data} onSaved={config.reload} />
       ) : null}
       <DatabaseTuning />
+      <Pooler />
     </div>
   );
 }

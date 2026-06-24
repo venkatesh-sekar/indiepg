@@ -5,6 +5,34 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · PgBouncer pooler — React UI toggle (UI slice 3 of 3, FEATURE COMPLETE)
+The final slice: the operator-facing toggle on Settings, wiring the two backend
+endpoints into one card (`web/src/views/Pooler.tsx`, rendered after the tuning
+card in `Settings.tsx`). Off by default. When OFF it explains in plain language
+what a pooler is and when you don't need one, previews the loopback address apps
+would connect to (`host:listen_port`) and the host-sized pool sizing (each row
+labeled by effect via `PoolSettingsTable`), and lets the operator tick which app
+roles to route — filtered to non-superuser login roles (superusers connect
+directly; the pool reserves connections for admin). Enabling is gated behind a
+`ConfirmDialog` that states EXACTLY what will happen first — installs the
+PgBouncer package, starts the service on `host:listen_port`, routes the N named
+roles — and reassures it does NOT restart Postgres or touch data. The enable
+button is disabled until ≥1 role is picked AND Postgres is reachable (no
+`pool` ⇒ can't size ⇒ refuse, matching the server's 409). Client sends `{roles}`
+only — never `max_connections` (server sizes the pool; a forged value can't widen
+it). New api client `poolerStatus()`/`enablePooler()` + 4 TS types mirroring the
+Go JSON. Tests `Pooler.test.tsx` (9): enabled-view address+sizing, enabled with
+PG unreachable, disabled role filtering (superuser/non-login excluded), button
+gated on selection, gated when PG unreachable, roles-still-loading shows a
+spinner not the misleading empty state, empty-state when no app roles, confirm
+copy asserts each material claim + sends `{roles}` + calls onEnabled, failed
+enable surfaces the error and does NOT signal success. Reviewed
+(feature-dev:code-reviewer): fixed the Important finding (roles-loading race that
+flashed "No app roles to route yet" before the list arrived — now threads
+`rolesLoading` and shows a spinner) + the minor state-order note. **Pooler
+feature COMPLETE (all 11 sub-slices done) → band 3 (usability) COMPLETE → next is
+band 4 (UI redo, shadcn).**
+
 ## 2026-06-24 · band 3 (usability) · PgBouncer pooler — enable endpoint (UI slice 2 of 3)
 The status endpoint shipped last iteration gave the UI something to read; this
 adds the action it will call. `POST /api/pooler/enable` (`handlePoolerEnable`)

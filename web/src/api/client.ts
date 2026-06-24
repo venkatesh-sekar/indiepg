@@ -31,6 +31,9 @@ import type {
   MigrationSession,
   MigrationStarted,
   NewAppRequest,
+  PoolerEnableRequest,
+  PoolerEnableResult,
+  PoolerStatus,
   QueryResult,
   Result,
   RestoreRequest,
@@ -269,6 +272,17 @@ export const api = {
   },
   getTuning(): Promise<TuningStatus> {
     return request<TuningStatus>("/tuning");
+  },
+
+  // pooler (opt-in PgBouncer) ---------------------------------------------
+  // Read-only status: never mutates host state.
+  poolerStatus(): Promise<PoolerStatus> {
+    return request<PoolerStatus>("/pooler");
+  },
+  // Turns the pooler on: installs PgBouncer and starts the service. The pool is
+  // sized server-side from the live Postgres, never from this request.
+  enablePooler(req: PoolerEnableRequest): Promise<PoolerEnableResult> {
+    return request<PoolerEnableResult>("/pooler/enable", { method: "POST", body: req });
   },
 
   // alerts -----------------------------------------------------------------
