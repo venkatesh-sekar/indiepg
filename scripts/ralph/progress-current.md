@@ -5,6 +5,41 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band D · Pooler → shadcn
+Ninth band-D view (`src/views/Pooler.tsx`; only `DatabaseTuning` remains in band D).
+- `PoolSettingsTable`'s `<table className="tuning-table">` (with `tuning-caption`/
+  `tuning-value`/`scope="row"` th) → shadcn `Table`/`TableBody`/`TableRow`/
+  `TableHead scope="row"`/`TableCell`/`TableCaption`. Row label kept readable
+  (`font-medium` span + muted help span); value cell `text-right font-mono
+  tabular-nums`. The `tuning-*` classes had **no** CSS backing (orphaned names),
+  so the table previously rendered unstyled — this is a pure styling win.
+- Role-selection `<fieldset className="field">` + `<legend className="field-label">`
+  → `FieldSet` + `FieldLegend variant="label"`; the `.field-help` paragraph →
+  `FieldDescription`; each `<label className="checkbox"><input type=checkbox>` →
+  `Field orientation="horizontal"` + shadcn `Checkbox` (`onCheckedChange` →
+  unchanged `toggle`) + `FieldLabel htmlFor` (id-paired, so `getByLabelText` and
+  the disabled-gating tests keep passing).
+- Enable/Disable `<button className="btn btn-primary|btn-danger">` → shadcn
+  `Button` (default / `variant="destructive"`); `.btn-row` wrappers → `flex`.
+  The confirm-then-act `ConfirmDialog` (AlertDialog) flow + its exact effect copy
+  are untouched (behavior parity: confirm states install/start/route or stop/
+  no-reboot; gating `!status.pool || selected.length === 0` unchanged).
+- "Off" badge header (`card-head` with padding override) → `flex justify-end` +
+  shared `Badge`; `.muted` preview text → `text-muted-foreground`.
+- No dead CSS to remove (the only Pooler-specific classes were the unstyled
+  `tuning-*`; shared `.field*`/`.checkbox`/`.btn-row` stay for DatabaseTuning).
+- ui-heuristics-reviewer: declined all 3 findings — (1) "drop `Field` for a bare
+  `div`" violates UI-RULES' form rule and the cross-view `Field`-per-checkbox
+  pattern (the `role="group"` is shadcn-by-design, not a blocking regression);
+  (2) "caption renders below" premise was false — `table.tsx` has no
+  `caption-bottom`, so `<caption>` defaults to top (parity with the old one);
+  (3) `aria-describedby` on the *disabled* enable button — a native
+  `<button disabled>` isn't focusable, so a SR never reaches it (matches the
+  declined Alerts/Backups precedent); the visible Callout already explains gating.
+- Pooler.test.tsx already covers the migrated markup (id-paired `getByLabelText`,
+  disabled gating, both confirm flows) — 12 tests unchanged, all green.
+- green: typecheck, 125 web tests, build, go build.
+
 ## 2026-06-24 · band D · Settings → shadcn
 Eighth band-D view (the `BackupSettingsForm` in `Settings.tsx`; `DatabaseTuning`
 + `Pooler` are separate backlog items, untouched). Rebuilt the S3 backup form:

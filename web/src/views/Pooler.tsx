@@ -21,6 +21,23 @@ import {
   ErrorNotice,
   Spinner,
 } from "@/components/ui";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Field,
+  FieldDescription,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field";
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableRow,
+} from "@/components/ui/table";
 import type { PoolRecommendation, PoolerStatus, RoleInfo } from "@/api/types";
 
 /** Each pool setting with a plain-English meaning, so no number is an
@@ -63,23 +80,26 @@ const POOL_SETTINGS: {
  *  it does. */
 export function PoolSettingsTable({ pool }: { pool: PoolRecommendation }) {
   return (
-    <table className="tuning-table">
-      <caption className="tuning-caption">Pool sizing for this server</caption>
-      <tbody>
+    <Table>
+      <TableCaption>Pool sizing for this server</TableCaption>
+      <TableBody>
         {POOL_SETTINGS.map((s) => (
-          <tr key={s.key}>
-            <th scope="row">
-              {s.label}
-              <span className="field-help muted"> — {s.help}</span>
-            </th>
-            <td className="tuning-value">
+          <TableRow key={s.key}>
+            <TableHead
+              scope="row"
+              className="align-top whitespace-normal font-normal"
+            >
+              <span className="font-medium">{s.label}</span>
+              <span className="text-muted-foreground"> — {s.help}</span>
+            </TableHead>
+            <TableCell className="text-right align-top font-mono tabular-nums">
               {pool[s.key]}
               {s.unit ?? ""}
-            </td>
-          </tr>
+            </TableCell>
+          </TableRow>
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 
@@ -177,7 +197,7 @@ function EnabledView({
   };
 
   return (
-    <div className="tuning">
+    <div className="flex flex-col gap-4">
       <Callout tone="ok" title="The connection pooler is on">
         Your apps can connect through PgBouncer at <code>{address}</code> instead
         of connecting to Postgres directly. The pooler shares a small set of real
@@ -193,17 +213,16 @@ function EnabledView({
         </Callout>
       )}
 
-      <div className="btn-row">
-        <button
-          type="button"
-          className="btn btn-danger"
+      <div className="flex">
+        <Button
+          variant="destructive"
           onClick={() => {
             setError(null);
             setConfirming(true);
           }}
         >
           Disable connection pooler
-        </button>
+        </Button>
       </div>
 
       <ConfirmDialog
@@ -292,11 +311,10 @@ function DisabledView({
   };
 
   return (
-    <div className="tuning">
-      <header className="card-head" style={{ padding: 0 }}>
-        <span />
+    <div className="flex flex-col gap-4">
+      <div className="flex justify-end">
         <Badge tone="neutral">Off</Badge>
-      </header>
+      </div>
 
       <Callout tone="info" title="A connection pooler is optional">
         Postgres opens a new process for every connection, so a busy app (or
@@ -308,7 +326,7 @@ function DisabledView({
 
       {status.pool ? (
         <>
-          <p className="muted">
+          <p className="text-muted-foreground">
             When enabled, your apps connect through the pooler at{" "}
             <code>{address}</code> instead of Postgres directly. It would be sized
             for this server as:
@@ -325,8 +343,10 @@ function DisabledView({
 
       {rolesError ? <ErrorNotice error={rolesError} /> : null}
 
-      <fieldset className="field" style={{ border: "none", padding: 0, margin: 0 }}>
-        <legend className="field-label">Route these roles through the pooler</legend>
+      <FieldSet>
+        <FieldLegend variant="label">
+          Route these roles through the pooler
+        </FieldLegend>
         {rolesLoading ? (
           <Spinner label="Loading roles…" />
         ) : eligible.length === 0 ? (
@@ -336,28 +356,31 @@ function DisabledView({
           />
         ) : (
           <>
-            <p className="field-help muted">
+            <FieldDescription>
               Pick the login roles your apps use. At least one is required — the
               pooler only accepts connections for roles you route here.
-            </p>
+            </FieldDescription>
             {eligible.map((r) => (
-              <label className="checkbox" key={r.name}>
-                <input
-                  type="checkbox"
+              <Field orientation="horizontal" key={r.name}>
+                <Checkbox
+                  id={`pool-role-${r.name}`}
                   checked={selected.includes(r.name)}
-                  onChange={() => toggle(r.name)}
+                  onCheckedChange={() => toggle(r.name)}
                 />
-                <span>{r.name}</span>
-              </label>
+                <FieldLabel
+                  htmlFor={`pool-role-${r.name}`}
+                  className="font-normal"
+                >
+                  {r.name}
+                </FieldLabel>
+              </Field>
             ))}
           </>
         )}
-      </fieldset>
+      </FieldSet>
 
-      <div className="btn-row">
-        <button
-          type="button"
-          className="btn btn-primary"
+      <div className="flex">
+        <Button
           disabled={!status.pool || selected.length === 0}
           onClick={() => {
             setError(null);
@@ -365,7 +388,7 @@ function DisabledView({
           }}
         >
           Enable connection pooler
-        </button>
+        </Button>
       </div>
 
       <ConfirmDialog
