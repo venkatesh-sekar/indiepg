@@ -12,6 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "@/api/client";
+import { onSessionExpired } from "@/auth/expiry";
 
 interface SessionState {
   ready: boolean;
@@ -60,6 +61,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // When any request returns 401 (cookie expired, or the operator logged out in
+  // another tab and rotated the signing secret), drop to unauthenticated so the
+  // route guard bounces back to /login instead of leaving the operator stuck on
+  // a view that can no longer load.
+  useEffect(
+    () =>
+      onSessionExpired(() => {
+        setAuthenticated(false);
+        setSubject(undefined);
+      }),
+    [],
+  );
 
   const login = useCallback(
     async (password: string) => {

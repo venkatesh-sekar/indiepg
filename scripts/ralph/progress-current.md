@@ -5,6 +5,33 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2 (stability) · expired session mid-use now routes to /login instead of getting stuck
+North-star audit of the SPA routing/session-context lifecycle (one of the three not-yet-deep-audited
+areas the iter-55 note named). FOUND + FIXED the one concrete "never get stuck" gap the prior web
+audits had flagged: `RequireSession` (App.tsx) gates purely on the SessionProvider's `authenticated`
+flag, which was only ever set at mount/login/logout. When the server-side session expires (cookie
+TTL) or is revoked (operator logs out in another tab → the HMAC signing secret rotates, killing this
+tab's token too), every subsequent API call 401s — but the hooks only set `error`, never told the
+session context, so the flag stayed `true`, the guard kept rendering the dead view, and the operator
+was stuck on a generic error forever. FIX (KISS, decoupled): new `web/src/auth/expiry.ts` — a tiny
+Set-based pub/sub bridge so the generic `useAsync`/`usePolling` hooks can signal a 401 WITHOUT
+importing React context (keeps the hooks tiny + the bundle small). Both hooks now call
+`notifySessionExpired()` ONLY when the caught error is an `ApiError` with `isAuth` (code==="auth" ||
+status===401); `usePolling` also sets `active=false` on that branch so it halts (the session is dead —
+re-polling just 401s again, and the finally's guard then skips re-scheduling). `SessionProvider`
+subscribes in a useEffect and flips `authenticated=false` + clears subject → `RequireSession`
+Navigates to /login. Verified the bridge can't misfire: the login page uses `api.login` directly
+(wrong-password 401 never goes through the hooks), and the boot `refresh()` uses raw `api.session`/
+`api.whoami` in try/catch (a startup 401 is silently handled, not signalled). Test-first
+(RED→GREEN): `hooks.test.tsx` (4) — both hooks trip expiry on an auth error, NEITHER on a non-auth
+error (proven RED before the hooks change); `expiry.test.ts` (3) — pub/sub deliver/unsubscribe/multi,
+with an afterEach drain so a throwing test can't leak a listener; `SessionContext.test.tsx` (1) — a
+live authed session flips to anon on `notifySessionExpired()`. Reviewed (feature-dev:code-reviewer):
+NO blocking findings; applied both non-blocking suggestions — corrected the reviewer's incomplete
+"clearTimeout in catch" idea (the finally re-schedules regardless) to `active=false` which actually
+halts the poller, and added the test-leak afterEach. Web gate green (typecheck/build/85 tests, was
+77); Go gate green (gofmt/vet/test/build); committed regenerated dist; tree clean.
+
 ## 2026-06-24 · band 2 (stability) · Migrate.tsx pollers no longer show an error AND an infinite spinner together
 North-star audit iteration over three NOT-YET-COVERED areas (owner-claim/instance-bootstrap,
 alert/metrics evaluation math, web SPA/api-client error-handling) — the three candidates the

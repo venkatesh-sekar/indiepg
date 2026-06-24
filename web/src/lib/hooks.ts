@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "@/api/client";
+import { notifySessionExpired } from "@/auth/expiry";
 
 export interface AsyncState<T> {
   data: T | null;
@@ -42,8 +43,12 @@ export function useAsync<T>(
       })
       .catch((err: unknown) => {
         if (!active || ctrl.signal.aborted) return;
-        setError(err instanceof ApiError ? err : toApiError(err));
+        const apiErr = err instanceof ApiError ? err : toApiError(err);
+        setError(apiErr);
         setLoading(false);
+        // A 401 means the session expired/was revoked: trip the SessionProvider
+        // so the operator is routed back to /login instead of getting stuck.
+        if (apiErr.isAuth) notifySessionExpired();
       });
     return () => {
       active = false;
@@ -91,8 +96,17 @@ export function usePolling<T>(
         }
       } catch (err) {
         if (active && !ctrl.signal.aborted) {
-          setError(err instanceof ApiError ? err : toApiError(err));
+          const apiErr = err instanceof ApiError ? err : toApiError(err);
+          setError(apiErr);
           setLoading(false);
+          // A 401 means the session expired/was revoked: halt this poller (the
+          // session is dead — re-asking just 401s again; `active=false` makes the
+          // finally below skip re-scheduling) and trip the SessionProvider so the
+          // operator is routed back to /login instead of getting stuck.
+          if (apiErr.isAuth) {
+            active = false;
+            notifySessionExpired();
+          }
         }
       } finally {
         if (active && document.visibilityState !== "hidden") {
