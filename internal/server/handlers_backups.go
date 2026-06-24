@@ -50,6 +50,16 @@ type runBackupRequest struct {
 	Type string `json:"type"`
 }
 
+// runBackupStartedResponse is the async start acknowledgement: the new history
+// row id and its initial "running" state, so the SPA can close the dialog and
+// poll backup history for completion instead of holding the request open for the
+// entire run.
+type runBackupStartedResponse struct {
+	ID     int64  `json:"id"`
+	Type   string `json:"type"`
+	Result string `json:"result"`
+}
+
 // restoreRequest drives a guarded restore. Target is optional (nil => recover to
 // latest WAL). Confirm carries the typed-name confirmation the foundation
 // requires before overwriting the live cluster.
@@ -95,8 +105,14 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, resp)
 }
 
-// handleRunBackup runs a pgBackRest backup of the requested type. This is
-// synchronous and may run long, which is acceptable for v1.
+// handleRunBackup starts a pgBackRest backup of the requested type and returns
+// immediately with the new history row id (202 Accepted). A backup may run for
+// minutes — hours for a full — so running it inside the request held the
+// connection open with no signal and looked hung; instead StartBackup runs the
+// fast gates synchronously (config self-heal, single-flight, ownership) so a
+// misconfig/conflict/foreign-owner still returns a clean inline error, then runs
+// pgBackRest in the background. The SPA polls backup history for the "running"
+// row to transition to success/fail.
 func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -129,15 +145,15 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.backups.Backup(ctx, t)
+	id, err := s.backups.StartBackup(ctx, t)
 	if err != nil {
-		s.audit(ctx, "run_backup", req.Type, "failure", "backup run failed", core.CodeOf(err))
+		s.audit(ctx, "run_backup", req.Type, "failure", "backup failed to start", core.CodeOf(err))
 		writeError(w, err)
 		return
 	}
 
-	s.audit(ctx, "run_backup", req.Type, "success", "backup run completed", "")
-	writeData(w, http.StatusOK, res)
+	s.audit(ctx, "run_backup", req.Type, "success", "backup started", "")
+	writeData(w, http.StatusAccepted, runBackupStartedResponse{ID: id, Type: req.Type, Result: "running"})
 }
 
 // handleRestore performs a guarded restore. The foundation method takes a

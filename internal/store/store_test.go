@@ -257,6 +257,62 @@ func TestBackupHistory(t *testing.T) {
 	require.NotNil(t, latest.StoppedAt)
 }
 
+func TestUpdateBackup(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	// Insert a "running" row, then resolve it in place to success — the async path.
+	id, err := s.InsertBackup(ctx, BackupRecord{BackupType: "incr", Result: "running"})
+	require.NoError(t, err)
+
+	stopped := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, s.UpdateBackup(ctx, BackupRecord{
+		ID: id, Label: "20260624-incr", BackupType: "incr", StoppedAt: &stopped,
+		SizeBytes: 2048, RepoBytes: 512, Result: "success",
+	}))
+
+	all, err := s.ListBackups(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, all, 1) // updated in place, not a second row
+	require.Equal(t, "success", all[0].Result)
+	require.Equal(t, "20260624-incr", all[0].Label)
+	require.NotNil(t, all[0].StoppedAt)
+
+	// Updating a missing id is a NotFound, not a silent no-op.
+	err = s.UpdateBackup(ctx, BackupRecord{ID: 99999, Result: "success"})
+	require.Equal(t, core.CodeNotFound, core.CodeOf(err))
+}
+
+func TestSweepRunningBackups(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	running, err := s.InsertBackup(ctx, BackupRecord{BackupType: "full", Result: "running"})
+	require.NoError(t, err)
+	_, err = s.InsertBackup(ctx, BackupRecord{BackupType: "incr", Result: "success"})
+	require.NoError(t, err)
+
+	n, err := s.SweepRunningBackups(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n) // only the running row is swept
+
+	all, err := s.ListBackups(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+	for _, b := range all {
+		if b.ID == running {
+			require.Equal(t, "fail", b.Result)
+			require.Contains(t, b.Error, "interrupted by panel restart")
+			require.NotNil(t, b.StoppedAt)
+		}
+	}
+
+	// A second sweep finds nothing left to do.
+	n, err = s.SweepRunningBackups(ctx)
+	require.NoError(t, err)
+	require.Zero(t, n)
+}
+
 func TestRestoreTests(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

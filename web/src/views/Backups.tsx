@@ -1,7 +1,7 @@
 // Backups: history table (size / duration / repo-size), run-now, restore-test,
 // and a guarded restore flow (typed-name confirm equal to the stanza name).
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api } from "@/api/client";
 import { ago, bytes, dateTime, duration, millis } from "@/lib/format";
@@ -68,12 +68,23 @@ export function Backups() {
   const [deepBusy, setDeepBusy] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
 
+  // Backups now run in the background (the request returns a "running" row id
+  // immediately). While any backup is in flight, poll history so the row's live
+  // duration ticks and it flips to success/fail on its own — no manual refresh.
+  const hasRunningBackup = (history.data?.backups ?? []).some((b) => isRunning(b.result));
+  const reloadHistory = history.reload;
+  useEffect(() => {
+    if (!hasRunningBackup) return;
+    const timer = setInterval(() => reloadHistory(), 3000);
+    return () => clearInterval(timer);
+  }, [hasRunningBackup, reloadHistory]);
+
   const runBackup = async () => {
     if (!runType) return;
     setRunBusy(true);
     try {
-      const res = await api.runBackup({ type: runType });
-      toast.success(res.message || "Backup started.");
+      await api.runBackup({ type: runType });
+      toast.success(runType === "full" ? "Full backup started." : "Incremental backup started.");
       setRunType(null);
       history.reload();
     } catch (err) {
@@ -166,11 +177,21 @@ export function Backups() {
             </Button>
             <Button
               onClick={() => setRunType("incr")}
-              title="Run an incremental backup (only changed files)"
+              disabled={hasRunningBackup}
+              title={
+                hasRunningBackup
+                  ? "A backup is already running"
+                  : "Run an incremental backup (only changed files)"
+              }
             >
               Back up now
             </Button>
-            <Button variant="outline" onClick={() => setRunType("full")} title="Run a full backup">
+            <Button
+              variant="outline"
+              onClick={() => setRunType("full")}
+              disabled={hasRunningBackup}
+              title={hasRunningBackup ? "A backup is already running" : "Run a full backup"}
+            >
               Full backup
             </Button>
           </div>
@@ -337,6 +358,11 @@ export function LocalBackupWarning({ destination }: { destination: BackupDestina
 const SUCCESS_RESULTS = new Set(["success", "ok", "completed", "pass"]);
 const FAILURE_RESULTS = new Set(["fail", "failed", "error"]);
 
+/** A backup row whose run is still in flight (inserted by the async start). */
+export function isRunning(result: string): boolean {
+  return result.toLowerCase() === "running";
+}
+
 /**
  * BackupFreshness is the at-a-glance state of "can I restore right now, and how
  * fresh is my last good backup?" derived from the run history.
@@ -379,6 +405,21 @@ function backupWhen(b: BackupRecord): string {
  */
 export function BackupStatusSummary({ backups }: { backups: BackupRecord[] }) {
   const state = backupFreshness(backups);
+
+  // A backup is in flight and none has ever succeeded yet: show a calm
+  // in-progress note rather than the alarming "every attempt failed" banner —
+  // the run simply hasn't finished. (When a prior good backup exists, the normal
+  // "your data is backed up" banner below already reads correctly.)
+  const newest = backups[0];
+  const anyGood = backups.some((b) => SUCCESS_RESULTS.has(b.result.toLowerCase()));
+  if (newest && isRunning(newest.result) && !anyGood) {
+    return (
+      <Callout tone="info" title="A backup is running…">
+        Your backup is in progress. This page updates on its own when it finishes — you don&apos;t
+        need to stay here.
+      </Callout>
+    );
+  }
 
   if (state.kind === "none") {
     return (
@@ -558,6 +599,27 @@ export function DeepRestoreTestConfirm({
   );
 }
 
+/**
+ * RunningDuration is the live, ticking elapsed time for an in-flight backup row.
+ * The async backup leaves stopped_at empty until it finishes, so there is no
+ * fixed duration yet — this counts up from started_at every second next to a
+ * spinner, giving the operator a clear "still working" signal instead of a dash.
+ */
+export function RunningDuration({ startedAt }: { startedAt: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const seconds = Math.max(0, (now - new Date(startedAt).getTime()) / 1000);
+  return (
+    <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+      <InlineSpinner data-icon="inline-start" />
+      {duration(seconds)}
+    </span>
+  );
+}
+
 /** Truncated, danger-tinted per-row error detail (full text in the `title`). */
 function CellError({ detail }: { detail: string }) {
   return (
@@ -595,7 +657,15 @@ function BackupTable({ backups }: { backups: BackupRecord[] }) {
                 <Badge tone="info">{b.backup_type}</Badge>
               </TableCell>
               <TableCell>{dateTime(b.started_at)}</TableCell>
-              <TableCell>{dur != null ? duration(dur) : "—"}</TableCell>
+              <TableCell>
+                {isRunning(b.result) ? (
+                  <RunningDuration startedAt={b.started_at} />
+                ) : dur != null ? (
+                  duration(dur)
+                ) : (
+                  "—"
+                )}
+              </TableCell>
               <TableCell>{bytes(b.size_bytes)}</TableCell>
               <TableCell>
                 {bytes(b.repo_bytes)}

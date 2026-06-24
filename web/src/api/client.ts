@@ -39,6 +39,7 @@ import type {
   RestoreRequest,
   RoleInfo,
   RunBackupRequest,
+  RunBackupStarted,
   SessionInfo,
   SingleDBMigrationRequest,
   TestChannelRequest,
@@ -248,8 +249,10 @@ export const api = {
   backupHistory(): Promise<BackupHistory> {
     return request<BackupHistory>("/backups");
   },
-  runBackup(req: RunBackupRequest): Promise<Result> {
-    return request<Result>("/backups/run", { method: "POST", body: req });
+  // Starts a backup and returns immediately (202) with the new history row id;
+  // the run continues in the background. Poll backupHistory() for completion.
+  runBackup(req: RunBackupRequest): Promise<RunBackupStarted> {
+    return request<RunBackupStarted>("/backups/run", { method: "POST", body: req });
   },
   restore(req: RestoreRequest): Promise<Result> {
     return request<Result>("/backups/restore", { method: "POST", body: req });

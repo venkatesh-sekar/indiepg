@@ -38,6 +38,61 @@ func (s *Store) InsertBackup(ctx context.Context, b BackupRecord) (int64, error)
 	return id, nil
 }
 
+// UpdateBackup overwrites the mutable fields of an existing backup row (by id)
+// with the terminal/enriched values of a completed run. The asynchronous backup
+// path inserts a "running" row up front and calls this when pgBackRest finishes,
+// so the history shows one row that transitions running -> success/fail rather
+// than two. A missing id is a NotFound (the row was swept or never existed).
+func (s *Store) UpdateBackup(ctx context.Context, b BackupRecord) error {
+	started := nowRFC3339()
+	if !b.StartedAt.IsZero() {
+		started = b.StartedAt.UTC().Format(time.RFC3339Nano)
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE backup_history SET
+			label = ?, backup_type = ?, started_at = ?, stopped_at = ?,
+			size_bytes = ?, database_bytes = ?, repo_bytes = ?,
+			wal_start = ?, wal_stop = ?, result = ?, repo_path = ?, error = ?
+		WHERE id = ?`,
+		b.Label, b.BackupType, started, nullTimeStr(b.StoppedAt), b.SizeBytes,
+		b.DatabaseBytes, b.RepoBytes, b.WALStart, b.WALStop, b.Result, b.RepoPath,
+		b.Error, b.ID)
+	if err != nil {
+		return core.InternalError("update backup").Wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return core.InternalError("update backup rows affected").Wrap(err)
+	}
+	if n == 0 {
+		return core.NotFoundError("backup %d not found", b.ID)
+	}
+	return nil
+}
+
+// SweepRunningBackups marks every backup row still in the non-terminal "running"
+// state as failed with an "interrupted by panel restart" error and a stopped
+// timestamp, returning the number of rows affected. The asynchronous backup runs
+// in a goroutine; if the panel restarts mid-backup that goroutine is gone, so
+// without this sweep the row would show a phantom backup running forever (and the
+// process-local single-flight guard is already released by the restart). Called
+// best-effort on startup, mirroring SweepRunningMigrations.
+func (s *Store) SweepRunningBackups(ctx context.Context) (int, error) {
+	now := nowRFC3339()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE backup_history SET
+			result = 'fail', stopped_at = ?, error = 'interrupted by panel restart'
+		WHERE result = 'running'`, now)
+	if err != nil {
+		return 0, core.InternalError("sweep running backups").Wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, core.InternalError("sweep backups rows affected").Wrap(err)
+	}
+	return int(n), nil
+}
+
 // ListBackups returns up to limit backup records, newest first. limit <= 0
 // defaults to 50.
 func (s *Store) ListBackups(ctx context.Context, limit int) ([]BackupRecord, error) {

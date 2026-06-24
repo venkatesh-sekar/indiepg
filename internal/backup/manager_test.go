@@ -244,6 +244,171 @@ func TestManagerBackup_ConcurrentSkipsWithoutFailRow(t *testing.T) {
 	require.Empty(t, recs)
 }
 
+// gateRunner wraps an inner Runner but holds the pgBackRest `backup` command at a
+// barrier until release is closed (signalling started first), so a test can
+// observe the intermediate "running" history row before the async run completes.
+// Only the backup command is gated; info and everything else pass straight
+// through.
+type gateRunner struct {
+	inner   exec.Runner
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
+}
+
+func newGateRunner(inner exec.Runner) *gateRunner {
+	return &gateRunner{inner: inner, started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func isBackupCmd(spec exec.RunSpec) bool {
+	for _, a := range spec.Args {
+		if a == "backup" {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *gateRunner) Run(ctx context.Context, spec exec.RunSpec) (exec.RunResult, error) {
+	if isBackupCmd(spec) {
+		g.once.Do(func() { close(g.started) })
+		<-g.release
+	}
+	return g.inner.Run(ctx, spec)
+}
+
+func (g *gateRunner) DryRun() bool { return g.inner.DryRun() }
+
+// TestManagerStartBackup_RunningRowThenSuccess proves the async lifecycle: a
+// "running" row is visible immediately while pgBackRest runs, and the SAME row is
+// updated in place to "success" (enriched from info) when it finishes — never a
+// second row.
+func TestManagerStartBackup_RunningRowThenSuccess(t *testing.T) {
+	ctx := context.Background()
+	fake := exec.NewFakeRunner()
+	fake.On("backup", exec.FakeResponse{Stdout: "completed"})
+	fake.On("info", exec.FakeResponse{Stdout: sampleInfoJSON})
+	gate := newGateRunner(fake)
+
+	st := newTestStore(t)
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: gate, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	id, err := m.StartBackup(ctx, TypeFull)
+	require.NoError(t, err)
+	require.Positive(t, id)
+
+	// Backup is gated mid-run: history shows exactly one row, marked running, with
+	// no stop time yet.
+	<-gate.started
+	recs, err := st.ListBackups(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	require.Equal(t, "running", recs[0].Result)
+	require.Equal(t, id, recs[0].ID)
+	require.Nil(t, recs[0].StoppedAt)
+
+	// Release the run; the same row resolves to success, enriched from info.
+	close(gate.release)
+	require.Eventually(t, func() bool {
+		got, lerr := st.ListBackups(ctx, 10)
+		return lerr == nil && len(got) == 1 && got[0].Result == "success"
+	}, 2*time.Second, 5*time.Millisecond)
+
+	recs, err = st.ListBackups(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	require.Equal(t, "success", recs[0].Result)
+	require.Equal(t, "20260102-030000F_20260102-040000I", recs[0].Label)
+	require.NotNil(t, recs[0].StoppedAt)
+
+	// The single-flight guard is released once the run completes, so a follow-up
+	// backup can start.
+	require.True(t, m.backupMu.TryLock())
+	m.backupMu.Unlock()
+}
+
+// TestManagerStartBackup_RunFailureUpdatesRowToFail proves a failed async run
+// updates its running row to "fail" with the error, still a single row.
+func TestManagerStartBackup_RunFailureUpdatesRowToFail(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{ExitCode: 50, Err: core.ExecError("pgbackrest failed")})
+
+	st := newTestStore(t)
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	id, err := m.StartBackup(ctx, TypeIncr)
+	require.NoError(t, err)
+	require.Positive(t, id)
+
+	require.Eventually(t, func() bool {
+		got, lerr := st.ListBackups(ctx, 10)
+		return lerr == nil && len(got) == 1 && got[0].Result == "fail"
+	}, 2*time.Second, 5*time.Millisecond)
+
+	recs, err := st.ListBackups(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	require.Equal(t, "fail", recs[0].Result)
+	require.NotEmpty(t, recs[0].Error)
+}
+
+// TestManagerStartBackup_ConcurrentReturnsConflictNoRow proves an overlap is a
+// clean inline conflict with NO history row (so it can never raise a false
+// backup-failed alert), mirroring the synchronous Backup's single-flight skip.
+func TestManagerStartBackup_ConcurrentReturnsConflictNoRow(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{Stdout: "should not run"})
+
+	st := newTestStore(t)
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	// Simulate a backup already in flight by holding the single-flight guard.
+	m.backupMu.Lock()
+	defer m.backupMu.Unlock()
+
+	id, err := m.StartBackup(ctx, TypeIncr)
+	require.Error(t, err)
+	require.Equal(t, core.CodeConflict, core.CodeOf(err))
+	require.Zero(t, id)
+
+	recs, lerr := st.ListBackups(ctx, 10)
+	require.NoError(t, lerr)
+	require.Empty(t, recs)
+}
+
+// TestManagerStartBackup_ForeignOwnerHardStopNoRow proves a foreign-owned repo is
+// a HARD STOP surfaced inline (no row, pgBackRest never invoked), mirroring
+// Backup — the ownership claim runs synchronously before any row is inserted.
+func TestManagerStartBackup_ForeignOwnerHardStopNoRow(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{Stdout: "should not run"})
+
+	os := newFakeObjectStore()
+	os.seedForeignMarker(t, 1*time.Minute) // recent => non-stale => HARD STOP
+	owner := identity.NewOwner(testIdentity(), os, core.Discard())
+
+	st := newTestStore(t)
+	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	id, err := m.StartBackup(ctx, TypeFull)
+	require.Error(t, err)
+	require.Equal(t, core.CodeOwnership, core.CodeOf(err))
+	require.Zero(t, id)
+
+	for _, c := range runner.Calls() {
+		require.NotContains(t, c.Args, "backup")
+	}
+	recs, lerr := st.ListBackups(ctx, 10)
+	require.NoError(t, lerr)
+	require.Empty(t, recs)
+}
+
 func TestManagerBackup_NoOwnerDegrades(t *testing.T) {
 	ctx := context.Background()
 	runner := exec.NewFakeRunner()

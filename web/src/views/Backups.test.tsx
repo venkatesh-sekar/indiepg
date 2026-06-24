@@ -6,10 +6,12 @@ import {
   backupFreshness,
   BackupStatusSummary,
   DeepRestoreTestConfirm,
+  isRunning,
   LocalBackupWarning,
   RestoreModal,
   RestoreTestStatus,
   restoreTestStatus,
+  RunningDuration,
 } from "./Backups";
 import type { BackupRecord, RestoreTestRecord, S3Target } from "@/api/types";
 
@@ -196,6 +198,42 @@ describe("BackupStatusSummary", () => {
     expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "success");
     expect(screen.getByText(/your data is backed up/i)).toBeInTheDocument();
     expect(screen.getByText("full")).toBeInTheDocument();
+  });
+});
+
+describe("isRunning", () => {
+  it("matches only the in-flight running state, case-insensitively", () => {
+    expect(isRunning("running")).toBe(true);
+    expect(isRunning("RUNNING")).toBe(true);
+    expect(isRunning("success")).toBe(false);
+    expect(isRunning("fail")).toBe(false);
+  });
+});
+
+describe("BackupStatusSummary (running)", () => {
+  it("shows a calm in-progress note (not 'every attempt failed') for a first running backup", () => {
+    render(<BackupStatusSummary backups={[rec({ result: "running", stopped_at: null })]} />);
+    expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "info");
+    expect(screen.getByText(/a backup is running/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no working backup yet/i)).not.toBeInTheDocument();
+  });
+
+  it("still shows the ok banner when a backup is running but a prior good one exists", () => {
+    render(
+      <BackupStatusSummary
+        backups={[rec({ result: "running", stopped_at: null }), rec({ result: "success" })]}
+      />,
+    );
+    expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "success");
+    expect(screen.getByText(/your data is backed up/i)).toBeInTheDocument();
+  });
+});
+
+describe("RunningDuration", () => {
+  it("renders a ticking elapsed time for an in-flight backup", () => {
+    render(<RunningDuration startedAt={new Date(Date.now() - 5000).toISOString()} />);
+    // Counts up from started_at (~5s ago); format renders a seconds value.
+    expect(screen.getByText(/\ds/)).toBeInTheDocument();
   });
 });
 

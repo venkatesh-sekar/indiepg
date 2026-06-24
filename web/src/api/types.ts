@@ -248,6 +248,17 @@ export interface RunBackupRequest {
   type: BackupType;
 }
 
+/**
+ * RunBackupStarted is the async start acknowledgement (202) for a backup: the new
+ * history row id and its initial "running" state. The run continues in the
+ * background — poll backup history for the row to transition to success/fail.
+ */
+export interface RunBackupStarted {
+  id: number;
+  type: BackupType;
+  result: string;
+}
+
 export interface RecoveryTarget {
   /** RFC3339 timestamp for point-in-time recovery. */
   time?: string;

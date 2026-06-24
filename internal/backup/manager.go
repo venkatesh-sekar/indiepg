@@ -192,15 +192,116 @@ func (m *Manager) Backup(ctx context.Context, t Type) (core.Result, error) {
 	}
 
 	started := time.Now().UTC()
+	rec, runErr := m.executeBackup(ctx, stanza, t, started)
+
+	// Persist the terminal row regardless of outcome, on a detached context: a
+	// shutdown that cancels the operation ctx must not also drop the record of how
+	// the backup ended.
+	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	id := m.recordBackup(recCtx, rec)
+	if runErr != nil {
+		return core.Result{}, runErr
+	}
+	return backupResult(string(t), stanza, rec, id), nil
+}
+
+// StartBackup begins an asynchronous backup and returns the id of its history
+// row immediately, so the HTTP handler can respond at once and the UI can poll
+// backup history for live status instead of holding a request open for the whole
+// — potentially hours-long — run.
+//
+// The fast, fail-fast gates run synchronously so the caller still gets a clean
+// inline error rather than a phantom row, exactly matching Backup: an overlapping
+// backup is a typed CodeConflict (no row), and a foreign-owned repo is a HARD
+// STOP *core.OwnershipError (no row). Only once those pass is a "running" row
+// inserted and the pgBackRest run handed to a background goroutine, which updates
+// that row to its terminal state (success/fail) when it finishes.
+//
+// The single-flight guard is acquired here and released by the goroutine, so it
+// spans the entire run exactly as the synchronous Backup's defer does.
+func (m *Manager) StartBackup(ctx context.Context, t Type) (int64, error) {
+	stanza := m.config().Stanza
+	if err := validateStanza(stanza); err != nil {
+		return 0, err
+	}
+	if _, err := ParseType(string(t)); err != nil {
+		return 0, err
+	}
+	if m.store == nil {
+		return 0, core.InternalError("cannot start an asynchronous backup without a store")
+	}
+
+	// Process-local single-flight: an overlapping backup is a benign SKIP, not a
+	// failure (see Backup). No row is written, so an overlap never raises a false
+	// backup-failed alert.
+	if !m.backupMu.TryLock() {
+		return 0, core.ConflictError("a backup is already running; skipping this %s backup", t).
+			WithHint("backups run one at a time; the in-progress backup will finish on its own")
+	}
+
+	// The lock is now held. Every early-return path below must release it; on the
+	// success path ownership transfers to the background goroutine instead.
+	release := true
+	defer func() {
+		if release {
+			m.backupMu.Unlock()
+		}
+	}()
+
+	// Claim ownership synchronously so a foreign-owner HARD STOP surfaces inline
+	// (no "running" row), mirroring Backup.
+	if err := m.acquireForWrite(ctx); err != nil {
+		return 0, err
+	}
+
+	started := time.Now().UTC()
+	insCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	id, err := m.store.InsertBackup(insCtx, store.BackupRecord{
+		BackupType: string(t),
+		StartedAt:  started,
+		Result:     "running",
+		RepoPath:   m.repoPrefix(),
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	// Hand the long run to a goroutine on a background context (NOT the request
+	// ctx, which is cancelled when the handler returns — see the migration worker
+	// for the same discipline). The goroutine owns the single-flight lock until
+	// the run completes, then updates the row in place to its terminal state.
+	release = false
+	go func() {
+		defer m.backupMu.Unlock()
+		rec, _ := m.executeBackup(context.Background(), stanza, t, started)
+		rec.ID = id
+		upCtx, upCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer upCancel()
+		if uerr := m.updateBackup(upCtx, rec); uerr != nil {
+			m.log.Error("failed to update backup history after async run", "id", id, "error", uerr)
+		}
+	}()
+	return id, nil
+}
+
+// executeBackup runs pgBackRest of the requested type and builds the terminal
+// history record (without persisting it), recording the in-memory outcome first
+// so the backup-failed alert stays honest even if the row write later fails. The
+// caller must already hold the single-flight guard and have claimed ownership.
+// On success the record is enriched, best-effort, with stats from `pgbackrest
+// info`. It is shared by the synchronous Backup (which inserts the record) and
+// the asynchronous StartBackup (which updates a pre-inserted "running" row).
+func (m *Manager) executeBackup(ctx context.Context, stanza string, t Type, started time.Time) (store.BackupRecord, error) {
 	_, runErr := m.runner.Run(ctx, BackupCmd(stanza, t))
 	stopped := time.Now().UTC()
 
 	// Remember this outcome in memory FIRST, independent of the history-row write
-	// below. recordBackup is best-effort; if its insert fails, the in-memory
-	// signal keeps the backup-failed alert honest (see lastOutcome).
+	// (see lastOutcome): if the row write fails, the in-memory signal keeps the
+	// backup-failed alert honest.
 	m.recordOutcome(stopped, runErr != nil)
 
-	// Record the run regardless of outcome.
 	rec := store.BackupRecord{
 		BackupType: string(t),
 		StartedAt:  started,
@@ -210,13 +311,7 @@ func (m *Manager) Backup(ctx context.Context, t Type) (core.Result, error) {
 	if runErr != nil {
 		rec.Result = "fail"
 		rec.Error = runErr.Error()
-		// Persist the terminal failure row on a detached context: a shutdown that
-		// cancels the operation ctx must not also drop the record of why the
-		// backup failed.
-		recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		m.recordBackup(recCtx, rec)
-		return core.Result{}, runErr
+		return rec, runErr
 	}
 	rec.Result = "success"
 
@@ -240,15 +335,14 @@ func (m *Manager) Backup(ctx context.Context, t Type) (core.Result, error) {
 	} else if err != nil {
 		m.log.Warn("backup succeeded but info refresh failed", "error", err)
 	}
+	return rec, nil
+}
 
-	// Persist the terminal success row on a detached context too, so a ctx
-	// cancelled between the run finishing and the insert never loses the row.
-	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-	id := m.recordBackup(recCtx, rec)
-
+// backupResult builds the success Result returned by a completed backup from its
+// terminal record. id <= 0 (a failed history write) simply omits history_id.
+func backupResult(t, stanza string, rec store.BackupRecord, id int64) core.Result {
 	result := core.Ok("backup completed").
-		WithData("type", string(t)).
+		WithData("type", t).
 		WithData("stanza", stanza).
 		WithData("repo_size_bytes", rec.RepoBytes).
 		WithData("database_size_bytes", rec.DatabaseBytes)
@@ -258,7 +352,7 @@ func (m *Manager) Backup(ctx context.Context, t Type) (core.Result, error) {
 	if id > 0 {
 		result = result.WithData("history_id", id)
 	}
-	return result, nil
+	return result
 }
 
 // Restore runs a guarded restore. A PITR/overwrite restore is destructive — it
@@ -522,6 +616,16 @@ func (m *Manager) recordBackup(ctx context.Context, rec store.BackupRecord) int6
 		return 0
 	}
 	return id
+}
+
+// updateBackup overwrites an existing history row (by rec.ID) with a completed
+// run's terminal state. Used by the asynchronous path to resolve the "running"
+// row it inserted up front. A nil store is a no-op (mirrors recordBackup).
+func (m *Manager) updateBackup(ctx context.Context, rec store.BackupRecord) error {
+	if m.store == nil {
+		return nil
+	}
+	return m.store.UpdateBackup(ctx, rec)
 }
 
 // recordRestoreTest inserts a restore-test history row, logging (not failing) on

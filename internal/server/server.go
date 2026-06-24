@@ -159,6 +159,16 @@ func New(opts Options) (*Server, error) {
 		log.Warn("could not clear stale migration work dir on startup", "dir", migrateWorkBaseDir, "err", rerr)
 	}
 
+	// Sweep any backup left "running" by a panel restart: the async backup's
+	// goroutine is gone, so its row would otherwise show a phantom backup in flight
+	// forever. Mirrors the migration sweep above. Best-effort: a sweep failure only
+	// logs.
+	if swept, serr := srv.store.SweepRunningBackups(connectCtx); serr != nil {
+		log.Warn("could not sweep interrupted backups on startup", "err", serr)
+	} else if swept > 0 {
+		log.Warn("marked interrupted backups as failed on startup", "count", swept)
+	}
+
 	return srv, nil
 }
 
