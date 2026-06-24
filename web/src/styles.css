@@ -416,55 +416,6 @@ code {
   text-align: right;
 }
 
-/* --- Badges -------------------------------------------------------------- */
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 2px 9px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-.badge-ok {
-  background: var(--ok-soft);
-  color: var(--ok);
-  border-color: transparent;
-}
-
-.badge-warn {
-  background: var(--warn-soft);
-  color: var(--warn);
-  border-color: transparent;
-}
-
-.badge-danger {
-  background: var(--danger-soft);
-  color: var(--danger);
-  border-color: transparent;
-}
-
-.badge-info {
-  background: var(--info-soft);
-  color: var(--info);
-  border-color: transparent;
-}
-
-.badge-readonly {
-  background: var(--primary-soft);
-  color: var(--primary);
-  border-color: transparent;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-size: 11px;
-}
-
 /* --- Callouts ------------------------------------------------------------ */
 
 .callout {
@@ -1310,6 +1261,12 @@ fieldset.field legend {
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-success: var(--ok);
+  --color-success-soft: var(--ok-soft);
+  --color-warning: var(--warn);
+  --color-warning-soft: var(--warn-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);

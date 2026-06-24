@@ -4,25 +4,33 @@ import { ResultBadge, ErrorNotice, StaleBanner } from "./ui";
 import { ApiError } from "@/api/client";
 
 describe("ResultBadge", () => {
-  it("renders success-like results with the ok tone", () => {
+  it("renders success-like results with the success variant", () => {
     render(<ResultBadge result="completed" />);
-    const badge = screen.getByText("completed");
-    expect(badge).toHaveClass("badge-ok");
+    expect(screen.getByText("completed")).toHaveAttribute(
+      "data-variant",
+      "success",
+    );
   });
 
-  it("renders failures with the danger tone", () => {
+  it("renders failures with the destructive variant", () => {
     render(<ResultBadge result="failed" />);
-    expect(screen.getByText("failed")).toHaveClass("badge-danger");
+    expect(screen.getByText("failed")).toHaveAttribute(
+      "data-variant",
+      "destructive",
+    );
   });
 
   it("treats in-progress results as info", () => {
     render(<ResultBadge result="running" />);
-    expect(screen.getByText("running")).toHaveClass("badge-info");
+    expect(screen.getByText("running")).toHaveAttribute("data-variant", "info");
   });
 
-  it("falls back to the neutral tone for unknown results", () => {
+  it("falls back to the neutral (secondary) variant for unknown results", () => {
     render(<ResultBadge result="skipped" />);
-    expect(screen.getByText("skipped")).toHaveClass("badge-neutral");
+    expect(screen.getByText("skipped")).toHaveAttribute(
+      "data-variant",
+      "secondary",
+    );
   });
 });
 

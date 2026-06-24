@@ -5,6 +5,25 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band C · Badge family → shadcn Badge
+Migrated the hand-rolled badges (`Badge`/`ReadOnlyBadge`/`ResultBadge` in `ui.tsx`,
+rendered as `<span className="badge badge-*">`) onto the shadcn `Badge`. shadcn's
+base Badge lacks semantic status colors, so extended its cva with `success`/
+`warning`/`info` variants (mirroring the built-in `destructive` soft-bg pattern),
+backed by new `@theme inline` tokens `--color-success/-soft`, `--color-warning/-soft`,
+`--color-info/-soft` that alias the existing legacy `--ok/--warn/--info` vars (already
+carry light+dark values). `ui.tsx` keeps the same tone-based public API but maps
+tone→variant over `<ShadcnBadge>`: neutral→secondary, ok→success, warn→warning,
+danger→destructive, info→info, readonly→info. Callsites untouched (Badge ×81,
+ResultBadge ×12, ReadOnlyBadge ×3). Deleted the dead `.badge*` CSS block. Migrated
+`ui.test.tsx` ResultBadge tests from `.badge-*` class asserts to `data-variant`.
+ui-heuristics-reviewer: ACCEPTED its ReadOnlyBadge regression finding (outline blended
+with metadata labels → switched to the `info` variant, restoring a prominent colored
+read-only affordance that matches the Query page's info Callout); DECLINED its
+info/primary-soft token-collision finding as out-of-scope (pre-existing in the legacy
+tokens, parity preserved) — logged it as a band-E item instead. Gates green: typecheck,
+93 web tests, build, go build.
+
 ## 2026-06-24 · band B · Layout.tsx → shadcn Sidebar shell
 Rebuilt the hand-rolled sidebar (`.app-shell`/`.sidebar`/`.nav-item` markup) as a
 shadcn `Sidebar` shell: `SidebarProvider` + `Sidebar` (Header brand, Content nav

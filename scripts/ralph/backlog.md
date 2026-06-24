@@ -17,7 +17,9 @@ Format: `- [ ] (band) item — acceptance`
 - [x] (B) Rebuild `Layout.tsx` as a shadcn `Sidebar` shell — DONE: SidebarProvider/Sidebar/SidebarInset, lucide icons, `data-active` highlight, top-bar page label, footer sign-out (collapses to a Sheet on mobile via SidebarTrigger). Deleted dead Layout-only CSS; added `window.matchMedia` stub to test/setup.ts. 93 web tests green.
 
 ## C · Shared primitives (replace hand-rolled)
-- [ ] (C) Replace `ui.tsx` exports with shadcn equivalents (Button, Badge, Alert/ErrorNotice→Alert, ResultBadge→Badge, Spinner) and update all importers — acceptance: `ui.tsx` gone or a thin re-export of shadcn; `ui.test.tsx` migrated; all green.
+- [x] (C) Badge family (`Badge`/`ReadOnlyBadge`/`ResultBadge`) → shadcn `Badge` — DONE: extended `badge.tsx` cva with `success`/`warning`/`info` variants (backed by new `--color-*`/`-soft` theme tokens aliasing legacy `--ok/--warn/--info`); ui.tsx wrappers now map tone→variant over `<ShadcnBadge>`; deleted dead `.badge*` CSS; `ui.test.tsx` ResultBadge asserts `data-variant`. Public API unchanged, callsites untouched. 93 tests green.
+- [ ] (C) Alert family (`Callout`/`ErrorNotice`/`StaleBanner`) → shadcn `Alert` (+`AlertTitle`/`AlertDescription`, destructive variant for errors; keep the friendly code labels + hint + role="alert"); migrate `ui.test.tsx` ErrorNotice/StaleBanner — acceptance: callouts render via Alert, tests green.
+- [ ] (C) `Spinner` → shadcn `Spinner` (compose with label); update importers — acceptance: loaders use shadcn Spinner, tests green.
 - [ ] (C) `Modal.tsx` → shadcn `Dialog` (with `DialogTitle`); update importers — acceptance: Modal removed, dialogs behave the same, tests green.
 - [ ] (C) `ConfirmDialog.tsx` → shadcn `AlertDialog`; keep the explicit "what will happen / irreversible" copy — acceptance: ConfirmDialog removed, `ConfirmDialog.test.tsx` migrated, confirms still state consequences.
 - [ ] (C) `Toast.tsx` → `sonner`; mount `<Toaster />` once in the shell; replace `toast` calls — acceptance: Toast.tsx removed, notifications still fire, tests green.
@@ -37,3 +39,4 @@ Format: `- [ ] (band) item — acceptance`
 ## E · Cleanup & consistency
 - [ ] (E) Delete the hand-rolled `styles.css` design tokens (keep only minimal unavoidable globals); ensure nothing references removed vars — acceptance: build green, app visually consistent.
 - [ ] (E) Consistency sweep: every empty state uses `Empty`, every loader uses `Skeleton`, every status uses `Badge`, every callout uses `Alert`; no orphaned components remain — acceptance: grep finds no hand-rolled equivalents; then write COMPLETE.md.
+- [ ] (E) Token: `--info-soft` aliases the same value as `--primary-soft` (#e7efff / dark #1e2a44), so `info` badges are indistinguishable from primary-soft surfaces (e.g. Migrate step-active bg). Pre-existing from the legacy tokens (preserved as-is during the Badge migration for parity). Give `info`/`info-soft` a perceptually distinct blue in both light+dark `:root` once views are migrated — acceptance: info badge reads distinct from primary-soft surfaces.

@@ -3,10 +3,24 @@
 
 import { useState, type ReactNode } from "react";
 import { ApiError } from "@/api/client";
+import { Badge as ShadcnBadge } from "@/components/ui/badge";
 
 // --- Badges ----------------------------------------------------------------
 
 type BadgeTone = "neutral" | "ok" | "warn" | "danger" | "info" | "readonly";
+
+/** Maps the panel's semantic tones onto the shadcn Badge variants. */
+const toneVariant: Record<
+  BadgeTone,
+  "secondary" | "success" | "warning" | "destructive" | "info"
+> = {
+  neutral: "secondary",
+  ok: "success",
+  warn: "warning",
+  danger: "destructive",
+  info: "info",
+  readonly: "info",
+};
 
 export function Badge({
   children,
@@ -15,15 +29,15 @@ export function Badge({
   children: ReactNode;
   tone?: BadgeTone;
 }) {
-  return <span className={`badge badge-${tone}`}>{children}</span>;
+  return <ShadcnBadge variant={toneVariant[tone]}>{children}</ShadcnBadge>;
 }
 
 /** Prominent "read-only" affordance for the query box and read paths. */
 export function ReadOnlyBadge() {
   return (
-    <span className="badge badge-readonly" title="This connection cannot modify data.">
+    <ShadcnBadge variant="info" title="This connection cannot modify data.">
       Read-only
-    </span>
+    </ShadcnBadge>
   );
 }
 
