@@ -3,9 +3,15 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 
+/* Scope `dark:` utilities to an explicit `.dark` ancestor (never applied — the
+   panel is light-only). Without this, Tailwind's default `dark` variant would
+   fire on prefers-color-scheme and flip component `dark:` styles on incoherently. */
 @custom-variant dark (&:is(.dark *));
 
-/* indiepg SPA — legacy hand-rolled styles, being migrated to shadcn/Tailwind. */
+/* indiepg SPA — legacy hand-rolled styles, being migrated to shadcn/Tailwind.
+   The panel is light-only: there is no theme toggle, so the shadcn `.dark` token
+   set and the legacy prefers-color-scheme overrides were removed (they produced an
+   incoherent partial-dark — dark chrome behind light shadcn surfaces). */
 
 :root {
   /* Legacy tokens still consumed by global element rules (--bg/--text/--surface-2/
@@ -53,22 +59,6 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #11151b;
-    --surface-2: #222934;
-    --border: #2b3340;
-    --text: #e6eaf0;
-    --primary: #5b8cff;
-    --warn: #e0a341;
-    --warn-soft: #352c1c;
-    --ok: #41c47e;
-    --ok-soft: #16291f;
-    --info: #5b8cff;
-    --info-soft: #1e2a44;
-  }
 }
 
 * {
@@ -163,40 +153,6 @@ code {
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
-}
-
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
 }
 
 @layer base {

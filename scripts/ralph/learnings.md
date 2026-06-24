@@ -25,6 +25,14 @@ the top, prune stale entries. One line each. Newest at the bottom of each group.
   cap_dac_override not found` (exit 1). Re-run the `go build` gate with the sandbox
   disabled (`dangerouslyDisableSandbox`); npm/npx run fine sandboxed.
 - vitest has `css:false`, so the `@import` lines in styles.css don't affect tests.
+- The panel is **light-only** (band E decision, iter 27). There is no theme toggle:
+  `.dark` was never applied to any element, and the legacy `@media (prefers-color-scheme:
+  dark)` block only re-coloured legacy vars while the shadcn semantic tokens stayed light
+  → an incoherent partial-dark. Both blocks were removed. KEEP `@custom-variant dark
+  (&:is(.dark *))` — it scopes the components' `dark:` utilities to a (never-present)
+  `.dark` ancestor so they stay inert; deleting it would activate Tailwind's default
+  prefers-color-scheme `dark` variant and re-break things. Real dark mode = a future
+  feature (full shadcn dark palette + a toggle), NOT this UI-parity loop's job.
 
 ## Build / test / verify
 - Verify gates: `gofmt -l $(git ls-files '*.go')` (must be empty), `go vet ./...`,

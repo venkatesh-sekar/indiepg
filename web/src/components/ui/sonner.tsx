@@ -1,12 +1,12 @@
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon } from "lucide-react"
 
-// This Vite SPA has no next-themes ThemeProvider; the panel applies dark mode via
-// a prefers-color-scheme @media query, so let sonner follow the OS the same way.
+// This Vite SPA is light-only (no theme toggle, no dark token set), so pin sonner
+// to the light theme — its --normal-* vars below already track the shadcn tokens.
 const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
-      theme="system"
+      theme="light"
       // closeButton keeps the manual-dismiss affordance the hand-rolled toast's × had.
       closeButton
       className="toaster group"

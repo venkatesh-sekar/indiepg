@@ -5,6 +5,32 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band E · remove non-functional dark-mode CSS → light-only
+Converged the panel to a single coherent **light-only** theme. Removed two blocks
+from `styles.css`: (1) the legacy `@media (prefers-color-scheme: dark)` overrides,
+which only re-coloured legacy vars (`--bg`/`--surface-2`/`--text`/`--border`/
+`--primary`/`--ok*`/`--warn*`/`--info*`) — the shadcn semantic tokens
+(`--background`/`--card`/`--muted`/…) got NO dark values, so system-dark users saw
+an **incoherent partial-dark** (dark body + chrome behind light shadcn cards); and
+(2) the `.dark {}` shadcn dark token block, which is **dead code** — verified `.dark`
+is never applied anywhere (no `classList`/`ThemeProvider`/`documentElement`/`"dark"`
+class in any view, ui component, `main.tsx`, `App.tsx`, or `index.html`). KEPT
+`@custom-variant dark (&:is(.dark *))` so the 13 components' `dark:` utilities stay
+class-scoped + inert (removing it would let Tailwind's default `dark` variant fire on
+`prefers-color-scheme` and re-introduce the incoherence). Pinned sonner `theme` from
+`"system"` → `"light"` so toasts match the now-light-only app (its `--normal-*` vars
+already track shadcn tokens). **Visual impact: light-mode users see ZERO change**
+(neither removed block ever affected them); **system-dark users go from broken
+mixed-dark to clean light** — a fix, not a regression. No theme toggle exists or ever
+existed, so no working feature was dropped; real dark mode (full shadcn dark palette
++ a toggle) would be a new feature, out of scope for this UI-parity loop. No
+view/markup/affordance change → ui-heuristics review N/A (same precedent as the
+next-themes prune). **This UNBLOCKS the line-47 token-var prune** — migrating the
+global `body`/`code`/`a` rules onto semantic tokens to free `--bg`/`--surface-2`/
+`--text`/`--mono`/`--sans` is now trivially safe with no dark coupling to preserve.
+130 web tests green; typecheck/build/`go build` (outside sandbox) green. Diff:
+`styles.css` (−48 net) + `sonner.tsx` (theme + comment) + regenerated embedded `dist`.
+
 ## 2026-06-24 · band E · prune orphaned `next-themes` dependency
 Dropped `next-themes` (`^0.4.6`) from `web/package.json` + lockfile via
 `npm uninstall next-themes --offline`. It was orphaned when `Toast.tsx` → `sonner`
