@@ -734,10 +734,6 @@ fieldset.field legend {
 /* Modal markup/animation now live in the shadcn Dialog (src/components/Modal.tsx
    wraps it). Only the dialog body's content class remains. */
 
-.confirm-message {
-  margin-bottom: 12px;
-}
-
 /* --- Secrets ------------------------------------------------------------- */
 
 .secrets-list {

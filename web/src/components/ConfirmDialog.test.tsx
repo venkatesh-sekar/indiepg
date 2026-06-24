@@ -48,7 +48,10 @@ describe("ConfirmDialog", () => {
         onCancel={vi.fn()}
       />,
     );
-    expect(screen.getByText("Delete rule")).toHaveClass("btn-danger");
+    expect(screen.getByText("Delete rule")).toHaveAttribute(
+      "data-variant",
+      "destructive",
+    );
   });
 
   it("shows a working state and disables both buttons while busy", () => {
@@ -120,7 +123,9 @@ describe("TypedConfirmDialog", () => {
     // the container by variant so the assertion proves the structural invariant
     // ("shown in a danger callout") rather than which text node happens to carry
     // it — a child wrapper added later must not silently pass this.
-    const callout = document.querySelector('[data-variant="destructive"]');
+    const callout = document.querySelector(
+      '[data-slot="alert"][data-variant="destructive"]',
+    );
     expect(callout).toBeInTheDocument();
     expect(callout).toHaveTextContent(
       "Every table and row in this database will be permanently deleted.",

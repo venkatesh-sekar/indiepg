@@ -5,6 +5,30 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band C · ConfirmDialog → shadcn AlertDialog
+Rebuilt both `ConfirmDialog` and `TypedConfirmDialog` (`src/components/ConfirmDialog.tsx`)
+on the shadcn `AlertDialog` instead of wrapping `Modal` + hand-rolled `.btn` buttons.
+AlertDialog is the correct primitive for confirmations: no click-outside dismiss,
+focus trap, forced explicit choice. Both stay controlled via `open` (parent owns
+close), so the action/cancel handlers `preventDefault()` to stop Radix auto-close and
+keep that contract; Escape is the only built-in dismiss and is ignored while `busy`
+(matches the old no-op `onClose`). Buttons are now `AlertDialogAction`/`AlertDialogCancel`
+(shadcn `Button` under the hood); danger tone → `variant="destructive"` + `ring-destructive/30`.
+`TypedConfirmDialog`'s typed-name input migrated to shadcn `Field`+`FieldLabel`+`Input`
+(off the hand-rolled `.field`), keeping the exact `aria-invalid` gate and disabled-until-
+exact-match behavior. Message rendered via `AlertDialogDescription asChild` over a `<div>`
+so the wired description still allows the callsites' block content (Pooler's `<ul>`/`<p>`).
+Added `aria-busy={busy}` (ui-heuristics-reviewer status finding). Public API unchanged —
+all 6 callsites (Backups ×2, Pooler ×2, Alerts ×1, RolesDatabases ×1) untouched. Test
+migrated off `.btn-danger` onto `data-variant="destructive"` and scoped the destructive-
+callout query to `[data-slot="alert"]` (the action button now also carries that variant).
+Deleted dead `.confirm-message` CSS. Reviewer's disabled→aria-disabled focus-churn
+rejected (conflicts with the locked "disables both buttons while busy" test invariant;
+Radix FocusScope already guards focus); Pooler error-announce + extra typed-error line
+rejected as pre-existing / out-of-scope (Pooler is band D; input already label-associated).
+Green: typecheck, 95 web tests, build, go build (outside sandbox). Next in band C:
+Toast → sonner.
+
 ## 2026-06-24 · band C · Modal → shadcn Dialog
 Recomposed the hand-rolled `Modal` (`src/components/Modal.tsx` — a `.modal-backdrop`
 div with a manual `keydown`/Escape handler, manual first-focus + focus-restore, and

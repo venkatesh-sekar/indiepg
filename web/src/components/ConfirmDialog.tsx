@@ -1,10 +1,28 @@
-// Two confirmation dialogs:
+// Two confirmation dialogs, built on the shadcn AlertDialog (Radix):
 //   - ConfirmDialog: a plain "are you sure?" for non-destructive but notable acts.
 //   - TypedConfirmDialog: destructive ops that require the operator to type the
 //     exact object name (mirrors core.RequireConfirmation on the server).
+//
+// AlertDialog (not Dialog) is the right primitive here: it has no click-outside
+// dismiss, traps focus, and forces an explicit Confirm/Cancel choice. Both
+// dialogs are controlled via `open`; the parent decides when to close, so the
+// action handlers preventDefault to keep that control rather than letting Radix
+// auto-close. Escape is the only built-in dismiss and is ignored while busy.
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Modal } from "./Modal";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { Callout } from "./ui";
 
 interface ConfirmDialogProps {
@@ -32,30 +50,49 @@ export function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps) {
   return (
-    <Modal
+    <AlertDialog
       open={open}
-      title={title}
-      tone={tone}
-      width="sm"
-      onClose={busy ? () => undefined : onCancel}
-      footer={
-        <>
-          <button type="button" className="btn" onClick={onCancel} disabled={busy}>
-            {cancelLabel}
-          </button>
-          <button
-            type="button"
-            className={tone === "danger" ? "btn btn-danger" : "btn btn-primary"}
-            onClick={onConfirm}
+      // Escape is the only built-in dismiss (no backdrop click). Ignore it while
+      // busy, matching the old no-op onClose.
+      onOpenChange={(next) => {
+        if (!next && !busy) onCancel();
+      }}
+    >
+      <AlertDialogContent
+        aria-busy={busy}
+        className={cn(tone === "danger" && "ring-destructive/30")}
+      >
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          {/* Message is free-form (may contain paragraphs/lists); render it as a
+              div so the wired description still allows block content. */}
+          <AlertDialogDescription asChild>
+            <div>{message}</div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel
             disabled={busy}
+            onClick={(e) => {
+              e.preventDefault();
+              onCancel();
+            }}
+          >
+            {cancelLabel}
+          </AlertDialogCancel>
+          <AlertDialogAction
+            variant={tone === "danger" ? "destructive" : "default"}
+            disabled={busy}
+            onClick={(e) => {
+              e.preventDefault();
+              onConfirm();
+            }}
           >
             {busy ? "Working…" : confirmLabel}
-          </button>
-        </>
-      }
-    >
-      <div className="confirm-message">{message}</div>
-    </Modal>
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -98,48 +135,59 @@ export function TypedConfirmDialog({
   const matches = typed === objectName;
 
   return (
-    <Modal
+    <AlertDialog
       open={open}
-      title={title}
-      tone="danger"
-      width="sm"
-      onClose={busy ? () => undefined : onCancel}
-      footer={
-        <>
-          <button type="button" className="btn" onClick={onCancel} disabled={busy}>
+      onOpenChange={(next) => {
+        if (!next && !busy) onCancel();
+      }}
+    >
+      <AlertDialogContent aria-busy={busy} className="ring-destructive/30">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>
+            This permanently removes the {objectKind}{" "}
+            <strong>{objectName}</strong>. This cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {consequence ? <Callout tone="danger">{consequence}</Callout> : null}
+        <Field>
+          <FieldLabel htmlFor="typed-confirm-name">
+            Type <code>{objectName}</code> to confirm
+          </FieldLabel>
+          <Input
+            id="typed-confirm-name"
+            type="text"
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            value={typed}
+            placeholder={objectName}
+            onChange={(e) => setTyped(e.target.value)}
+            aria-invalid={typed.length > 0 && !matches}
+          />
+        </Field>
+        <AlertDialogFooter>
+          <AlertDialogCancel
+            disabled={busy}
+            onClick={(e) => {
+              e.preventDefault();
+              onCancel();
+            }}
+          >
             Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger"
+          </AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
             disabled={!matches || busy}
-            onClick={() => onConfirm(typed)}
+            onClick={(e) => {
+              e.preventDefault();
+              onConfirm(typed);
+            }}
           >
             {busy ? "Working…" : confirmLabel}
-          </button>
-        </>
-      }
-    >
-      <p className="confirm-message">
-        This permanently removes the {objectKind}{" "}
-        <strong>{objectName}</strong>. This cannot be undone.
-      </p>
-      {consequence ? <Callout tone="danger">{consequence}</Callout> : null}
-      <label className="field">
-        <span className="field-label">
-          Type <code>{objectName}</code> to confirm
-        </span>
-        <input
-          type="text"
-          autoComplete="off"
-          autoCorrect="off"
-          spellCheck={false}
-          value={typed}
-          placeholder={objectName}
-          onChange={(e) => setTyped(e.target.value)}
-          aria-invalid={typed.length > 0 && !matches}
-        />
-      </label>
-    </Modal>
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
