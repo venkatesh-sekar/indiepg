@@ -11,7 +11,7 @@
 import { useState } from "react";
 import { ApiError, api } from "@/api/client";
 import { useAsync } from "@/lib/hooks";
-import { useToast } from "@/components/Toast";
+import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Badge,
@@ -150,7 +150,6 @@ function EnabledView({
   address: string;
   onChanged: () => void;
 }) {
-  const toast = useToast();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
@@ -256,7 +255,6 @@ function DisabledView({
   rolesError?: ApiError | null;
   onChanged: () => void;
 }) {
-  const toast = useToast();
   // Only non-superuser login roles are app roles worth routing; superusers
   // connect directly (the pool reserves connections for admin/superuser).
   const eligible = roles.filter((r) => r.can_login && !r.is_superuser);

@@ -13,7 +13,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useSession } from "@/auth/SessionContext";
-import { useToast } from "./Toast";
+import { toast } from "sonner";
 import {
   Sidebar,
   SidebarContent,
@@ -50,7 +50,6 @@ const NAV: NavItem[] = [
 
 export function Layout() {
   const { logout, subject } = useSession();
-  const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation();
 

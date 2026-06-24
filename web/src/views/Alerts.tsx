@@ -7,7 +7,7 @@ import { duration, dateTime } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import { Modal } from "@/components/Modal";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { useToast } from "@/components/Toast";
+import { toast } from "sonner";
 import {
   Badge,
   Callout,
@@ -41,7 +41,6 @@ const METRIC_LABELS: Record<string, string> = {
 const METRIC_OPTIONS = Object.keys(METRIC_LABELS);
 
 export function Alerts() {
-  const toast = useToast();
   const cfg = useAsync<AlertsConfig>(() => api.alerts(), []);
   const [editing, setEditing] = useState<ChannelKind | null>(null);
   const [editRule, setEditRule] = useState<AlertRule | "new" | null>(null);
@@ -283,7 +282,6 @@ function ChannelModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const toast = useToast();
   const [enabled, setEnabled] = useState(config?.enabled ?? true);
   const [token, setToken] = useState(config?.pushover_token ?? "");
   const [user, setUser] = useState(config?.pushover_user ?? "");
@@ -389,7 +387,6 @@ function RuleModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const toast = useToast();
   const [name, setName] = useState(rule?.name ?? "");
   const [metric, setMetric] = useState(rule?.metric ?? METRIC_OPTIONS[0]);
   const [op, setOp] = useState<AlertOp>(rule?.op ?? ">");

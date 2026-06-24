@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { Layout } from "./Layout";
-import { ToastProvider } from "./Toast";
 
 const logout = vi.fn().mockResolvedValue(undefined);
 
@@ -17,18 +16,16 @@ vi.mock("@/auth/SessionContext", () => ({
 
 function renderShell(initial = "/") {
   render(
-    <ToastProvider>
-      <MemoryRouter initialEntries={[initial]}>
-        <Routes>
-          <Route element={<Layout />}>
-            <Route index element={<div>Dashboard view</div>} />
-            <Route path="query" element={<div>Query view</div>} />
-            <Route path="settings" element={<div>Settings view</div>} />
-          </Route>
-          <Route path="/login" element={<div>Login screen</div>} />
-        </Routes>
-      </MemoryRouter>
-    </ToastProvider>,
+    <MemoryRouter initialEntries={[initial]}>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route index element={<div>Dashboard view</div>} />
+          <Route path="query" element={<div>Query view</div>} />
+          <Route path="settings" element={<div>Settings view</div>} />
+        </Route>
+        <Route path="/login" element={<div>Login screen</div>} />
+      </Routes>
+    </MemoryRouter>,
   );
 }
 

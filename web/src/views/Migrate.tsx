@@ -15,7 +15,7 @@ import { ApiError, api } from "@/api/client";
 import { bytes, count, dateTime, ago } from "@/lib/format";
 import { usePolling } from "@/lib/hooks";
 import { Modal } from "@/components/Modal";
-import { useToast } from "@/components/Toast";
+import { toast } from "sonner";
 import {
   Badge,
   Callout,
@@ -206,7 +206,6 @@ function SourceFields({
 // ---------------------------------------------------------------------------
 
 function SingleDBForm() {
-  const toast = useToast();
   const [conn, setConn] = useState<ConnState>(emptyConn);
   const [target, setTarget] = useState("");
   const [overwrite, setOverwrite] = useState(false);
@@ -332,7 +331,6 @@ function SingleDBForm() {
 // ---------------------------------------------------------------------------
 
 function ClusterForm() {
-  const toast = useToast();
   const [conn, setConn] = useState<ConnState>(emptyConn);
   const [exclude, setExclude] = useState("");
   const [overwrite, setOverwrite] = useState(false);
@@ -652,7 +650,6 @@ function SessionReceive() {
 }
 
 export function SessionProgress({ code, onReset }: { code: string; onReset: () => void }) {
-  const toast = useToast();
   const { data: session, error } = usePolling<MigrationSession>(
     (signal) => api.getSession(code, signal),
     2500,
@@ -776,7 +773,6 @@ export function SessionProgress({ code, onReset }: { code: string; onReset: () =
 }
 
 function SessionSend() {
-  const toast = useToast();
   const [code, setCode] = useState("");
   const [conn, setConn] = useState<ConnState>(emptyConn);
   const [busy, setBusy] = useState(false);

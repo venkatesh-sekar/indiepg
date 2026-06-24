@@ -4,7 +4,7 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import { SessionProvider, useSession } from "@/auth/SessionContext";
-import { ToastProvider } from "@/components/Toast";
+import { Toaster } from "@/components/ui/sonner";
 import { Layout } from "@/components/Layout";
 import { Spinner } from "@/components/ui";
 import { Login } from "@/views/Login";
@@ -19,27 +19,26 @@ import { Settings } from "@/views/Settings";
 export default function App() {
   return (
     <SessionProvider>
-      <ToastProvider>
-        <Routes>
-          <Route path="/login" element={<LoginGate />} />
-          <Route
-            element={
-              <RequireSession>
-                <Layout />
-              </RequireSession>
-            }
-          >
-            <Route index element={<Dashboard />} />
-            <Route path="query" element={<Query />} />
-            <Route path="roles" element={<RolesDatabases />} />
-            <Route path="backups" element={<Backups />} />
-            <Route path="alerts" element={<Alerts />} />
-            <Route path="migrate" element={<Migrate />} />
-            <Route path="settings" element={<Settings />} />
-          </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </ToastProvider>
+      <Routes>
+        <Route path="/login" element={<LoginGate />} />
+        <Route
+          element={
+            <RequireSession>
+              <Layout />
+            </RequireSession>
+          }
+        >
+          <Route index element={<Dashboard />} />
+          <Route path="query" element={<Query />} />
+          <Route path="roles" element={<RolesDatabases />} />
+          <Route path="backups" element={<Backups />} />
+          <Route path="alerts" element={<Alerts />} />
+          <Route path="migrate" element={<Migrate />} />
+          <Route path="settings" element={<Settings />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+      <Toaster />
     </SessionProvider>
   );
 }

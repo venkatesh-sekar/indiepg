@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { PoolerPanel } from "./Pooler";
 import { api, ApiError } from "@/api/client";
-import { ToastProvider } from "@/components/Toast";
 import type { PoolRecommendation, PoolerStatus, RoleInfo } from "@/api/types";
 
 function pool(over: Partial<PoolRecommendation> = {}): PoolRecommendation {
@@ -35,14 +34,12 @@ function role(name: string, over: Partial<RoleInfo> = {}): RoleInfo {
 function renderPanel(props: Partial<Parameters<typeof PoolerPanel>[0]> = {}) {
   const onChanged = vi.fn();
   render(
-    <ToastProvider>
-      <PoolerPanel
-        status={status()}
-        roles={[role("app")]}
-        onChanged={onChanged}
-        {...props}
-      />
-    </ToastProvider>,
+    <PoolerPanel
+      status={status()}
+      roles={[role("app")]}
+      onChanged={onChanged}
+      {...props}
+    />,
   );
   return { onChanged };
 }
@@ -192,13 +189,11 @@ describe("PoolerPanel — disabling (enabled view)", () => {
   it("offers a disable button only when the pooler is on", () => {
     // On: the disable affordance is present.
     const { rerender } = render(
-      <ToastProvider>
-        <PoolerPanel
-          status={status({ enabled: true })}
-          roles={[role("app")]}
-          onChanged={vi.fn()}
-        />
-      </ToastProvider>,
+      <PoolerPanel
+        status={status({ enabled: true })}
+        roles={[role("app")]}
+        onChanged={vi.fn()}
+      />,
     );
     expect(
       screen.getByRole("button", { name: /disable connection pooler/i }),
@@ -206,9 +201,7 @@ describe("PoolerPanel — disabling (enabled view)", () => {
 
     // Off: no disable affordance (the off view offers enable instead).
     rerender(
-      <ToastProvider>
-        <PoolerPanel status={status()} roles={[role("app")]} onChanged={vi.fn()} />
-      </ToastProvider>,
+      <PoolerPanel status={status()} roles={[role("app")]} onChanged={vi.fn()} />,
     );
     expect(
       screen.queryByRole("button", { name: /disable connection pooler/i }),

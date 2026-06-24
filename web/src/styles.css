@@ -767,60 +767,6 @@ fieldset.field legend {
   white-space: nowrap;
 }
 
-/* --- Toasts -------------------------------------------------------------- */
-
-.toast-stack {
-  position: fixed;
-  bottom: 20px;
-  right: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  z-index: 200;
-  max-width: 380px;
-}
-
-.toast {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 12px 14px;
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  animation: slide 0.16s ease;
-}
-
-.toast-success {
-  border-left: 3px solid var(--ok);
-}
-
-.toast-error {
-  border-left: 3px solid var(--danger);
-}
-
-.toast-info {
-  border-left: 3px solid var(--info);
-}
-
-.toast-close {
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  color: var(--text-muted);
-  font-size: 18px;
-  line-height: 1;
-  margin-left: auto;
-}
-
-@keyframes slide {
-  from {
-    opacity: 0;
-    transform: translateX(16px);
-  }
-}
-
 /* --- States -------------------------------------------------------------- */
 
 .empty {

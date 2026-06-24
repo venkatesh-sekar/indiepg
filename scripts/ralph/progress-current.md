@@ -5,6 +5,29 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band C · Toast → sonner
+Removed the hand-rolled toast system (`src/components/Toast.tsx` — a `ToastProvider`
+context + `useToast()` rendering a bottom-right `.toast-stack` with manual × buttons and
+a hand-timed auto-dismiss) and replaced it with shadcn's `sonner`. Mounted `<Toaster />`
+(from `src/components/ui/sonner.tsx`) once at the App root in `App.tsx`, as a sibling of
+`<Routes>` inside `SessionProvider`, so it covers both `/login` and the authenticated
+shell. Every call site already called `toast.success/error/info(msg)`, which is exactly
+sonner's `toast` API — so the ~15 callers across 7 files (Backups ×2, Layout, Pooler ×2,
+RolesDatabases ×2, Migrate ×4, Alerts ×3, Settings) just swapped
+`import { useToast } from "@/components/Toast"` + `const toast = useToast()` for
+`import { toast } from "sonner"`; the firing calls are byte-for-byte unchanged. Simplified
+the generated `sonner.tsx`: stripped the `next-themes` `useTheme()` coupling (no
+`ThemeProvider` is mounted in this Vite SPA — it themes via a `prefers-color-scheme`
+@media query, so `theme="system"` lets sonner follow the OS the same way) and added
+`closeButton` to preserve the manual-dismiss affordance the old × gave (ui-heuristics
+reviewer's blocking + parity findings). Deleted the dead `.toast*` CSS + the toast-only
+`@keyframes slide`. Tests: `Layout.test`/`Pooler.test` dropped their `ToastProvider`
+wrappers (sonner's `toast` is module-level, needs no provider); `Migrate.test` swapped its
+`@/components/Toast` mock for a `sonner` mock. 95 web tests green; typecheck + build +
+go build green. Left `next-themes` in package.json as a now-orphaned dep — pruning it
+churns the lockfile (network); defer to band E cleanup. Error toasts now use sonner's
+default 4s lifetime (was 7s) but are hover-paused + always manually dismissable.
+
 ## 2026-06-24 · band C · ConfirmDialog → shadcn AlertDialog
 Rebuilt both `ConfirmDialog` and `TypedConfirmDialog` (`src/components/ConfirmDialog.tsx`)
 on the shadcn `AlertDialog` instead of wrapping `Modal` + hand-rolled `.btn` buttons.

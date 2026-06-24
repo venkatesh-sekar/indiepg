@@ -5,7 +5,7 @@
 import { useState, type FormEvent } from "react";
 import { ApiError, api } from "@/api/client";
 import { useAsync } from "@/lib/hooks";
-import { useToast } from "@/components/Toast";
+import { toast } from "sonner";
 import {
   Badge,
   Callout,
@@ -47,7 +47,6 @@ function BackupSettingsForm({
   initial: ConfigResponse;
   onSaved: () => void;
 }) {
-  const toast = useToast();
   const b = initial.config.backup;
 
   const [endpoint, setEndpoint] = useState(b.endpoint);

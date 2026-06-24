@@ -1,15 +1,14 @@
-"use client"
-
-import { useTheme } from "next-themes"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon } from "lucide-react"
 
+// This Vite SPA has no next-themes ThemeProvider; the panel applies dark mode via
+// a prefers-color-scheme @media query, so let sonner follow the OS the same way.
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme()
-
   return (
     <Sonner
-      theme={theme as ToasterProps["theme"]}
+      theme="system"
+      // closeButton keeps the manual-dismiss affordance the hand-rolled toast's × had.
+      closeButton
       className="toaster group"
       icons={{
         success: (

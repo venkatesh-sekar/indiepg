@@ -7,7 +7,7 @@ import { bytes } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import { Modal } from "@/components/Modal";
 import { TypedConfirmDialog } from "@/components/ConfirmDialog";
-import { useToast } from "@/components/Toast";
+import { toast } from "sonner";
 import {
   Badge,
   Callout,
@@ -33,7 +33,6 @@ type DropTarget =
   | null;
 
 export function RolesDatabases() {
-  const toast = useToast();
   const roles = useAsync<RoleInfo[]>(() => api.listRoles(), []);
   const dbs = useAsync<DatabaseInfo[]>(() => api.listDatabases(), []);
 
@@ -440,7 +439,6 @@ function CreateDatabaseModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const toast = useToast();
   const [name, setName] = useState("");
   const owners = roles.filter((r) => r.can_login || !r.is_superuser);
   const [owner, setOwner] = useState(owners[0]?.name ?? "");

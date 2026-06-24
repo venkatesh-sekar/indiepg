@@ -8,7 +8,7 @@ import { ago, bytes, dateTime, duration, millis } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import { Modal } from "@/components/Modal";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { useToast } from "@/components/Toast";
+import { toast } from "sonner";
 import {
   Badge,
   Callout,
@@ -30,7 +30,6 @@ import type {
 } from "@/api/types";
 
 export function Backups() {
-  const toast = useToast();
   const history = useAsync<BackupHistory>(() => api.backupHistory(), []);
   const config = useAsync<ConfigResponse>(() => api.getConfig(), []);
 
@@ -626,7 +625,6 @@ function RestoreTestTable({ tests }: { tests: BackupHistory["restore_tests"] }) 
 // --- Restore (guarded) -----------------------------------------------------
 
 function RestoreModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
-  const toast = useToast();
   const [mode, setMode] = useState<"latest" | "pitr">("latest");
   const [pointInTime, setPointInTime] = useState("");
   const [delta, setDelta] = useState(true);

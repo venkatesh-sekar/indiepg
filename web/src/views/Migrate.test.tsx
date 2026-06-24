@@ -15,9 +15,9 @@ const pollState = vi.hoisted(() => ({
 vi.mock("@/lib/hooks", () => ({
   usePolling: () => pollState.current,
 }));
-// SessionProgress pulls in the toast context; stub it so we needn't wrap a provider.
-vi.mock("@/components/Toast", () => ({
-  useToast: () => ({ info: () => {}, error: () => {}, success: () => {} }),
+// SessionProgress fires sonner toasts; stub the module so no Toaster need be mounted.
+vi.mock("sonner", () => ({
+  toast: { info: () => {}, error: () => {}, success: () => {} },
 }));
 
 import { MigrationHistory, DirectJobProgress, SessionProgress } from "./Migrate";
