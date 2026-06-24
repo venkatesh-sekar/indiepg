@@ -14,7 +14,7 @@ Format: `- [ ] (band) item — acceptance`
 - [x] (A) Added the core component set to `src/components/ui/` (24): button card badge alert dialog alert-dialog input select switch checkbox label table tabs separator skeleton sonner tooltip sidebar sheet field empty spinner dropdown-menu avatar + `use-mobile` hook.
 
 ## B · App shell
-- [ ] (B) Rebuild `Layout.tsx` as a shadcn `Sidebar` shell: nav items for every view, active-route highlight, header with sign-out; responsive (collapses on narrow) — acceptance: all routes reachable, sign-out works, test updated, build green.
+- [x] (B) Rebuild `Layout.tsx` as a shadcn `Sidebar` shell — DONE: SidebarProvider/Sidebar/SidebarInset, lucide icons, `data-active` highlight, top-bar page label, footer sign-out (collapses to a Sheet on mobile via SidebarTrigger). Deleted dead Layout-only CSS; added `window.matchMedia` stub to test/setup.ts. 93 web tests green.
 
 ## C · Shared primitives (replace hand-rolled)
 - [ ] (C) Replace `ui.tsx` exports with shadcn equivalents (Button, Badge, Alert/ErrorNotice→Alert, ResultBadge→Badge, Spinner) and update all importers — acceptance: `ui.tsx` gone or a thin re-export of shadcn; `ui.test.tsx` migrated; all green.

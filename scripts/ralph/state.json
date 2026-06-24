@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "track": "ui-ux-shadcn",
-  "iteration": 1,
-  "commits_total": 1,
-  "current_band": "B-app-shell",
-  "last_item": "Band A scaffold (set up manually): shadcn init radix/Nova/Tailwind v4, 24 ui components in src/components/ui/, alias bug fixed, NPM_CONFIG_CACHE wired into ralph.sh.",
-  "last_result": "green: typecheck, 88 web tests, build, go build. Scaffold smoke test proves @/ alias resolves. Next: band B (Layout.tsx → shadcn Sidebar shell).",
+  "iteration": 2,
+  "commits_total": 2,
+  "current_band": "C-primitives",
+  "last_item": "Band B: Layout.tsx rebuilt as a shadcn Sidebar shell (SidebarProvider/Sidebar/SidebarInset, lucide icons, active-route via data-active, top-bar page label, footer sign-out). Deleted dead Layout-only styles.css; added window.matchMedia stub to test/setup.ts for the Sidebar use-mobile hook.",
+  "last_result": "green: typecheck, 93 web tests (was 88; +5 new Layout.test.tsx), build, go build. Next: band C (shared primitives) — start with ui.tsx → shadcn Button/Badge/Alert/Spinner, then Modal→Dialog, ConfirmDialog→AlertDialog, Toast→sonner.",
   "notes": "PURE UI/UX LOOP. The prior 57-iteration hardening track is COMPLETE and shipped as v0.6.0. This track rebuilds the web panel on shadcn/ui — see PROMPT.md + UI-RULES.md + backlog.md. The operator EXPLICITLY authorized the shadcn/Tailwind/Radix dependency tree, overriding the earlier rule-4/5 objection — do NOT re-litigate whether to adopt shadcn; it is required. Start at band A (scaffold), then B (shell), C (primitives), D (views one at a time), E (cleanup). Never touch Go/business logic — frontend only.",
   "north_star": "Every view in the indiepg panel rebuilt with shadcn/ui — clean, simple, consistent — with no hand-rolled component where a shadcn one exists, behavior identical, all tests green."
 }

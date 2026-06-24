@@ -5,6 +5,24 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band B · Layout.tsx → shadcn Sidebar shell
+Rebuilt the hand-rolled sidebar (`.app-shell`/`.sidebar`/`.nav-item` markup) as a
+shadcn `Sidebar` shell: `SidebarProvider` + `Sidebar` (Header brand, Content nav
+via `SidebarMenu`/`SidebarMenuButton asChild` over `NavLink`, Footer with signed-in
+subject + sign-out) + `SidebarInset` with a top bar (`SidebarTrigger`, `Separator`,
+current-view label). Nav items use lucide icons; active route via `isActive` →
+`data-active`. Behavior identical: same 7 routes, same sign-out (logout→toast→/login).
+Deleted the now-dead Layout-only CSS in styles.css (app-shell/sidebar/brand/nav-*/
+sidebar-foot/content + their responsive rules); kept `.brand-mark` (Login still uses
+it) and `.view`. Added `window.matchMedia` stub to test/setup.ts (jsdom lacks it; the
+Sidebar's use-mobile hook needs it — benefits all future shadcn components). New
+`Layout.test.tsx` (5 tests: all nav items + outlet, active state, navigation,
+sign-out→/login, header title). ui-heuristics-reviewer pass: added the top-bar page
+label (mobile system-status gap, finding 2); rejected its remove-isActive fix (that
+shadcn pattern is canonical and drives `data-active` — NavLink alone wouldn't style
+active) and its add-a-sign-out-confirmation fix (behavior change / scope creep — old
+shell signed out on one click). Gates green: typecheck, 93 web tests, build, go build.
+
 ## 2026-06-24 · NEW TRACK: pure UI/UX (shadcn) · band A scaffold
 Reconfigured the loop into a pure UI/UX track to rebuild the panel on shadcn/ui
 (operator explicitly authorized the dep tree, overriding the old rule-4/5 refusal

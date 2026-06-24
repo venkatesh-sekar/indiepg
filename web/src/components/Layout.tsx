@@ -1,31 +1,58 @@
-// Application shell: sidebar navigation + top bar + main content outlet.
+// Application shell: shadcn Sidebar navigation + top bar + main content outlet.
 
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import {
+  Archive,
+  ArrowLeftRight,
+  Bell,
+  Database,
+  LayoutDashboard,
+  LogOut,
+  Settings,
+  SquareTerminal,
+  type LucideIcon,
+} from "lucide-react";
 import { useSession } from "@/auth/SessionContext";
 import { useToast } from "./Toast";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar";
+import { Separator } from "@/components/ui/separator";
 
 interface NavItem {
   to: string;
   label: string;
-  icon: string;
-  /** Plain-language hint shown under the label. */
-  hint: string;
+  icon: LucideIcon;
+  /** Exact-match the route (only the index/Dashboard route). */
+  end?: boolean;
 }
 
 const NAV: NavItem[] = [
-  { to: "/", label: "Dashboard", icon: "▣", hint: "Health at a glance" },
-  { to: "/query", label: "Query", icon: "⌗", hint: "Run read-only SQL" },
-  { to: "/roles", label: "Roles & Databases", icon: "◷", hint: "Users and databases" },
-  { to: "/backups", label: "Backups", icon: "▤", hint: "Backup & restore" },
-  { to: "/alerts", label: "Alerts", icon: "◬", hint: "Notifications & rules" },
-  { to: "/migrate", label: "Migrate", icon: "⇄", hint: "Move a database here" },
-  { to: "/settings", label: "Settings", icon: "⚙", hint: "Backup storage & retention" },
+  { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
+  { to: "/query", label: "Query", icon: SquareTerminal },
+  { to: "/roles", label: "Roles & Databases", icon: Database },
+  { to: "/backups", label: "Backups", icon: Archive },
+  { to: "/alerts", label: "Alerts", icon: Bell },
+  { to: "/migrate", label: "Migrate", icon: ArrowLeftRight },
+  { to: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function Layout() {
   const { logout, subject } = useSession();
   const toast = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const onLogout = async () => {
     await logout();
@@ -33,44 +60,65 @@ export function Layout() {
     navigate("/login", { replace: true });
   };
 
+  const isActive = (item: NavItem) =>
+    item.end ? location.pathname === item.to : location.pathname.startsWith(item.to);
+
+  const currentLabel = NAV.find(isActive)?.label ?? "";
+
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">pg</span>
-          <span className="brand-name">indiepg</span>
-        </div>
-        <nav className="nav">
-          {NAV.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === "/"}
-              className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}
-            >
-              <span className="nav-icon" aria-hidden="true">
-                {item.icon}
-              </span>
-              <span className="nav-text">
-                <span className="nav-label">{item.label}</span>
-                <span className="nav-hint">{item.hint}</span>
-              </span>
-            </NavLink>
-          ))}
-        </nav>
-        <div className="sidebar-foot">
-          <div className="sidebar-user">
-            <span className="muted">Signed in</span>
-            <span>{subject ?? "admin"}</span>
+    <SidebarProvider>
+      <Sidebar>
+        <SidebarHeader>
+          <div className="flex items-center gap-2 px-2 py-1">
+            <span className="flex size-8 items-center justify-center rounded-md bg-primary text-sm font-bold text-primary-foreground">
+              pg
+            </span>
+            <span className="text-base font-semibold">indiepg</span>
           </div>
-          <button type="button" className="btn btn-sm btn-block" onClick={onLogout}>
-            Sign out
-          </button>
-        </div>
-      </aside>
-      <main className="content">
-        <Outlet />
-      </main>
-    </div>
+        </SidebarHeader>
+        <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {NAV.map((item) => (
+                  <SidebarMenuItem key={item.to}>
+                    <SidebarMenuButton asChild isActive={isActive(item)}>
+                      <NavLink to={item.to} end={item.end}>
+                        <item.icon />
+                        <span>{item.label}</span>
+                      </NavLink>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+        <SidebarFooter>
+          <div className="flex flex-col gap-0.5 px-2 py-1 text-xs">
+            <span className="text-muted-foreground">Signed in</span>
+            <span className="font-medium">{subject ?? "admin"}</span>
+          </div>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton onClick={onLogout}>
+                <LogOut />
+                <span>Sign out</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarFooter>
+      </Sidebar>
+      <SidebarInset>
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+          <SidebarTrigger />
+          <Separator orientation="vertical" className="h-4" />
+          <span className="text-sm font-medium">{currentLabel}</span>
+        </header>
+        <main className="flex-1 overflow-y-auto p-6 lg:p-8">
+          <Outlet />
+        </main>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }
