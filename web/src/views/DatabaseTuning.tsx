@@ -9,6 +9,19 @@ import { useState } from "react";
 import { api } from "@/api/client";
 import { useAsync } from "@/lib/hooks";
 import { Callout, Card, ErrorNotice, Spinner } from "@/components/ui";
+import { Field, FieldDescription, FieldTitle } from "@/components/ui/field";
+import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from "@/components/ui/toggle-group";
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableRow,
+} from "@/components/ui/table";
 import type {
   AppliedTuning,
   TuningRecommendation,
@@ -116,7 +129,7 @@ export function TuningPanel({ status }: { status: TuningStatus }) {
   const isPreviewingOther = preview !== status.active_profile;
 
   return (
-    <div className="tuning">
+    <div className="flex flex-col gap-4">
       <Callout tone="info" title="Sized to this server automatically">
         Postgres is tuned to this machine on safe best defaults — you don&apos;t
         need to tune anything by hand. This server has{" "}
@@ -140,23 +153,33 @@ export function TuningPanel({ status }: { status: TuningStatus }) {
         </Callout>
       )}
 
-      <div className="tuning-profile">
-        <label className="field">
-          <span className="field-label">Workload profile</span>
-          <select
+      <div className="flex flex-col gap-4">
+        <Field>
+          {/* A <div> (FieldTitle), not a <label>: it labels the ToggleGroup's
+              role="group" via aria-labelledby, and a <label> can only target a
+              form control. */}
+          <FieldTitle id="tuning-profile-label">Workload profile</FieldTitle>
+          <ToggleGroup
+            type="single"
+            variant="outline"
             value={preview}
-            onChange={(e) => setPreview(e.target.value as WorkloadProfile)}
+            // A profile must always be selected; ignore the empty value Radix
+            // emits when the active item is clicked again to deselect.
+            onValueChange={(v) => v && setPreview(v as WorkloadProfile)}
+            aria-labelledby="tuning-profile-label"
+            aria-describedby="tuning-profile-effect"
           >
             {PROFILE_ORDER.map((p) => (
-              <option key={p} value={p}>
+              <ToggleGroupItem key={p} value={p}>
                 {PROFILE_EFFECTS[p].label}
-                {p === status.active_profile ? " — current (best default)" : ""}
-              </option>
+                {p === status.active_profile ? " — current" : ""}
+              </ToggleGroupItem>
             ))}
-          </select>
-        </label>
-
-        <p className="muted">{PROFILE_EFFECTS[preview].effect}</p>
+          </ToggleGroup>
+          <FieldDescription id="tuning-profile-effect">
+            {PROFILE_EFFECTS[preview].effect}
+          </FieldDescription>
+        </Field>
 
         {previewRec ? (
           <SettingsTable
@@ -194,24 +217,27 @@ function SettingsTable({
   values: AppliedTuning | TuningRecommendation;
 }) {
   return (
-    <table className="tuning-table">
-      <caption className="tuning-caption">{caption}</caption>
-      <tbody>
+    <Table>
+      <TableCaption>{caption}</TableCaption>
+      <TableBody>
         {SETTINGS.map((s) => {
           const v = values[s.key];
           return (
-            <tr key={s.key}>
-              <th scope="row">
-                {s.label}
-                <span className="field-help muted"> — {s.help}</span>
-              </th>
-              <td className="tuning-value">
+            <TableRow key={s.key}>
+              <TableHead
+                scope="row"
+                className="align-top whitespace-normal font-normal"
+              >
+                <span className="font-medium">{s.label}</span>
+                <span className="text-muted-foreground"> — {s.help}</span>
+              </TableHead>
+              <TableCell className="text-right align-top font-mono tabular-nums">
                 {s.kind === "mem" ? mbLabel(v) : v}
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           );
         })}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }

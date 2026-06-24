@@ -5,6 +5,39 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band D · DatabaseTuning → shadcn (LAST band-D view)
+Tenth and final band-D view (`src/views/DatabaseTuning.tsx`). Band D is now done;
+only band E (cleanup) remains.
+- Workload-profile `<select>` (native, 3 options) → shadcn `ToggleGroup`
+  (`type="single"`, `variant="outline"`) — UI-RULES/shadcn-skill say a 2–7-option
+  set is a `ToggleGroup`, not a dropdown. Added via `npx shadcn add toggle-group`
+  (pulled `toggle.tsx` + `toggle-group.tsx`; stripped the no-op `"use client"`).
+  Items are `ToggleGroupItem`s labelled by profile; the active one is suffixed
+  " — current". `onValueChange` guards the empty string Radix emits on
+  click-to-deselect so a profile is always selected (parity with a `<select>`).
+- The selector lives in a `Field`: `FieldTitle` (a `<div>`, labelling the
+  ToggleGroup's `role="group"` via `aria-labelledby` — a `<label>` can only
+  target a form control) + the per-profile effect text as `FieldDescription`
+  (wired back via `aria-describedby`).
+- `SettingsTable`'s `<table className="tuning-table">` (orphaned, no CSS backing)
+  → shadcn `Table`/`TableBody`/`TableRow`/`TableHead scope="row"`/`TableCell`/
+  `TableCaption` — identical pattern to Pooler's `PoolSettingsTable` (font-medium
+  label + muted help; `text-right font-mono tabular-nums` value). Pure styling win.
+- Wrapper `.tuning`/`.tuning-profile` divs → `flex flex-col gap-4`; `.muted`
+  paragraph folded into `FieldDescription`. No dead CSS to delete (the `tuning-*`
+  names had no backing — same as Pooler); shared `.field*`/`.checkbox`/`.btn-row`
+  no longer referenced by any view → band E can prune them.
+- Behavior identical: 3 render states (loading/error/data), intro callout, applied
+  table or "live settings unavailable" warn, preview table + "this is a preview"
+  restart callout for non-current profiles. Test updated to drive the ToggleGroup
+  (`getByRole("radio")` + `fireEvent.click`) instead of `combobox`/`fireEvent.change`;
+  5 tests green.
+- ui-heuristics-reviewer: applied #1 (blocking — `FieldLabel`→`FieldTitle` so a
+  `<label>` doesn't label a `role="group"` div) and #2 (additive `aria-describedby`
+  → effect text); declined #3 (caption-bottom) and #4 (row hover) for consistency
+  with the sibling Pooler `Table` (same component, identical findings declined there).
+- Gates: typecheck, 125 web tests, build, go build all green.
+
 ## 2026-06-24 · band D · Pooler → shadcn
 Ninth band-D view (`src/views/Pooler.tsx`; only `DatabaseTuning` remains in band D).
 - `PoolSettingsTable`'s `<table className="tuning-table">` (with `tuning-caption`/

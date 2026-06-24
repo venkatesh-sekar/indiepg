@@ -88,9 +88,15 @@ describe("TuningPanel", () => {
     expect(screen.getByText(PROFILE_EFFECTS.mixed.effect)).toBeInTheDocument();
     expect(screen.queryByText(/This is a preview/)).not.toBeInTheDocument();
 
+    // The active profile is marked in the toggle and selected by default.
+    expect(screen.getByRole("radio", { name: "Mixed — current" })).toHaveAttribute(
+      "data-state",
+      "on",
+    );
+
     // Switch to OLAP — its effect is described, its sizing previewed, and the
     // copy makes clear nothing changes and a restart is involved.
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "olap" } });
+    fireEvent.click(screen.getByRole("radio", { name: "OLAP" }));
     expect(screen.getByText(PROFILE_EFFECTS.olap.effect)).toBeInTheDocument();
     expect(screen.getByText("OLAP would size this server to")).toBeInTheDocument();
     expect(
