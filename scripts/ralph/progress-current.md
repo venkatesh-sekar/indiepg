@@ -5,6 +5,36 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band D · Settings → shadcn
+Eighth band-D view (the `BackupSettingsForm` in `Settings.tsx`; `DatabaseTuning`
++ `Pooler` are separate backlog items, untouched). Rebuilt the S3 backup form:
+- `.field-grid` (custom 2-col CSS grid) → `grid gap-5 sm:grid-cols-2`; every
+  `<label className="field">` (label span + raw `<input>` + `.field-help muted`
+  span) → shadcn `Field` + `FieldLabel htmlFor` + `Input id` + `FieldDescription`.
+  The "— saved"/"(optional)" inline markers → `text-muted-foreground` spans.
+- SSL `<label className="checkbox">` → `Field orientation="horizontal"` +
+  shadcn `Checkbox` (`onCheckedChange`) + `FieldContent`(`FieldLabel` +
+  `FieldDescription`).
+- Submit `<div className="btn-row"><button className="btn btn-primary">` →
+  `<div className="flex">` + shadcn `Button` composing `InlineSpinner`
+  (`data-icon="inline-start"`) on the busy "Saving…" state.
+- Cards/Callouts/Badge/ErrorNotice/PageHeader/Spinner already shadcn — untouched;
+  warning Callout keeps the shared `.callout-detail`/`.callout-hint` content classes.
+Behavior identical: same fields, save logic, write-only secret/cipher semantics
+(blank field preserves stored value), `Save`↔`Save & connect` label by target,
+on-disk warning + S3-info callouts, configured/warning result callouts, toasts.
+a11y (ui-heuristics-reviewer, both blocking findings applied — purely additive,
+no behavior/visual change): wired `aria-describedby` from each `Input`/`Checkbox`
+to its `FieldDescription` id (the old `<label>`-wrap gave this for free; shadcn
+`Field` siblings don't auto-associate). Declined #1/#4/#5 (pre-existing/non-
+regression). Added `Settings.test.tsx` (4 tests: not-configured badge + on-disk
+warning, `Save`↔`Save & connect` label by bucket, saved-secret blank-field
+placeholder, blank-secret omitted from the PUT preserving the stored credential).
+Dead Settings-only CSS removed (`.field-grid` + its media query). Kept shared
+`.field`/`.field-label`/`.field-help`/`.checkbox`/`.btn-row` (Pooler +
+DatabaseTuning still use them — band E). 125 web tests green (+4); typecheck,
+build, go build green.
+
 ## 2026-06-24 · band D · Alerts → shadcn
 Seventh band-D view. Rebuilt `Alerts.tsx` on shadcn primitives:
 - Channel cards (`.channel-grid`/`.channel-card`/`.channel-head` custom divs) →

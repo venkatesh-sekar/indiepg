@@ -444,19 +444,6 @@ code {
   max-width: 200px;
 }
 
-/* Two-column form grid (e.g. the S3 settings form); collapses on narrow viewports. */
-.field-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 16px;
-}
-
-@media (max-width: 720px) {
-  .field-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 fieldset.field {
   border: none;
   padding: 0;

@@ -14,6 +14,16 @@ import {
   PageHeader,
   Spinner,
 } from "@/components/ui";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Spinner as InlineSpinner } from "@/components/ui/spinner";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldLabel,
+} from "@/components/ui/field";
 import type { ConfigResponse, UpdateConfigRequest } from "@/api/types";
 import { DatabaseTuning } from "./DatabaseTuning";
 import { Pooler } from "./Pooler";
@@ -169,25 +179,28 @@ function BackupSettingsForm({
           </Callout>
         ) : null}
 
-        <div className="field-grid">
-          <label className="field">
-            <span className="field-label">Endpoint</span>
-            <input
+        <div className="grid gap-5 sm:grid-cols-2">
+          <Field>
+            <FieldLabel htmlFor="backup-endpoint">Endpoint</FieldLabel>
+            <Input
+              id="backup-endpoint"
               type="text"
               value={endpoint}
               autoComplete="off"
               spellCheck={false}
               placeholder="s3.us-west-002.backblazeb2.com"
+              aria-describedby="backup-endpoint-desc"
               onChange={(e) => setEndpoint(e.target.value)}
             />
-            <span className="field-help muted">
+            <FieldDescription id="backup-endpoint-desc">
               The S3 host, without <code>https://</code>.
-            </span>
-          </label>
+            </FieldDescription>
+          </Field>
 
-          <label className="field">
-            <span className="field-label">Region</span>
-            <input
+          <Field>
+            <FieldLabel htmlFor="backup-region">Region</FieldLabel>
+            <Input
+              id="backup-region"
               type="text"
               value={region}
               autoComplete="off"
@@ -195,11 +208,12 @@ function BackupSettingsForm({
               placeholder="us-west-002"
               onChange={(e) => setRegion(e.target.value)}
             />
-          </label>
+          </Field>
 
-          <label className="field">
-            <span className="field-label">Bucket</span>
-            <input
+          <Field>
+            <FieldLabel htmlFor="backup-bucket">Bucket</FieldLabel>
+            <Input
+              id="backup-bucket"
               type="text"
               value={bucket}
               autoComplete="off"
@@ -207,28 +221,32 @@ function BackupSettingsForm({
               placeholder="my-database-backups"
               onChange={(e) => setBucket(e.target.value)}
             />
-          </label>
+          </Field>
 
-          <label className="field">
-            <span className="field-label">
-              Path prefix <span className="muted">(optional)</span>
-            </span>
-            <input
+          <Field>
+            <FieldLabel htmlFor="backup-prefix">
+              Path prefix{" "}
+              <span className="text-muted-foreground">(optional)</span>
+            </FieldLabel>
+            <Input
+              id="backup-prefix"
               type="text"
               value={prefix}
               autoComplete="off"
               spellCheck={false}
               placeholder="(bucket root)"
+              aria-describedby="backup-prefix-desc"
               onChange={(e) => setPrefix(e.target.value)}
             />
-            <span className="field-help muted">
+            <FieldDescription id="backup-prefix-desc">
               A sub-folder inside the bucket. Leave blank to use the root.
-            </span>
-          </label>
+            </FieldDescription>
+          </Field>
 
-          <label className="field">
-            <span className="field-label">Access key ID</span>
-            <input
+          <Field>
+            <FieldLabel htmlFor="backup-access-key">Access key ID</FieldLabel>
+            <Input
+              id="backup-access-key"
               type="text"
               value={accessKey}
               autoComplete="off"
@@ -236,77 +254,107 @@ function BackupSettingsForm({
               placeholder="0026abc…"
               onChange={(e) => setAccessKey(e.target.value)}
             />
-          </label>
+          </Field>
 
-          <label className="field">
-            <span className="field-label">
+          <Field>
+            <FieldLabel htmlFor="backup-secret-key">
               Secret access key{" "}
-              {secretIsSet ? <span className="muted">— saved</span> : null}
-            </span>
-            <input
+              {secretIsSet ? (
+                <span className="text-muted-foreground">— saved</span>
+              ) : null}
+            </FieldLabel>
+            <Input
+              id="backup-secret-key"
               type="password"
               value={secretKey}
               autoComplete="new-password"
               spellCheck={false}
               placeholder={secretIsSet ? "Leave blank to keep current" : "Enter secret key"}
+              aria-describedby="backup-secret-key-desc"
               onChange={(e) => setSecretKey(e.target.value)}
             />
-            <span className="field-help muted">
+            <FieldDescription id="backup-secret-key-desc">
               Stored in the panel’s local database and written to a private
               (0600, postgres-owned) pgBackRest config file; never shown again after saving.
-            </span>
-          </label>
+            </FieldDescription>
+          </Field>
         </div>
 
-        <label className="checkbox">
-          <input type="checkbox" checked={useSSL} onChange={(e) => setUseSSL(e.target.checked)} />
-          <span>
-            Use TLS (HTTPS) to reach the bucket
-            <span className="muted"> — recommended; turn off only for a local MinIO over plain HTTP.</span>
-          </span>
-        </label>
+        <Field orientation="horizontal">
+          <Checkbox
+            id="backup-use-ssl"
+            checked={useSSL}
+            aria-describedby="backup-use-ssl-desc"
+            onCheckedChange={(c) => setUseSSL(c === true)}
+          />
+          <FieldContent>
+            <FieldLabel htmlFor="backup-use-ssl" className="font-normal">
+              Use TLS (HTTPS) to reach the bucket
+            </FieldLabel>
+            <FieldDescription id="backup-use-ssl-desc">
+              Recommended; turn off only for a local MinIO over plain HTTP.
+            </FieldDescription>
+          </FieldContent>
+        </Field>
       </Card>
 
       <Card title="Retention &amp; encryption">
-        <div className="field-grid">
-          <label className="field">
-            <span className="field-label">Keep backups for (days)</span>
-            <input
+        <div className="grid gap-5 sm:grid-cols-2">
+          <Field>
+            <FieldLabel htmlFor="backup-retention">Keep backups for (days)</FieldLabel>
+            <Input
+              id="backup-retention"
               type="number"
               min={0}
               value={retentionDays}
+              aria-describedby="backup-retention-desc"
               onChange={(e) => setRetentionDays(Number(e.target.value))}
             />
-            <span className="field-help muted">
+            <FieldDescription id="backup-retention-desc">
               Older full backups are expired automatically. 0 keeps everything.
-            </span>
-          </label>
+            </FieldDescription>
+          </Field>
 
-          <label className="field">
-            <span className="field-label">
+          <Field>
+            <FieldLabel htmlFor="backup-cipher">
               Repository encryption passphrase{" "}
-              {cipherIsSet ? <span className="muted">— saved</span> : <span className="muted">(optional)</span>}
-            </span>
-            <input
+              {cipherIsSet ? (
+                <span className="text-muted-foreground">— saved</span>
+              ) : (
+                <span className="text-muted-foreground">(optional)</span>
+              )}
+            </FieldLabel>
+            <Input
+              id="backup-cipher"
               type="password"
               value={cipherPass}
               autoComplete="new-password"
               spellCheck={false}
               placeholder={cipherIsSet ? "Leave blank to keep current" : "Encrypt backups at rest"}
+              aria-describedby="backup-cipher-desc"
               onChange={(e) => setCipherPass(e.target.value)}
             />
-            <span className="field-help muted">
+            <FieldDescription id="backup-cipher-desc">
               Enables AES-256 encryption of the backup repository.{" "}
               <strong>Keep it safe</strong> — without it, encrypted backups can never be restored.
-            </span>
-          </label>
+            </FieldDescription>
+          </Field>
         </div>
       </Card>
 
-      <div className="btn-row">
-        <button type="submit" className="btn btn-primary" disabled={busy}>
-          {busy ? "Saving…" : hasTarget ? "Save & connect" : "Save"}
-        </button>
+      <div className="flex">
+        <Button type="submit" disabled={busy}>
+          {busy ? (
+            <>
+              <InlineSpinner data-icon="inline-start" />
+              Saving…
+            </>
+          ) : hasTarget ? (
+            "Save & connect"
+          ) : (
+            "Save"
+          )}
+        </Button>
       </div>
     </form>
   );
