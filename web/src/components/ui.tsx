@@ -4,6 +4,11 @@
 import { useState, type ReactNode } from "react";
 import { ApiError } from "@/api/client";
 import { Badge as ShadcnBadge } from "@/components/ui/badge";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 
 // --- Badges ----------------------------------------------------------------
 
@@ -105,6 +110,14 @@ export function StatCard({
 
 // --- Callouts --------------------------------------------------------------
 
+/** Maps the panel's callout tones onto the shadcn Alert variants. */
+const calloutVariant = {
+  info: "info",
+  warn: "warning",
+  danger: "destructive",
+  ok: "success",
+} as const;
+
 export function Callout({
   tone = "info",
   title,
@@ -115,10 +128,10 @@ export function Callout({
   children: ReactNode;
 }) {
   return (
-    <div className={`callout callout-${tone}`}>
-      {title ? <strong className="callout-title">{title}</strong> : null}
-      <div>{children}</div>
-    </div>
+    <Alert variant={calloutVariant[tone]}>
+      {title ? <AlertTitle>{title}</AlertTitle> : null}
+      <AlertDescription>{children}</AlertDescription>
+    </Alert>
   );
 }
 
@@ -162,13 +175,13 @@ export function EmptyState({
 export function StaleBanner({ error }: { error: ApiError | Error }) {
   const isApi = error instanceof ApiError;
   return (
-    <div className="callout callout-warn" role="alert">
-      <strong className="callout-title">Live updates paused</strong>
-      <div>
+    <Alert variant="warning">
+      <AlertTitle>Live updates paused</AlertTitle>
+      <AlertDescription>
         Showing the last values received — the latest refresh failed: {error.message}
-      </div>
-      {isApi && error.hint ? <div className="callout-hint">{error.hint}</div> : null}
-    </div>
+        {isApi && error.hint ? <div className="callout-hint">{error.hint}</div> : null}
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -176,13 +189,15 @@ export function StaleBanner({ error }: { error: ApiError | Error }) {
 export function ErrorNotice({ error }: { error: ApiError | Error }) {
   const isApi = error instanceof ApiError;
   return (
-    <div className="callout callout-danger" role="alert">
-      <strong className="callout-title">
+    <Alert variant="destructive">
+      <AlertTitle>
         {isApi ? labelForCode(error.code) : "Something went wrong"}
-      </strong>
-      <div>{error.message}</div>
-      {isApi && error.hint ? <div className="callout-hint">{error.hint}</div> : null}
-    </div>
+      </AlertTitle>
+      <AlertDescription>
+        {error.message}
+        {isApi && error.hint ? <div className="callout-hint">{error.hint}</div> : null}
+      </AlertDescription>
+    </Alert>
   );
 }
 

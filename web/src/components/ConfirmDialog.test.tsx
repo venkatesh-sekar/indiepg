@@ -116,11 +116,11 @@ describe("TypedConfirmDialog", () => {
     expect(screen.getByText(/cannot be undone/)).toBeInTheDocument();
     // The object name is named explicitly (in the warning and in the prompt).
     expect(screen.getAllByText("orders").length).toBeGreaterThan(0);
-    // The caller's consequence text is surfaced inside a danger callout. Query
-    // the container by class so the assertion proves the structural invariant
+    // The caller's consequence text is surfaced inside a destructive alert. Query
+    // the container by variant so the assertion proves the structural invariant
     // ("shown in a danger callout") rather than which text node happens to carry
-    // the class — a child wrapper added later must not silently pass this.
-    const callout = document.querySelector(".callout-danger");
+    // it — a child wrapper added later must not silently pass this.
+    const callout = document.querySelector('[data-variant="destructive"]');
     expect(callout).toBeInTheDocument();
     expect(callout).toHaveTextContent(
       "Every table and row in this database will be permanently deleted.",

@@ -68,8 +68,8 @@ describe("StaleBanner", () => {
     // role=alert so the freeze is announced, not silent.
     const alert = screen.getByRole("alert");
     expect(alert).toBeInTheDocument();
-    // warn (not danger) — the cached data is still useful, this is a soft stall.
-    expect(alert).toHaveClass("callout-warn");
+    // warning (not destructive) — the cached data is still useful, soft stall.
+    expect(alert).toHaveAttribute("data-variant", "warning");
     expect(screen.getByText("Live updates paused")).toBeInTheDocument();
     expect(
       screen.getByText(/Could not reach the panel\. Check your connection\./),

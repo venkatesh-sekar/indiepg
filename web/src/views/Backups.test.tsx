@@ -112,7 +112,7 @@ describe("LocalBackupWarning", () => {
 
   it("warns (warn tone) about disk/host loss and points to S3 when backups are local-only", () => {
     renderWarning({ kind: "local" });
-    expect(document.querySelector(".callout")).toHaveClass("callout-warn");
+    expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "warning");
     expect(screen.getByText(/disk failure or losing the server/i)).toBeInTheDocument();
     // Nudges off-host: a link into Settings to connect a bucket.
     const link = screen.getByRole("link", { name: /set up an s3 bucket/i });
@@ -171,8 +171,8 @@ describe("backupFreshness", () => {
 describe("BackupStatusSummary", () => {
   it("shouts (danger) and warns data is unprotected when there are no backups", () => {
     render(<BackupStatusSummary backups={[]} />);
-    const callout = document.querySelector(".callout");
-    expect(callout).toHaveClass("callout-danger");
+    const callout = document.querySelector('[data-slot="alert"]');
+    expect(callout).toHaveAttribute("data-variant", "destructive");
     expect(screen.getByText(/your data is not protected/i)).toBeInTheDocument();
   });
 
@@ -180,19 +180,19 @@ describe("BackupStatusSummary", () => {
     render(
       <BackupStatusSummary backups={[rec({ result: "fail" }), rec({ result: "success" })]} />,
     );
-    expect(document.querySelector(".callout")).toHaveClass("callout-danger");
+    expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "destructive");
     expect(screen.getByText(/most recent backup failed/i)).toBeInTheDocument();
   });
 
   it("shouts (danger) when every backup has failed", () => {
     render(<BackupStatusSummary backups={[rec({ result: "fail" })]} />);
-    expect(document.querySelector(".callout")).toHaveClass("callout-danger");
+    expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "destructive");
     expect(screen.getByText(/no working backup yet/i)).toBeInTheDocument();
   });
 
   it("shows an ok banner with the backup type when the latest backup succeeded", () => {
     render(<BackupStatusSummary backups={[rec({ backup_type: "full", result: "success" })]} />);
-    expect(document.querySelector(".callout")).toHaveClass("callout-ok");
+    expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "success");
     expect(screen.getByText(/your data is backed up/i)).toBeInTheDocument();
     expect(screen.getByText("full")).toBeInTheDocument();
   });
@@ -238,7 +238,7 @@ describe("RestoreTestStatus", () => {
     // Intentionally NOT a danger shout: the operator simply hasn't run a
     // verification yet, so it states the fact without alarm.
     render(<RestoreTestStatus tests={[]} />);
-    expect(document.querySelector(".callout")).toHaveClass("callout-info");
+    expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "info");
     expect(screen.getByText(/haven't been test-restored yet/i)).toBeInTheDocument();
   });
 
@@ -246,19 +246,19 @@ describe("RestoreTestStatus", () => {
     render(
       <RestoreTestStatus tests={[rt({ result: "fail" }), rt({ result: "success" })]} />,
     );
-    expect(document.querySelector(".callout")).toHaveClass("callout-danger");
+    expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "destructive");
     expect(screen.getByText(/most recent restore test failed/i)).toBeInTheDocument();
   });
 
   it("shouts (danger) when no restore test has ever passed", () => {
     render(<RestoreTestStatus tests={[rt({ result: "fail" })]} />);
-    expect(document.querySelector(".callout")).toHaveClass("callout-danger");
+    expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "destructive");
     expect(screen.getByText(/no restore test has passed yet/i)).toBeInTheDocument();
   });
 
   it("shows an ok banner (with restored rows) when the latest test passed", () => {
     render(<RestoreTestStatus tests={[rt({ result: "success", verified_rows: 1234 })]} />);
-    expect(document.querySelector(".callout")).toHaveClass("callout-ok");
+    expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "success");
     expect(screen.getByText(/verified intact/i)).toBeInTheDocument();
     expect(screen.getByText(/1,234 rows restored and verified/i)).toBeInTheDocument();
   });

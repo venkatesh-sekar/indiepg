@@ -5,6 +5,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { Modal } from "./Modal";
+import { Callout } from "./ui";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -123,7 +124,7 @@ export function TypedConfirmDialog({
         This permanently removes the {objectKind}{" "}
         <strong>{objectName}</strong>. This cannot be undone.
       </p>
-      {consequence ? <div className="callout callout-danger">{consequence}</div> : null}
+      {consequence ? <Callout tone="danger">{consequence}</Callout> : null}
       <label className="field">
         <span className="field-label">
           Type <code>{objectName}</code> to confirm

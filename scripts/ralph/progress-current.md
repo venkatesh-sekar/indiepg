@@ -5,6 +5,29 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band C · Alert family → shadcn Alert
+Migrated the hand-rolled callouts (`Callout`/`ErrorNotice`/`StaleBanner` in `ui.tsx`,
+rendered as `<div className="callout callout-*">`) onto the shadcn `Alert`. Extended
+`alert.tsx` cva with soft-tinted `success`/`warning`/`info` variants (reusing the same
+`--color-*` theme tokens the Badge migration added) and set the destructive base to a
+soft bg, mirroring the legacy callout look. Added a `data-variant` attr to `<Alert>`
+(parity with Badge) so tests can assert tone without class strings. `Callout` keeps its
+tone-based public API and maps tone→variant (info→info, warn→warning, danger→destructive,
+ok→success) over `<Alert>` + `<AlertTitle>`/`<AlertDescription>`; all 40+ callsites
+untouched. `ErrorNotice`/`StaleBanner` recomposed the same way (kept `labelForCode`
+labels, the hint, role="alert" via Alert). Also switched two raw hand-rolled callout
+divs to the shared `Callout`: `ConfirmDialog.tsx` (consequence) and `Login.tsx` (error).
+Deleted the dead `.callout` container/color CSS (`.callout`, `.callout-title`, adjacency
+margins, `.callout-info/ok/warn/danger`); kept `.callout-detail`/`.callout-hint` content
+classes still used inside children. Migrated test asserts off `.callout-*` classes onto
+`data-variant`/`data-slot` (Backups ×9, ConfirmDialog ×1, ui StaleBanner ×1).
+ui-heuristics-reviewer: ACCEPTED the urgency/colorblind finding (added `border-l-4
+border-l-<tone>` accent to all variants) and the hint-contrast finding (scoped
+`[data-slot=alert] .callout-hint` to inherit the variant color, dimmed). DECLINED
+removing `text-muted-foreground` from `AlertDescription` — that's the stock shadcn
+pattern and the claim was hedged/unverified; the accent border already covers urgency.
+Gates green: typecheck, 93 web tests, build, go build.
+
 ## 2026-06-24 · band C · Badge family → shadcn Badge
 Migrated the hand-rolled badges (`Badge`/`ReadOnlyBadge`/`ResultBadge` in `ui.tsx`,
 rendered as `<span className="badge badge-*">`) onto the shadcn `Badge`. shadcn's

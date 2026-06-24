@@ -5,6 +5,7 @@ import { useState, type FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { ApiError } from "@/api/client";
 import { useSession } from "@/auth/SessionContext";
+import { Callout } from "@/components/ui";
 
 export function Login() {
   const { login } = useSession();
@@ -55,9 +56,7 @@ export function Login() {
         <p className="login-sub">Sign in with your admin password.</p>
 
         {error ? (
-          <div className={`callout ${locked ? "callout-warn" : "callout-danger"}`} role="alert">
-            {error}
-          </div>
+          <Callout tone={locked ? "warn" : "danger"}>{error}</Callout>
         ) : null}
 
         <label className="field">

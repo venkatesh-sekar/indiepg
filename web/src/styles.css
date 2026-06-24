@@ -416,30 +416,20 @@ code {
   text-align: right;
 }
 
-/* --- Callouts ------------------------------------------------------------ */
-
-.callout {
-  border-radius: var(--radius-sm);
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-}
-
-.callout + .callout,
-.callout + .field,
-.field + .callout {
-  margin-top: 12px;
-}
-
-.callout-title {
-  display: block;
-  margin-bottom: 4px;
-}
+/* --- Callout content (rendered inside shadcn Alert) ---------------------- */
 
 .callout-hint {
   margin-top: 6px;
   font-size: 13px;
   color: var(--text-muted);
+}
+
+/* Inside a shadcn Alert the hint sits on a tinted background; inherit the
+   variant's foreground (dimmed) so it stays legible instead of washing out as
+   neutral grey. */
+[data-slot="alert"] .callout-hint {
+  color: inherit;
+  opacity: 0.8;
 }
 
 /* Verbatim command output (e.g. pgBackRest stderr) inside a callout. */
@@ -455,26 +445,6 @@ code {
   overflow: auto;
   background: rgba(0, 0, 0, 0.06);
   border-radius: var(--radius-sm);
-}
-
-.callout-info {
-  background: var(--info-soft);
-  border-color: transparent;
-}
-
-.callout-ok {
-  background: var(--ok-soft);
-  border-color: transparent;
-}
-
-.callout-warn {
-  background: var(--warn-soft);
-  border-color: transparent;
-}
-
-.callout-danger {
-  background: var(--danger-soft);
-  border-color: transparent;
 }
 
 .bullet-list {
