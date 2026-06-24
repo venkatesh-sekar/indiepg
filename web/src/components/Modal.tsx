@@ -1,7 +1,17 @@
-// Accessible modal dialog primitive: focus trap-ish, Escape to close, click on
-// the backdrop to dismiss.
+// Modal: a thin wrapper over the shadcn Dialog that keeps the panel's
+// `open/title/onClose/children/footer/tone/width` contract. Radix handles the
+// focus trap, Escape-to-close, backdrop dismiss and focus restore that this
+// component used to hand-roll.
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { type ReactNode } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 interface ModalProps {
   open: boolean;
@@ -15,6 +25,12 @@ interface ModalProps {
   width?: "sm" | "md" | "lg";
 }
 
+const widthClass: Record<NonNullable<ModalProps["width"]>, string> = {
+  sm: "sm:max-w-md",
+  md: "sm:max-w-xl",
+  lg: "sm:max-w-3xl",
+};
+
 export function Modal({
   open,
   title,
@@ -24,50 +40,33 @@ export function Modal({
   tone = "default",
   width = "md",
 }: ModalProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    dialogRef.current?.querySelector<HTMLElement>(
-      "input, textarea, select, button",
-    )?.focus();
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      previouslyFocused?.focus?.();
-    };
-  }, [open, onClose]);
-
-  if (!open) return null;
-
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <div
-        ref={dialogRef}
-        className={`modal modal-${width} ${tone === "danger" ? "modal-danger" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        onMouseDown={(e) => e.stopPropagation()}
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        // Radix fires this for Escape, backdrop click and the close button.
+        // A no-op `onClose` (e.g. while busy) keeps the dialog open, matching
+        // the old behaviour.
+        if (!next) onClose();
+      }}
+    >
+      <DialogContent
+        // Children are free-form (forms, paragraphs); opt out of Radix's
+        // auto-generated description reference rather than ship a dangling id.
+        aria-describedby={undefined}
+        data-tone={tone}
+        className={cn(
+          widthClass[width],
+          tone === "danger" && "ring-destructive/30",
+        )}
       >
-        <header className="modal-head">
-          <h2>{title}</h2>
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label="Close"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </header>
-        <div className="modal-body">{children}</div>
-        {footer ? <footer className="modal-foot">{footer}</footer> : null}
-      </div>
-    </div>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        {/* Only the body scrolls — the header and pinned close button stay put. */}
+        <div className="max-h-[65vh] overflow-y-auto">{children}</div>
+        {footer ? <DialogFooter>{footer}</DialogFooter> : null}
+      </DialogContent>
+    </Dialog>
   );
 }

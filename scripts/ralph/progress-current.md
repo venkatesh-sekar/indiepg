@@ -5,6 +5,29 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band C · Modal → shadcn Dialog
+Recomposed the hand-rolled `Modal` (`src/components/Modal.tsx` — a `.modal-backdrop`
+div with a manual `keydown`/Escape handler, manual first-focus + focus-restore, and
+a custom `.modal*` layout) over the shadcn `Dialog`. The wrapper keeps its exact
+public API (`open, title, onClose, children, footer?, tone?, width?`) and composes
+`Dialog`/`DialogContent`/`DialogHeader`/`DialogTitle`/`DialogFooter`, so all ~10
+callsites (Alerts ×2, Migrate ×3, Backups ×1, RolesDatabases ×4, ConfirmDialog ×2)
+stay untouched and behaviour is identical — Radix now owns the focus trap, Escape,
+backdrop dismiss and focus restore. `width` maps to `sm:max-w-md|xl|3xl`; `tone="danger"`
+adds a semantic `ring-destructive/30` accent (replacing the old danger header border)
+plus a `data-tone` hook. The busy case (`onClose` is a no-op) still keeps the dialog
+open: the controlled `open` prop overrides Radix's `onOpenChange(false)`. Reviewer
+(ui-heuristics) caught two regressions, both fixed: (1) `overflow-y-auto` on
+`DialogContent` would scroll the absolute-positioned close button out of view → moved
+the scroll to an inner `max-h-[65vh] overflow-y-auto` wrapper around `{children}` only,
+leaving the close button pinned; (2) Radix auto-generates an `aria-describedby` with no
+matching `DialogDescription` → opted out with `aria-describedby={undefined}`. Deleted
+the dead `.modal*` CSS and the now-orphaned `@keyframes fade`/`pop` (kept `.confirm-message`,
+still used by ConfirmDialog). 95 web tests green (no test referenced modal classes;
+ConfirmDialog/Pooler dialog tests query by text/role and stay green through the portal).
+Modal.tsx stays as a thin Dialog shell — full per-callsite decomposition + `.btn`→`Button`
+rides along with each view migration in band D.
+
 ## 2026-06-24 · band C · Spinner → shadcn Spinner
 Recomposed the hand-rolled loading `Spinner` (`ui.tsx`, a `<div className="loading">`
 with a CSS-`border`-spun `<span className="spinner">`) over the shadcn `Spinner`
