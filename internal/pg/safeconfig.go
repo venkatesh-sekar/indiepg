@@ -4,10 +4,15 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/core"
 	"github.com/venkatesh-sekar/indiepg/internal/exec"
 )
+
+// livenessTimeout bounds the post-restart probe. A down postmaster refuses the
+// socket connection immediately, so this only caps the rare up-but-hung case.
+const livenessTimeout = 30 * time.Second
 
 // autoConfFileName is the file ALTER SYSTEM writes to, inside the data
 // directory. Snapshotting and restoring this file is how a config change that
@@ -71,17 +76,20 @@ func (m *Manager) restoreAutoConf(ctx context.Context, snap autoConfSnapshot) er
 // BEFORE the change was written. `what` names the change for the operator
 // (e.g. "WAL archiving config").
 //
-// The postgresql systemd unit is synchronous: `systemctl restart` blocks until
-// the cluster reaches active or fails, so a non-zero exit is the authoritative
-// "Postgres did not come back up" signal. On that signal this restores snap
-// (last-known-good) and restarts again, so the cluster is never left down, then
-// returns a CodeSafety error naming the rejected change. If the rollback restart
-// itself fails, it returns a CodeInternal error making clear Postgres is down.
+// Health is judged by a real liveness probe (see restartAndConfirm), NOT the
+// `systemctl restart` exit code: on Debian/Ubuntu — exactly the platform we
+// provision via apt — the `postgresql` unit is a oneshot wrapper that pulls in
+// the real postgresql@<ver>-main.service via a non-binding Wants, so the restart
+// exits 0 even when the cluster fails to start. If the new config does not come
+// up, this restores snap (last-known-good) and restarts again, so the cluster is
+// never left down, then returns a CodeSafety error naming the rejected change.
+// If Postgres is still down after the rollback restart, it returns a
+// CodeInternal error making clear Postgres is down.
 func (m *Manager) restartWithRollback(ctx context.Context, snap autoConfSnapshot, what string) error {
-	if err := m.restartService(ctx); err == nil {
-		return nil // Postgres restarted cleanly on the new config
+	if err := m.restartAndConfirm(ctx); err == nil {
+		return nil // Postgres restarted cleanly and is accepting connections
 	} else {
-		m.log.Error("config change prevented Postgres from restarting; rolling back to last-known-good",
+		m.log.Error("config change prevented Postgres from coming back up; rolling back to last-known-good",
 			"change", what, "error", err.Error())
 	}
 
@@ -91,7 +99,7 @@ func (m *Manager) restartWithRollback(ctx context.Context, snap autoConfSnapshot
 			WithHint("postgresql.auto.conf still contains the rejected settings; restore it manually before restarting Postgres").
 			Wrap(err)
 	}
-	if err := m.restartService(ctx); err != nil {
+	if err := m.restartAndConfirm(ctx); err != nil {
 		return core.InternalError(
 			"pg: %s prevented Postgres from starting and the rollback restart also failed; Postgres is down", what).Wrap(err)
 	}
@@ -104,6 +112,18 @@ func (m *Manager) restartWithRollback(ctx context.Context, snap autoConfSnapshot
 	}
 }
 
+// restartAndConfirm restarts the managed Postgres unit and verifies the
+// postmaster actually came back up accepting connections. It returns nil ONLY
+// when both the restart succeeded AND the liveness probe confirms Postgres is
+// live — never trusting the systemd wrapper unit's exit code alone (see
+// confirmAcceptingConnections).
+func (m *Manager) restartAndConfirm(ctx context.Context) error {
+	if err := m.restartService(ctx); err != nil {
+		return err
+	}
+	return m.confirmAcceptingConnections(ctx)
+}
+
 // restartService restarts the managed Postgres systemd unit.
 func (m *Manager) restartService(ctx context.Context) error {
 	_, err := m.runner.Run(ctx, exec.RunSpec{
@@ -112,4 +132,23 @@ func (m *Manager) restartService(ctx context.Context) error {
 		Timeout: commandTimeout,
 	})
 	return err
+}
+
+// confirmAcceptingConnections probes the local postmaster directly with a real
+// `SELECT 1` over the unix socket (as the postgres OS user, peer auth). This —
+// NOT the `systemctl restart` exit code — is the authoritative "did Postgres
+// come back up?" signal, because the Debian/Ubuntu `postgresql` wrapper unit
+// exits 0 regardless of whether the real cluster started. A bounded timeout
+// keeps a hung postmaster from blocking the rollback. SELECT 1 carries no
+// secret, so no log redaction is needed.
+func (m *Manager) confirmAcceptingConnections(ctx context.Context) error {
+	if _, err := m.runner.Run(ctx, exec.RunSpec{
+		Name:    "psql",
+		AsUser:  "postgres",
+		Args:    []string{"-v", "ON_ERROR_STOP=1", "-tAqX", "-d", defaultConnectDatabase, "-c", "SELECT 1"},
+		Timeout: livenessTimeout,
+	}); err != nil {
+		return core.ExecError("pg: Postgres did not accept connections after restart").Wrap(err)
+	}
+	return nil
 }

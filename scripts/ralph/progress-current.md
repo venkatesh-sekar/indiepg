@@ -5,6 +5,39 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2.5 (resource & config safety) · self-healing rollback: judge PG health by a real liveness probe, not the systemd exit code
+North-star audit (bands 0–3 complete; only band-4 cosmetic shadcn redo remained,
+which conflicts with the non-negotiable YAGNI/KISS + security-supply-chain rules,
+so I audited instead of pulling in a Tailwind/Radix/lucide dep tree) surfaced a
+CRITICAL load-bearing defect in `internal/pg/safeconfig.go`. `restartWithRollback`
+— the self-heal that snapshots `postgresql.auto.conf` before a restart-requiring
+change and reverts to last-known-good if PG won't come back up (used by
+`ApplyTuning` host-sized tuning + `EnsureArchiving` WAL config) — judged "did PG
+come back up?" SOLELY by the exit code of `systemctl restart postgresql`. But the
+cluster is apt-installed on Debian/Ubuntu (manager.go:53), where the `postgresql`
+unit is a oneshot wrapper that pulls in the real `postgresql@<ver>-main.service`
+via a NON-binding `Wants` → `systemctl restart postgresql` exits 0 even when the
+cluster fails to start. So a bad tuning/archiving value could leave Postgres DOWN
+while the panel reported success and the rollback NEVER fired — defeating the one
+guarantee the whole primitive exists for ("Postgres never left down"). FIX: health
+is now judged by a real liveness probe — `confirmAcceptingConnections` runs
+`SELECT 1` over the local socket as the postgres OS user (peer auth, bounded 30s
+timeout), bypassing the lying wrapper. New `restartAndConfirm` (restart + confirm)
+is used for BOTH the initial restart AND the post-rollback restart, so we also
+never falsely claim "Postgres is running" after a rollback that didn't actually
+bring it up (that path now honestly returns CodeInternal "down"). Reused the
+existing bare-`psql` path so the `//go:build integration` test
+(`tuning_apply_integration_test.go`, which injects PGHOST/PGPORT env into every
+command + translates `systemctl restart postgresql`→`pg_ctl restart -w`) keeps
+passing unchanged. Test-first: 2 new regression tests (systemd-lies→still-rolls-
+back→CodeSafety; stays-down-after-rollback→CodeInternal) + augmented the happy
+path to assert the liveness probe actually runs — all 3 RED against the old code,
+GREEN after. Reviewed (feature-dev:code-reviewer): no blocking issues (confirmed
+SELECT 1 is the stricter/correct signal vs pg_isready, integration test unbroken,
+tests non-vacuous). Full Go gate green. NOTE follow-up added to backlog: `IsRunning`
+(manager.go:251) is fooled by the same wrapper but only feeds a best-effort
+dashboard badge (telemetry's real PG connection is the authoritative signal there).
+
 ## 2026-06-24 · band 3 (usability) · PgBouncer pooler — React UI toggle (UI slice 3 of 3, FEATURE COMPLETE)
 The final slice: the operator-facing toggle on Settings, wiring the two backend
 endpoints into one card (`web/src/views/Pooler.tsx`, rendered after the tuning
