@@ -93,6 +93,13 @@ func (c ConnInfo) connArgs() (args []string, asUser string, env []string, sensit
 		return []string{"-h", host, "-p", port}, "postgres", nil, false
 	}
 	args = []string{"-h", c.Host, "-p", port, "-U", c.User}
+	// Bound the connection-establishment phase so a black-holed or overloaded
+	// source (accepts the TCP connection then never completes the libpq startup)
+	// cannot make psql/pg_dump/pg_dumpall block indefinitely on connect. libpq's
+	// connect_timeout covers only the connect/auth phase, never a running dump,
+	// so it can never abort a legitimate in-progress migration. Remote only:
+	// local peer-auth over the unix socket has no black-hole to guard against.
+	env = append(env, "PGCONNECT_TIMEOUT="+strconv.Itoa(remoteConnectTimeoutSecs))
 	if c.Password != "" {
 		env = append(env, "PGPASSWORD="+c.Password)
 		sensitive = true
@@ -106,6 +113,12 @@ func (c ConnInfo) connArgs() (args []string, asUser string, env []string, sensit
 // defaultSocketDir is the conventional unix-socket directory for local peer-auth
 // connections when a local ConnInfo carries no explicit socket directory.
 const defaultSocketDir = "/var/run/postgresql"
+
+// remoteConnectTimeoutSecs is the libpq connect_timeout (seconds) applied to
+// every REMOTE source connection. Generous enough never to trip on a healthy
+// transcontinental link, small enough that a dead/black-holed source fails fast
+// instead of hanging a migration worker on connect. (libpq's minimum is 2s.)
+const remoteConnectTimeoutSecs = 10
 
 // DumpInfo describes a completed pg_dump output file.
 type DumpInfo struct {

@@ -22,6 +22,27 @@ import (
 // cleared wholesale on panel startup so a crash mid-dump cannot leak disk.
 const migrateWorkBaseDir = "/var/lib/indiepg/migrate"
 
+// migrationJobTimeout bounds a single migration worker run. It is a generous
+// backstop, not a tuning knob: an indie-hacker-scale dump/restore finishes well
+// within it, but a source that accepts the connection then stalls mid-transfer
+// (firewall black-hole, overloaded host, half-open TCP) can no longer wedge a
+// job in "importing" forever — the worker context expires, the orchestrator
+// records a failure, and the per-job work dir is cleaned up. The engine's
+// PGCONNECT_TIMEOUT (see migrate.connArgs) catches the far more common
+// connect-phase stall in seconds; this is the outer guard for a stall that
+// begins after the connection is established. A var (not const) so tests can
+// shrink it.
+var migrationJobTimeout = 6 * time.Hour
+
+// workerContext derives the bounded background context a detached migration
+// worker runs under. Workers run on context.Background() (NOT the request
+// context) so they survive the HTTP response; the timeout is the only thing
+// standing between a stalled source and a job that hangs forever. The caller
+// MUST defer the returned cancel.
+func workerContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), migrationJobTimeout)
+}
+
 // jobWorkDir returns (and creates 0700) the per-job temp directory for migration
 // id. The directory holds the pg_dump output; the Orchestrator removes it on
 // return. Creating it here (not in the Orchestrator) keeps the base dir constant
@@ -95,8 +116,14 @@ func (r *storeRecorder) Progress(ctx context.Context, done, total, bytesTotal in
 }
 
 // Fail marks the migration failed with the (already redacted) cause and a
-// finished timestamp.
+// finished timestamp. The terminal write runs on a context detached from the
+// worker's cancellation/deadline (then re-bounded): the most common reason to
+// record a failure is the worker context EXPIRING on a stalled source, and a
+// cancelled context would otherwise make the store write a no-op — leaving the
+// job wedged in "importing" forever, the exact bug the worker timeout fixes.
 func (r *storeRecorder) Fail(ctx context.Context, cause error) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	rec, err := r.store.GetMigration(ctx, r.id)
 	if err != nil {
 		return err
@@ -112,8 +139,12 @@ func (r *storeRecorder) Fail(ctx context.Context, cause error) error {
 }
 
 // Succeed marks the migration completed with the verified row counts and a
-// finished timestamp.
+// finished timestamp. Like Fail, the terminal write is detached from the worker
+// context and re-bounded so a shutdown racing the final write cannot leave a
+// genuinely-completed migration stuck displaying "importing".
 func (r *storeRecorder) Succeed(ctx context.Context, src, tgt map[string]int64) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	rec, err := r.store.GetMigration(ctx, r.id)
 	if err != nil {
 		return err
@@ -147,7 +178,8 @@ func marshalCounts(m map[string]int64) string {
 // drives Direct. All failures are recorded by the Orchestrator via the recorder;
 // this wrapper only logs the terminal outcome.
 func (s *Server) runDirectJob(id int64, job migrate.Job) {
-	ctx := context.Background()
+	ctx, cancel := workerContext()
+	defer cancel()
 	rec := newStoreRecorder(s.store, id)
 
 	// Resolve the local target here (it needs a live Postgres for the port) so a
@@ -175,7 +207,8 @@ func (s *Server) runDirectJob(id int64, job migrate.Job) {
 // session. It requires the S3-backed Service (s.migrate must be non-nil; the
 // caller has already verified that).
 func (s *Server) runExportJob(id int64, sess *migrate.MigrationSession, src migrate.ConnInfo) {
-	ctx := context.Background()
+	ctx, cancel := workerContext()
+	defer cancel()
 	rec := newStoreRecorder(s.store, id)
 
 	workDir, err := jobWorkDir(id)
@@ -194,7 +227,8 @@ func (s *Server) runExportJob(id int64, sess *migrate.MigrationSession, src migr
 // session fails/expires), then downloads, restores, and verifies the dump into
 // the local Postgres. It requires the S3-backed Service.
 func (s *Server) runImportWorker(id int64, code string) {
-	ctx := context.Background()
+	ctx, cancel := workerContext()
+	defer cancel()
 	rec := newStoreRecorder(s.store, id)
 
 	tgt, err := s.localTargetConn(ctx)

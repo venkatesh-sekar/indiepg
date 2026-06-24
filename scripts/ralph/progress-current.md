@@ -5,6 +5,34 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2 (stability) · migration workers can no longer hang forever on a stalled source
+North-star audit HIGH defect. The three detached migration workers
+(`runDirectJob`/`runExportJob`/`runImportWorker`, internal/server/migrate_worker.go)
+ran on a bare `context.Background()` with no deadline, and the engine's `connArgs`
+(internal/migrate/engine.go) set no connect timeout. A source that accepts the TCP
+connection then stalls (firewall black-hole, overloaded host) made validateSource /
+pg_dump block indefinitely → the migration sat in `importing` forever, work dir never
+cleaned until the next restart sweep. Direct-pull is the primary path and the source is
+arbitrary user input, so this is a real "get stuck" hazard. FIX (two parts): (1) added
+`PGCONNECT_TIMEOUT=10` to the REMOTE branch of connArgs — bounds libpq's connect/auth
+phase only (never a running dump, so it can't abort a legit slow migration) so a dead
+source fails fast on connect; (2) every worker now runs on `workerContext()` =
+`context.WithTimeout(context.Background(), migrationJobTimeout=6h)` — a generous
+backstop for a stall that begins after connect; the orchestrator already threads ctx
+into every engine call so the deadline propagates and the work dir is cleaned on return.
+Reviewer (feature-dev:code-reviewer) caught a CRITICAL: `rec.Fail`/`rec.Succeed` wrote
+through the SAME now-expired worker ctx, so on a timeout the SQLite write would no-op
+and leave the job wedged in `importing` — defeating the fix. Fixed at the persistence
+boundary (one place, covers the worker timeout arm AND the orchestrator's
+fail/failSession-from-a-stalled-dump): `storeRecorder.Fail`/`Succeed` persist on
+`context.WithTimeout(context.WithoutCancel(ctx), 10s)`, matching the existing
+backup-manager detached-ctx convention. Tests (test-first + the reviewer regression):
+connArgs remote-has / local-lacks the timeout; orchestrator stalled-source (blocking
+Version) fails at the deadline with `errors.Is(err, DeadlineExceeded)` and never dumps;
+workerContext is bounded + its shrunk timeout fires; and `Fail` persists `failed`
+status despite an already-cancelled ctx (non-vacuous: RED on the old direct-ctx code).
+Go gate green incl. `-race`; web untouched.
+
 ## 2026-06-24 · band 1.5 (data durability) · cluster migration no longer aborts on the `postgres` maintenance DB
 North-star audit (areas iter-44 didn't cover: migration, scheduler, leaks, pooler
 atomicity) found a HIGH-severity migration defect. A whole-cluster migration

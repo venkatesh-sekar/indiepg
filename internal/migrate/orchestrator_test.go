@@ -21,6 +21,9 @@ type fakeEngine struct {
 
 	versionErr error
 	version    string
+	// versionBlocks makes Version block until the context is cancelled, modelling
+	// a source that accepts the connection then stalls. It returns ctx.Err().
+	versionBlocks bool
 
 	databases   []DatabaseSize
 	listErr     error
@@ -58,6 +61,10 @@ func (f *fakeEngine) connTag(c ConnInfo) string {
 }
 
 func (f *fakeEngine) Version(ctx context.Context, conn ConnInfo) (string, error) {
+	if f.versionBlocks {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
 	return f.version, f.versionErr
 }
 
@@ -270,6 +277,36 @@ func TestDirect_single_sourceUnreachable(t *testing.T) {
 	require.Empty(t, eng.dumps, "must not dump when source is unreachable")
 	// The redacted source summary must not leak the password.
 	require.NotContains(t, err.Error(), "s3cr3t")
+}
+
+// A source that accepts the connection then stalls (Version never returns) must
+// not hang the orchestrator: the bounded worker context (modelled here by a
+// short deadline) expires, the job fails promptly with the context error, and no
+// dump is ever taken. Without the worker-level timeout this test would block to
+// the package test timeout.
+func TestDirect_single_stalledSourceFailsAtDeadline(t *testing.T) {
+	eng := &fakeEngine{versionBlocks: true}
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, nil, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- o.Direct(ctx, Job{Mode: ModeSingleDB, Source: srcConn("appdb"), Target: tgtConn(), TargetDatabase: "appdb"}, rec)
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Equal(t, 1, rec.failCount)
+		require.False(t, rec.succeeded)
+		require.Empty(t, eng.dumps, "must not dump a stalled source")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Direct hung past the source deadline instead of failing")
+	}
 }
 
 func TestDirect_single_nonEmptyTargetWithoutOverwrite(t *testing.T) {

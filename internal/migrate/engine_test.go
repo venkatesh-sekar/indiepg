@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -96,6 +97,25 @@ func TestConnInfo_connArgs_remoteNoPassword(t *testing.T) {
 	_, _, env, sensitive := c.connArgs()
 	require.NotContains(t, strings.Join(env, " "), "PGPASSWORD")
 	require.False(t, sensitive)
+}
+
+// A remote connection must carry a libpq connect_timeout so a black-holed source
+// fails fast on connect instead of wedging a migration worker forever.
+func TestConnInfo_connArgs_remoteHasConnectTimeout(t *testing.T) {
+	_, _, env, _ := remoteConn().connArgs()
+	require.Contains(t, env, "PGCONNECT_TIMEOUT="+strconv.Itoa(remoteConnectTimeoutSecs))
+	// Even a passwordless remote (no PGPASSWORD) must still get the timeout.
+	c := remoteConn()
+	c.Password = ""
+	_, _, env, _ = c.connArgs()
+	require.Contains(t, env, "PGCONNECT_TIMEOUT="+strconv.Itoa(remoteConnectTimeoutSecs))
+}
+
+// Local peer-auth connections have no remote black-hole to guard against and
+// must NOT carry a connect_timeout (keeps the socket env clean).
+func TestConnInfo_connArgs_localHasNoConnectTimeout(t *testing.T) {
+	_, _, env, _ := localConn().connArgs()
+	require.NotContains(t, strings.Join(env, " "), "PGCONNECT_TIMEOUT")
 }
 
 // ---- Version / psql plumbing --------------------------------------------
