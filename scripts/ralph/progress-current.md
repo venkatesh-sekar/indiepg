@@ -5,6 +5,34 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · PgBouncer pooler — SCRAM userlist render (slice 4a)
+Carved the substantive sub-piece the backlog flagged out of the enable-flow
+item: the pure SCRAM `userlist.txt` render, mirroring how every prior pgbouncer
+slice was built pure-first (pool math → ini render → ini installer → this).
+Added `internal/pgbouncer/userlist.go`:
+- `RenderUserlist([]UserlistEntry) (string, error)` builds the auth_file text —
+  `"username" "verifier"` lines, the `sm`/pgbouncer format. Pure render, no file
+  I/O (atomic install + chown lands in the install/enable slice, like the .ini).
+- **Security-strict** (the auth_file is a boundary): at least one entry required
+  (an empty auth_file silently locks every app out of the pooler); EVERY verifier
+  must be `SCRAM-SHA-256$…` and drawn only from the verifier's own alphabet
+  (`[A-Za-z0-9+/=:$-]`) — md5/plaintext are **refused, never downgraded**, and the
+  charset check doubles as the injection guard for the quoted token; usernames
+  containing a quote/whitespace/control char/Unicode line separator are rejected
+  (not escaped) so a crafted name can't inject a second auth entry; duplicate
+  usernames refused (pgbouncer silently honours only the first → ambiguous).
+- **Deterministic** (sorted by username) so an unchanged user set renders
+  byte-identical and the future enable flow can skip a needless reload.
+
+Tests (`userlist_test.go`): line-format, sorted-stable/order-independent,
+empty-refused, non-SCRAM-refused (md5/plaintext/wrong-case/wrong-algo),
+verifier-injection (quote/newline/space/`#`), username-injection
+(quote/space/tab/newline/U+2028/U+2029/NUL/empty), duplicate-refused,
+no-write-on-error. Reviewed (feature-dev:code-reviewer): two test-hardening
+findings applied — explicit U+2028/U+2029 separator cases (was an opaque raw
+byte) and a `CodeValidation` assertion on the empty-slice path. Gates: gofmt
+clean, go vet, go test ./..., CGO_ENABLED=0 build all green; no web/ touched.
+
 ## 2026-06-24 · band 3 (usability) · PgBouncer pooler — config installer (slice 3)
 Third PgBouncer slice, mirroring how the pgBackRest installer split the atomic
 config write out from `stanza-create`. Added `internal/pgbouncer/install.go`:
