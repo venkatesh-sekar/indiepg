@@ -632,6 +632,10 @@ function SecretsModal({ creds, onClose }: { creds: CredentialResult; onClose: ()
       open
       title="Save these now"
       tone="danger"
+      // These credentials cannot be retrieved again, so only the explicit
+      // "I've saved them" button may close this — never a reflexive Escape or
+      // click-away before they're copied.
+      dismissible={false}
       onClose={onClose}
       footer={
         <Button type="button" onClick={onClose}>

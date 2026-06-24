@@ -10,24 +10,20 @@ Format per item:
 
 ## Open
 
-> **Status (iter 19):** the discovery/convergence pass did NOT converge — a fresh 5-agent Mode-S pass
-> (3 of 5 agents converged) surfaced TWO genuine new items. **Shipped the stronger one** (Migrate:
-> the failed-job Callout unconditionally claimed "your existing data is intact," which is FALSE for an
-> overwrite job — the orchestrator drops the target DB *before* the restore, verified in
-> `orchestrator.go`; **4 SHIP, incl. restraint critic**). The second (Roles `SecretsModal` accidental
-> Escape/backdrop dismissal destroys one-time credentials) is filed below as the next quick win.
-> `stable_streak` stays **0**. Next iteration: take the SecretsModal item (Mode F).
+> **Status (iter 20):** shipped the iter-19 SecretsModal find — the one-time credentials modal was
+> dismissible by Escape/backdrop/X, any of which destroyed the only copy of just-shown passwords. Added an
+> opt-in `dismissible?: boolean` to the shared `Modal` (default unchanged) and set it false on `SecretsModal`
+> so only the explicit "I've saved them" button closes it. **4 SHIP, zero blockers (incl. restraint critic).**
+> `stable_streak` stays **0** (shipped a real improvement). Backlog is now actionable-empty again (only a
+> NEEDS-BACKEND item + two low/watch items remain). Next iteration: run a fresh Mode-S discovery/convergence
+> pass — if it surfaces nothing high/med, that's the next stable_streak increment toward convergence.
 
 ### Quick wins (high/med payoff, S effort) — do these first
-- [ ] (high/S) Roles & Databases — the one-time `SecretsModal` (shown after New App / rotate, with
-  passwords + connection strings that "cannot be retrieved again") is a plain `Modal`, so Escape or a
-  backdrop click routes to `onClose` → `setSecrets(null)` and the credentials are gone forever. A reflexive
-  Escape/click-away before copying destroys the only copy. → Make the secrets modal dismissible ONLY via
-  the explicit "I've saved them" button: either pass a guarded `onClose` (no-op on casual dismissal, mirror
-  `RestoreModal`'s `onClose={busy ? () => undefined : onClose}`) or add an opt-in `dismissible?: boolean`
-  prop to `Modal` (default unchanged) wiring Radix `onInteractOutside`/`onEscapeKeyDown` → `preventDefault`,
-  set false here. Surfaced by the iter-19 Roles/Backups convergence agent; same "harden an irreversible path"
-  class as the iter-18 rotate-confirm fix — adds zero visible surface, removes an accidental-loss vector.
+- [x] (high/S) Roles & Databases — the one-time `SecretsModal` was a plain `Modal`, so Escape/backdrop/X
+  routed to `onClose` → `setSecrets(null)`, destroying the only copy of just-shown credentials.
+  **Shipped iter 20** via an opt-in `dismissible?: boolean` prop on `Modal` (default `true`, every other
+  modal unchanged) that hides the corner X + `preventDefault`s Escape/`onInteractOutside`; `SecretsModal`
+  sets `dismissible={false}` so the explicit "I've saved them" button is the sole exit. 4 SHIP. See Done.
 - ~~(high/S) Roles & Databases — `dropBusy` disables every Delete button during a
   drop~~ — **rejected iter 5**: `dropBusy` is true only while the modal
   `TypedConfirmDialog` is open, which makes the background inert/`aria-hidden`; no
@@ -128,6 +124,27 @@ Format per item:
   backend hint, which is out of scope).
 
 ## Done
+
+- [x] (high/S) Roles & Databases — the one-time **`SecretsModal`** ("Save these now", shown after New App
+  / rotate) displays passwords + connection strings that **"cannot be retrieved again."** It was a plain
+  `Modal`, so **Escape, a backdrop click, or the corner X** all routed to `onClose` → `setSecrets(null)` —
+  destroying the only copy before the user had copied it (recovery = rotate again). **Shipped iter 20.**
+  Added an opt-in **`dismissible?: boolean`** prop to the shared `web/src/components/Modal.tsx` (default
+  `true`, so all other modals are byte-for-byte unchanged); when `false` it sets `showCloseButton={false}`
+  (drops the corner X) and `preventDefault`s `onEscapeKeyDown` + `onInteractOutside` (swallows Escape +
+  backdrop). `SecretsModal` now passes `dismissible={false}`, making the existing **"I've saved them"**
+  button the sole exit — net surface *removes* the X, adds no new control/copy/click. Extended the rotate
+  test to assert: after confirming, the secrets dialog has no Close (X) button, an Escape keydown does NOT
+  dismiss it, and only the "I've saved them" click closes it. **4 SHIP, zero blockers** — UX heuristics
+  ("textbook H#5 error-prevention; closes all three dismiss vectors in concert; works by subtraction");
+  Sam ("the safe direction to fail in — one stray Escape used to mean rotate-again; the footer button always
+  renders so I'm never trapped"); Priya ("the one place a reflexive dismiss is irreversible loss; scoped to
+  `SecretsModal`, every other dialog keeps Escape/click-away; a guardrail, not hand-holding"); restraint
+  critic ("removes a control, adds none; `dismissible` is a safe-default opt-in with a concrete caller, not
+  premature config; a bespoke SecretsModal would be *more* divergence; do-nothing accepts guaranteed
+  credential loss"). Surfaced by the iter-19 Roles/Backups convergence agent; same "harden an irreversible
+  path" class as the iter-18 rotate-confirm fix. Gates: typecheck ✓, 145 tests ✓, build ✓ (dist regenerated
+  + staged), go build ✓ (exit 0, outside sandbox). stable_streak stays 0.
 
 - [x] (high/S) Migrate — the failed-job Callout (`DirectJobProgress`, `Migrate.tsx`) **unconditionally**
   printed *"Your existing data is intact — the import only writes a freshly created database."* That is

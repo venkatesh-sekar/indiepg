@@ -124,6 +124,17 @@ describe("RolesDatabases", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /rotate password/i }));
     expect(rotateSpy).toHaveBeenCalledWith("app");
     // The new credentials are then surfaced once.
-    expect(await screen.findByText("Save these now")).toBeInTheDocument();
+    const secrets = await screen.findByRole("dialog");
+    expect(within(secrets).getByText("Save these now")).toBeInTheDocument();
+
+    // These credentials cannot be retrieved again, so a reflexive Escape or a
+    // backdrop click must NOT close the modal — there is no corner X either.
+    expect(within(secrets).queryByRole("button", { name: /^close$/i })).toBeNull();
+    fireEvent.keyDown(secrets, { key: "Escape" });
+    expect(screen.getByText("Save these now")).toBeInTheDocument();
+
+    // Only the explicit acknowledgement dismisses it.
+    fireEvent.click(within(secrets).getByRole("button", { name: /saved them/i }));
+    expect(screen.queryByText("Save these now")).toBeNull();
   });
 });

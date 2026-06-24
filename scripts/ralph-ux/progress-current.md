@@ -3,6 +3,36 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 20 — Mode F (SHIP) (Roles: secrets modal closes only by explicit ack) — stable_streak 0 → 0
+Took the top backlog quick-win filed by the iter-19 Roles/Backups convergence agent: the one-time
+`SecretsModal` ("Save these now", shown after New App / rotate) displays passwords + connection strings
+that **"cannot be retrieved again,"** yet it was a plain `Modal` — so **Escape, a backdrop click, or the
+corner X** each routed to `onClose` → `setSecrets(null)`, destroying the only copy before the user had
+copied it (recovery = rotate again). A reflexive dismiss = irreversible credential loss.
+Fix (subtractive — *removes* a control, adds none): added an opt-in **`dismissible?: boolean`** prop to the
+shared `Modal` (default `true`, so all other modals are byte-for-byte unchanged). When `false` it sets
+`showCloseButton={false}` (drops the corner X) and `preventDefault`s `onEscapeKeyDown` + `onInteractOutside`
+(swallows Escape + backdrop/focus-out) — all three Radix dismiss vectors closed in concert; miss any one and
+a live data-loss path remains. `SecretsModal` now passes `dismissible={false}`, making the **existing**
+"I've saved them" footer button the sole exit (it always renders, so the user is never trapped). Verified
+the `SecretValue` Reveal/Copy controls are real `Button`s, fully keyboard-reachable inside Radix's focus
+trap (the heuristics reviewer's one non-blocking note — already satisfied, no change needed). Extended the
+rotate test: after confirming, the secrets dialog has no Close (X) button, an Escape keydown does NOT
+dismiss it, and only the "I've saved them" click closes it.
+Review panel: **4 SHIP, zero blockers** — UX heuristics ("textbook H#5 error-prevention; all three dismiss
+vectors closed together; works by subtraction, not addition"); Sam ("the safe direction to fail in — one
+stray Escape used to mean rotate-again; the footer button always renders so I'm never trapped"); Priya ("the
+one place a reflexive dismiss is irreversible loss; scoped to `SecretsModal`, every other dialog keeps
+Escape/click-away; a guardrail, not hand-holding"); restraint critic ("removes a control, adds none;
+`dismissible` is a safe-default opt-in with a concrete caller — NOT premature config; a bespoke SecretsModal
+would be MORE divergence; do-nothing accepts guaranteed credential loss"). Gates: typecheck ✓, 145 tests ✓
+(extended the existing rotate test rather than adding a case), build ✓ (dist regenerated + staged), go build
+✓ (exit 0, outside sandbox). **stable_streak stays 0** (shipped a real improvement). **LESSON:** once-only
+content must close only by an explicit acknowledgement — strip the casual dismiss paths (X + Escape +
+backdrop, all three) rather than adding a warning; a safe-default opt-in `dismissible` boolean with one
+concrete caller clears restraint because it's subtractive and the loss it prevents is irreversible. Backlog
+is now actionable-empty again. Next iteration: run a fresh Mode-S discovery/convergence pass.
+
 ## 2026-06-25 — iter 19 — Mode F (SHIP) (Migrate: honest failed-job copy on an overwrite) — stable_streak 0 → 0
 Ran a fresh discovery/convergence pass (5-agent Mode-S panel, same coverage as iters 15–18). **Three of
 five agents converged** (Dashboard+Query, Settings/Tuning/Pooler/Login, nav/IA — all "no new high/med

@@ -23,6 +23,13 @@ interface ModalProps {
   tone?: "default" | "danger";
   /** Width hint. */
   width?: "sm" | "md" | "lg";
+  /**
+   * When `false`, the dialog can only be closed by an explicit action inside
+   * `children`/`footer` — Escape, a backdrop click and the corner X are all
+   * disabled. Use for one-time content that's destroyed on close (e.g. secrets
+   * shown only once) so a reflexive dismiss can't lose it. Defaults to `true`.
+   */
+  dismissible?: boolean;
 }
 
 const widthClass: Record<NonNullable<ModalProps["width"]>, string> = {
@@ -39,6 +46,7 @@ export function Modal({
   footer,
   tone = "default",
   width = "md",
+  dismissible = true,
 }: ModalProps) {
   return (
     <Dialog
@@ -55,6 +63,11 @@ export function Modal({
         // auto-generated description reference rather than ship a dangling id.
         aria-describedby={undefined}
         data-tone={tone}
+        // When not dismissible, drop the corner X and swallow Escape / backdrop
+        // dismissal so the only way out is the explicit action in the footer.
+        showCloseButton={dismissible}
+        onEscapeKeyDown={dismissible ? undefined : (e) => e.preventDefault()}
+        onInteractOutside={dismissible ? undefined : (e) => e.preventDefault()}
         className={cn(
           widthClass[width],
           tone === "danger" && "ring-destructive/30",

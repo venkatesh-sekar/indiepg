@@ -129,6 +129,26 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
 
 ## Rules of thumb
 
+- **Once-only content must close only by an explicit acknowledgement — strip the casual dismiss paths, don't
+  just add a warning.** Iter 20: the `SecretsModal` showed credentials that "cannot be retrieved again," but
+  it was a plain `Modal`, so Escape, a backdrop click, OR the corner X each routed to `onClose` →
+  `setSecrets(null)` and destroyed the only copy. The fix is the mirror of iter-18's "add the first guard on
+  an unguarded irreversible action," but here the action is *dismissal itself*: you don't add UI, you
+  **remove the accidental exits** so the deliberate one ("I've saved them", already present) becomes the
+  sole path out. All four reviewers (incl. the restraint critic) shipped because the change is *subtractive*
+  — it removes the corner X and adds no control/copy/click. **Implementation pattern:** add an opt-in
+  `dismissible?: boolean` to the shared `Modal` (default `true` → every other modal byte-for-byte
+  unchanged), and when false wire all THREE Radix vectors together — `showCloseButton={false}` (the X),
+  `onEscapeKeyDown` → `preventDefault` (Escape), `onInteractOutside` → `preventDefault` (backdrop/focus-out).
+  Missing any one leaves a live data-loss path. **Why it clears restraint** (vs the rejected items): a
+  safe-default boolean with one concrete caller is *not* premature configurability — a bespoke non-shared
+  SecretsModal would be MORE divergence than one prop wired to capabilities Radix already exposes; and the
+  payoff is specific and irreversible (a reflexive keypress permanently destroys a credential), not
+  decoration. **Tell it's the strong case:** when `dismissible={false}` makes one control the only exit,
+  confirm that control is unconditionally rendered/enabled (here the footer `<Button>` always renders) so
+  the user can never be trapped — the heuristics reviewer and restraint critic both flagged this as the one
+  thing to verify, and it held.
+
 - **Reassurance copy that is conditionally FALSE is a defect, not decoration — gate it on the condition that
   makes it false, and verify the backend to know which condition that is.** Iter 19: Migrate's failed-job
   Callout always said "your existing data is intact," but for an *overwrite* job the orchestrator drops the
