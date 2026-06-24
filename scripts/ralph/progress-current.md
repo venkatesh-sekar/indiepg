@@ -5,6 +5,25 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band E · consistency sweep → COMPLETE
+Final E item: the consistency sweep. Comprehensive grep audit across `src/views/`
+and `src/components/` confirmed **zero hand-rolled equivalents** survive — every
+empty state uses `Empty` (`EmptyState`), every status uses `Badge`, every callout
+uses `Alert` (`Callout`/`ErrorNotice`/`StaleBanner`), every loader uses a shadcn
+primitive (`Spinner` for labeled/indeterminate loads, `Skeleton` for Dashboard's
+shape-preview — no `animate-pulse` divs). No raw `<button>`/`<select>`/`<input>`/
+`<textarea>`/`<table>`/`<hr>` in views (the one `<button>` hit is a test fixture),
+no raw colors, no manual `z-index`, no `space-x/y-*`. `Modal`/`ConfirmDialog` are
+live thin shadcn-`Dialog`/`AlertDialog` wrappers (4 callsites each), not orphans;
+`Toast.tsx` is deleted (→ sonner). `styles.css` is down to shadcn token infra +
+minimal globals (162 lines). All four gates green: typecheck, 130 web tests,
+build, `go build` (sandbox-off). No source change this iteration (build emitted
+byte-identical dist) — the migration was already complete; this iteration is the
+verification + sign-off. **Wrote `COMPLETE.md`.** Every Goal condition in
+PROMPT.md holds: shadcn initialised, all 10 views rebuilt, hand-rolled components
+replaced, legacy design-token CSS removed, gates green. **The shadcn UI/UX
+rebuild is DONE.**
+
 ## 2026-06-24 · band E · global body/code/a element rules → semantic tokens
 Migrated the last legacy-var-consuming CSS — the global `body`/`code`/`a` element
 rules — onto shadcn semantic tokens, then deleted the now-freed legacy vars
