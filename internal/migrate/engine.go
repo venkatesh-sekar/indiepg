@@ -152,8 +152,9 @@ type PgEngine interface {
 	// Version returns the server version string (the output of "SHOW
 	// server_version") for the connection.
 	Version(ctx context.Context, conn ConnInfo) (string, error)
-	// ListDatabases returns every non-template database with its size, sorted by
-	// name. template0/template1 are excluded.
+	// ListDatabases returns the user databases to move in a cluster migration
+	// with their sizes, sorted by name. template0/template1 and the `postgres`
+	// maintenance DB are excluded (see the implementation for why postgres is).
 	ListDatabases(ctx context.Context, conn ConnInfo) ([]DatabaseSize, error)
 	// DatabaseExists reports whether a database with the given name exists.
 	DatabaseExists(ctx context.Context, conn ConnInfo, name string) (bool, error)
@@ -261,10 +262,16 @@ func (e *engine) Version(ctx context.Context, conn ConnInfo) (string, error) {
 	return v, nil
 }
 
-// ListDatabases lists non-template databases with sizes, ordered by name.
+// ListDatabases lists the user databases to move in a cluster migration, with
+// sizes, ordered by name. The `postgres` maintenance DB is excluded: it exists
+// on every cluster (so the target already has its own), and including it breaks
+// the cluster move — DropDatabase connects to -d postgres and "cannot drop the
+// currently open database" (overwrite mode), or the restore's CREATE DATABASE
+// postgres collides with the target's own (non-overwrite mode). Roles/grants
+// are carried separately by globals, so its contents are not user data to move.
 func (e *engine) ListDatabases(ctx context.Context, conn ConnInfo) ([]DatabaseSize, error) {
 	const sql = "SELECT datname, pg_database_size(datname), pg_size_pretty(pg_database_size(datname)) " +
-		"FROM pg_database WHERE datistemplate = false AND datname NOT IN ('template0','template1') " +
+		"FROM pg_database WHERE datistemplate = false AND datname NOT IN ('template0','template1','postgres') " +
 		"ORDER BY datname"
 	out, err := e.psql(ctx, conn, "postgres", sql)
 	if err != nil {

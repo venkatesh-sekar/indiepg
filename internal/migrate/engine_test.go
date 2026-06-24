@@ -185,6 +185,24 @@ func TestListDatabases_malformed(t *testing.T) {
 	require.Equal(t, core.CodeInternal, core.CodeOf(err))
 }
 
+// The cluster-migration loop is the sole consumer of ListDatabases, and the
+// `postgres` maintenance DB must never enter it: in overwrite mode DropDatabase
+// connects to -d postgres and "cannot drop the currently open database", and in
+// non-overwrite mode the restore's CREATE DATABASE postgres collides with the
+// target's own maintenance DB — either way the cluster move aborts partway.
+// Roles/grants are carried by globals, so the maintenance DB holds no user data
+// worth moving. Filtering is SQL-side, so assert the query excludes it (the
+// quoted literal is unambiguous — the -d postgres connection arg is unquoted).
+func TestListDatabases_excludesPostgresMaintenanceDB(t *testing.T) {
+	e, r := newEngine()
+	r.On("pg_database_size", exec.FakeResponse{Stdout: "appdb|2048|2048 bytes\n"})
+	_, err := e.ListDatabases(context.Background(), localConn())
+	require.NoError(t, err)
+	query := strings.Join(r.Calls()[0].Args, " ")
+	require.Contains(t, query, "NOT IN", "postgres must be excluded via a NOT IN list")
+	require.Contains(t, query, "'postgres'", "the postgres maintenance DB must be excluded from a cluster move")
+}
+
 // ---- DatabaseExists / DatabaseNonEmpty ----------------------------------
 
 func TestDatabaseExists(t *testing.T) {

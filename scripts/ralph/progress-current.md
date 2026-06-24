@@ -5,6 +5,31 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · cluster migration no longer aborts on the `postgres` maintenance DB
+North-star audit (areas iter-44 didn't cover: migration, scheduler, leaks, pooler
+atomicity) found a HIGH-severity migration defect. A whole-cluster migration
+(`directCluster`, orchestrator.go) iterates `engine.ListDatabases`, which excluded
+only `template0`/`template1` — so the source's `postgres` maintenance DB entered the
+per-database loop. In overwrite mode `DropDatabase(target,"postgres")` runs
+`DROP DATABASE IF EXISTS postgres` while connected to `-d postgres` → "cannot drop the
+currently open database" → the cluster move aborts AFTER earlier DBs were already
+dropped+restored (half-migrated box). In non-overwrite mode the restore's
+`CREATE DATABASE postgres` collides with the target's own maintenance DB. Every real
+cluster has a `postgres` DB, so this fired on essentially every cluster move — and the
+existing tests never included `postgres`, so it was invisible. FIX (test-first): added
+`'postgres'` to the SQL `NOT IN` exclusion in `engine.ListDatabases` (engine.go) — its
+SOLE caller is the cluster loop (the panel's `GET /databases` uses a different
+`pg.ListDatabases`), so `total`, the dump/restore loop, and the verify loop all
+consistently exclude it with one change. Roles/grants are carried by globals, so the
+maintenance DB holds no user data to move. Test `TestListDatabases_excludesPostgresMaintenanceDB`
+asserts the query carries the exclusion (filtering is SQL-side; the quoted `'postgres'`
+literal is unambiguous vs the unquoted `-d postgres` arg); proven RED→GREEN. Reviewed
+(feature-dev:code-reviewer): no blocking issues — sole-caller, count-consistency, and
+non-vacuous-test all confirmed; the now-silent skip of a `postgres` DB holding user
+tables is a net improvement over crashing. The other audit findings (migration worker
+has no timeout/connect_timeout → can hang forever; ssh-less S3 path holds whole dump in
+RAM → OOM; no pooler-disable inverse) are appended to the backlog.
+
 ## 2026-06-24 · band 2.5 (config safety) · IsRunning judges PG liveness by a real probe, not the lying systemd wrapper
 Closed the last open band-2.5 follow-up (the audit-found LOW item). `Manager.IsRunning`
 (internal/pg/manager.go) trusted `systemctl is-active postgresql`, but on the
