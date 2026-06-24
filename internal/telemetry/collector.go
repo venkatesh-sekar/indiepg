@@ -17,6 +17,19 @@ type Collector struct {
 	store   *store.Store
 	exp     *Exporter
 	log     *core.Logger
+
+	// backupOutcome is an optional, store-independent source for the most recent
+	// backup result. The newest backup_history row normally drives the immediate
+	// backup-failed alert, but a failed backup whose history insert ALSO fails
+	// would leave that row at the prior success and silence the alert. When wired,
+	// the in-memory outcome wins whenever it is more recent than the newest row.
+	backupOutcome BackupOutcomeSource
+}
+
+// BackupOutcomeSource reports the most recent backup result observed in memory,
+// independent of the history store. *backup.Manager satisfies it structurally.
+type BackupOutcomeSource interface {
+	LastOutcome() (at time.Time, failed bool, ok bool)
 }
 
 // NewCollector builds a Collector. A nil store skips buffering; a nil exporter
@@ -27,6 +40,16 @@ func NewCollector(sampler Sampler, st *store.Store, exp *Exporter, log *core.Log
 		log = core.Discard()
 	}
 	return &Collector{sampler: sampler, store: st, exp: exp, log: log}
+}
+
+// UseBackupOutcome wires a store-independent backup-outcome source so a failed
+// backup whose history-row insert ALSO fails still raises the immediate
+// backup-failed alert. Optional and nil-safe; pass *backup.Manager. Call it
+// during construction, before any goroutine begins calling SampleOnce — the
+// field is set without a lock (the server wires it in newServer, before the
+// background loop starts).
+func (c *Collector) UseBackupOutcome(src BackupOutcomeSource) {
+	c.backupOutcome = src
 }
 
 // SampleOnce performs one sampling cycle: take a snapshot, buffer its samples in
@@ -67,27 +90,42 @@ func (c *Collector) SampleOnce(ctx context.Context) (Snapshot, error) {
 // A box with no backups yet is deliberately left untouched (failed stays 0) so a
 // fresh install is not reported as "backup failed" before its first run.
 func (c *Collector) enrichBackup(ctx context.Context, snap *Snapshot) {
-	if c.store == nil {
+	// The most recent attempt of any result drives the immediate failure signal.
+	// Two sources can report it: the newest backup_history row (authoritative,
+	// covers history across restarts) and the in-memory outcome of this process's
+	// last backup (covers the case where a failed backup's history insert ALSO
+	// failed, leaving the newest row stale). Whichever is more recent wins.
+	storeAt, storeFailed, haveStore := c.latestStoreOutcome(ctx)
+
+	var memAt time.Time
+	var memFailed, haveMem bool
+	if c.backupOutcome != nil {
+		memAt, memFailed, haveMem = c.backupOutcome.LastOutcome()
+	}
+
+	// Set unconditionally (not just on failure) so a recovered backup clears the
+	// signal even if some earlier stage set it.
+	switch {
+	case haveStore && haveMem:
+		// The in-memory outcome wins only when strictly newer, so a persisted row
+		// (which may carry richer detail) stays authoritative on a tie.
+		if memAt.After(storeAt) {
+			snap.LastBackupFailed = boolToMetric(memFailed)
+		} else {
+			snap.LastBackupFailed = boolToMetric(storeFailed)
+		}
+	case haveStore:
+		snap.LastBackupFailed = boolToMetric(storeFailed)
+	case haveMem:
+		snap.LastBackupFailed = boolToMetric(memFailed)
+	default:
+		// A box with no backups yet is left untouched (failed stays 0) so a fresh
+		// install is not reported as "backup failed" before its first run.
 		return
 	}
 
-	// The most recent attempt of any result drives the immediate failure signal.
-	// backup_history rows are terminal ("success"/"fail"), so the newest row's
-	// result is the latest scheduled backup's outcome.
-	recent, err := c.store.ListBackups(ctx, 1)
-	if err != nil {
-		c.log.Warn("enrich backup telemetry failed", "step", "list_backups", "error", err)
+	if c.store == nil {
 		return
-	}
-	if len(recent) == 0 {
-		return
-	}
-	// Set unconditionally (not just on failure) so the store stays authoritative:
-	// a recovered backup clears the signal even if some earlier stage set it.
-	if backupSucceeded(recent[0].Result) {
-		snap.LastBackupFailed = 0
-	} else {
-		snap.LastBackupFailed = 1
 	}
 
 	// Age of the last *successful* backup. NotFound is normal ("never succeeded")
@@ -105,6 +143,43 @@ func (c *Collector) enrichBackup(ctx context.Context, snap *Snapshot) {
 			snap.LastBackupAgeSeconds = age
 		}
 	}
+}
+
+// latestStoreOutcome reports the newest backup_history row's completion time and
+// whether it failed. ok is false when there is no store, no rows, or a read
+// error (logged) — callers then fall back to the in-memory outcome.
+func (c *Collector) latestStoreOutcome(ctx context.Context) (at time.Time, failed bool, ok bool) {
+	if c.store == nil {
+		return time.Time{}, false, false
+	}
+	// backup_history rows are terminal ("success"/"fail"), so the newest row's
+	// result is the latest scheduled backup's outcome.
+	recent, err := c.store.ListBackups(ctx, 1)
+	if err != nil {
+		c.log.Warn("enrich backup telemetry failed", "step", "list_backups", "error", err)
+		return time.Time{}, false, false
+	}
+	if len(recent) == 0 {
+		return time.Time{}, false, false
+	}
+	return backupAtTime(&recent[0]), !backupSucceeded(recent[0].Result), true
+}
+
+// boolToMetric maps a failure flag to the 0/1 metric value.
+func boolToMetric(failed bool) float64 {
+	if failed {
+		return 1
+	}
+	return 0
+}
+
+// backupAtTime returns a backup row's completion time (its stop time, falling
+// back to its start time) for recency comparison against the in-memory outcome.
+func backupAtTime(b *store.BackupRecord) time.Time {
+	if b.StoppedAt != nil && !b.StoppedAt.IsZero() {
+		return *b.StoppedAt
+	}
+	return b.StartedAt
 }
 
 // backupSucceeded reports whether a backup_history result denotes success. The

@@ -333,6 +333,59 @@ func TestManagerBackup_FailureRowPersistedOnCancelledCtx(t *testing.T) {
 	require.NotEmpty(t, recs[0].Error)
 }
 
+// TestManagerBackup_FailureRecordsInMemoryOutcomeWithoutStore proves the
+// store-independent failure signal: a failed backup records its outcome in
+// memory (LastOutcome → failed) even when NO history row is written at all (nil
+// store). This is the path that keeps the backup-failed alert loud when a
+// failed backup's history insert itself fails — the collector reads this signal.
+func TestManagerBackup_FailureRecordsInMemoryOutcomeWithoutStore(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{ExitCode: 50, Err: core.ExecError("pgbackrest failed")})
+
+	// No Store: recordBackup is a no-op, so the ONLY record of this failure is the
+	// in-memory outcome.
+	m := New(Options{Runner: runner, Config: testConfig(), Logger: core.Discard()})
+
+	before := time.Now().UTC()
+	_, err := m.Backup(ctx, TypeIncr)
+	require.Error(t, err)
+	require.Equal(t, core.CodeExec, core.CodeOf(err))
+
+	at, failed, ok := m.LastOutcome()
+	require.True(t, ok, "an attempted backup must leave an in-memory outcome")
+	require.True(t, failed, "the run failed")
+	require.False(t, at.Before(before), "outcome timestamp is the run's completion time")
+}
+
+// TestManagerBackup_SuccessRecordsInMemoryOutcome proves a successful backup
+// records a non-failed in-memory outcome, so a recovery clears the signal even
+// independent of the store.
+func TestManagerBackup_SuccessRecordsInMemoryOutcome(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{Stdout: "completed"})
+	runner.On("info", exec.FakeResponse{Stdout: sampleInfoJSON})
+
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: runner, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	_, err := m.Backup(ctx, TypeFull)
+	require.NoError(t, err)
+
+	_, failed, ok := m.LastOutcome()
+	require.True(t, ok)
+	require.False(t, failed, "a successful backup must clear the in-memory failure signal")
+}
+
+// TestManagerBackup_NoBackupLeavesOutcomeUnset proves a manager that never ran a
+// backup reports no in-memory outcome, so a fresh box is not treated as failed.
+func TestManagerBackup_NoBackupLeavesOutcomeUnset(t *testing.T) {
+	m := New(Options{Runner: exec.NewFakeRunner(), Config: testConfig(), Logger: core.Discard()})
+	_, _, ok := m.LastOutcome()
+	require.False(t, ok)
+}
+
 func TestManagerBackup_InvalidStanza(t *testing.T) {
 	runner := exec.NewFakeRunner()
 	cfg := testConfig()

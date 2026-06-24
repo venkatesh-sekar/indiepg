@@ -46,6 +46,16 @@ type Manager struct {
 	// (CodeConflict) with no failure row, never a false alarm.
 	backupMu sync.Mutex
 
+	// outcomeMu guards lastOutcome, the most recent backup result observed this
+	// process. The immediate backup-failed alert is normally derived from the
+	// newest backup_history row, but recordBackup is best-effort — if a failed
+	// backup's history insert ALSO fails (store contention / disk pressure on the
+	// panel volume), the newest row stays the prior success and the alert goes
+	// silent. lastOutcome records the result independent of that store write so
+	// the telemetry collector can keep the alert loud. See LastOutcome.
+	outcomeMu   sync.RWMutex
+	lastOutcome backupOutcome
+
 	// Deep restore-test seams. scratchRoot is the directory the deep restore-test
 	// restores its throwaway scratch cluster into (never the live data dir).
 	// diskFree and resolvePGBin are injectable so the orchestration is unit-testable
@@ -184,6 +194,11 @@ func (m *Manager) Backup(ctx context.Context, t Type) (core.Result, error) {
 	started := time.Now().UTC()
 	_, runErr := m.runner.Run(ctx, BackupCmd(stanza, t))
 	stopped := time.Now().UTC()
+
+	// Remember this outcome in memory FIRST, independent of the history-row write
+	// below. recordBackup is best-effort; if its insert fails, the in-memory
+	// signal keeps the backup-failed alert honest (see lastOutcome).
+	m.recordOutcome(stopped, runErr != nil)
 
 	// Record the run regardless of outcome.
 	rec := store.BackupRecord{
@@ -465,6 +480,33 @@ func (m *Manager) verifyForRead(ctx context.Context) error {
 		return nil
 	}
 	return err
+}
+
+// backupOutcome is the most recent backup result observed this process, used as
+// a store-independent source for the immediate backup-failed alert.
+type backupOutcome struct {
+	at     time.Time
+	failed bool
+	valid  bool // false until the first backup of this process completes
+}
+
+// recordOutcome remembers the result of a just-finished backup run in memory,
+// independent of whether its history row was persisted.
+func (m *Manager) recordOutcome(at time.Time, failed bool) {
+	m.outcomeMu.Lock()
+	defer m.outcomeMu.Unlock()
+	m.lastOutcome = backupOutcome{at: at, failed: failed, valid: true}
+}
+
+// LastOutcome reports the most recent backup result observed this process (its
+// completion time and whether it failed). ok is false until the first backup of
+// this process finishes. It reflects the actual run regardless of whether the
+// backup_history row was successfully written, so the telemetry collector can
+// raise the backup-failed alert even when the failure-row insert itself failed.
+func (m *Manager) LastOutcome() (at time.Time, failed bool, ok bool) {
+	m.outcomeMu.RLock()
+	defer m.outcomeMu.RUnlock()
+	return m.lastOutcome.at, m.lastOutcome.failed, m.lastOutcome.valid
 }
 
 // recordBackup inserts a history row, logging (not failing) on a store error so

@@ -330,6 +330,10 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 	// ListenAndServe starts the background loop, so test servers built via
 	// newServer (and never served) carry no running goroutines.
 	s.collector = telemetry.NewCollector(s.sampler, st, nil, log)
+	// Keep the backup-failed alert loud even if a failed backup's history-row
+	// insert also fails: the collector consults the manager's in-memory outcome,
+	// not just the newest stored row.
+	s.collector.UseBackupOutcome(s.backups)
 	s.engine = alert.NewEngine(st, log)
 
 	s.handler = s.buildRouter()

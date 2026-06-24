@@ -184,6 +184,98 @@ func TestCollectorNoBackupsLeavesBackupFieldsZero(t *testing.T) {
 	require.Equal(t, 0.0, got.LastBackupAgeSeconds)
 }
 
+// fakeBackupOutcome is a store-independent backup-outcome source for tests.
+type fakeBackupOutcome struct {
+	at     time.Time
+	failed bool
+	ok     bool
+}
+
+func (f fakeBackupOutcome) LastOutcome() (time.Time, bool, bool) { return f.at, f.failed, f.ok }
+
+// TestCollectorBackupFailureFromInMemoryOutcomeWhenStoreStale is the regression
+// for the silent backup-failed alert: a scheduled backup FAILED but its history
+// insert ALSO failed, so the newest persisted row is the prior SUCCESS. The
+// in-memory outcome (newer than that stale row) must still raise the alert.
+func TestCollectorBackupFailureFromInMemoryOutcomeWhenStoreStale(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	// The only persisted row is an old success — the recent failure never made it
+	// to the store.
+	_, err := st.InsertBackup(ctx, store.BackupRecord{
+		BackupType: "full", Result: "success",
+		StartedAt: time.Now().Add(-3 * time.Hour),
+		StoppedAt: ptrTime(time.Now().Add(-3*time.Hour + time.Minute)),
+	})
+	require.NoError(t, err)
+
+	c := NewCollector(zeroBackupSampler(), st, nil, core.Discard())
+	c.UseBackupOutcome(fakeBackupOutcome{at: time.Now().Add(-1 * time.Minute), failed: true, ok: true})
+
+	got, err := c.SampleOnce(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, got.LastBackupFailed,
+		"a failed backup whose history insert failed must still fire the alert")
+	require.Greater(t, got.LastBackupAgeSeconds, 0.0,
+		"age still reflects the last successful backup")
+}
+
+// TestCollectorInMemoryRecoveryClearsStaleStoreFailure proves the in-memory
+// signal also clears: a newer in-memory SUCCESS overrides an older stored fail.
+func TestCollectorInMemoryRecoveryClearsStaleStoreFailure(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	_, err := st.InsertBackup(ctx, store.BackupRecord{
+		BackupType: "incr", Result: "fail",
+		StartedAt: time.Now().Add(-2 * time.Hour),
+	})
+	require.NoError(t, err)
+
+	c := NewCollector(zeroBackupSampler(), st, nil, core.Discard())
+	c.UseBackupOutcome(fakeBackupOutcome{at: time.Now().Add(-1 * time.Minute), failed: false, ok: true})
+
+	got, err := c.SampleOnce(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0.0, got.LastBackupFailed, "a newer in-memory success clears the signal")
+}
+
+// TestCollectorStoreWinsOnTieOrNewer proves the persisted row stays authoritative
+// when it is at least as recent as the in-memory outcome (the normal path: both
+// agree, store row carries richer detail).
+func TestCollectorStoreWinsOnTieOrNewer(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	_, err := st.InsertBackup(ctx, store.BackupRecord{
+		BackupType: "incr", Result: "fail",
+		StartedAt: time.Now().Add(-1 * time.Minute),
+	})
+	require.NoError(t, err)
+
+	c := NewCollector(zeroBackupSampler(), st, nil, core.Discard())
+	// An OLDER in-memory success must not override the newer stored failure.
+	c.UseBackupOutcome(fakeBackupOutcome{at: time.Now().Add(-2 * time.Hour), failed: false, ok: true})
+
+	got, err := c.SampleOnce(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, got.LastBackupFailed, "the newer stored failure stays authoritative")
+}
+
+// TestCollectorInMemoryOnlyOutcome proves the in-memory outcome drives the signal
+// when there are no stored rows at all (e.g. the very first backup's insert
+// failed) — a real failure still fires rather than reading as a fresh box.
+func TestCollectorInMemoryOnlyOutcome(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	c := NewCollector(zeroBackupSampler(), st, nil, core.Discard())
+	c.UseBackupOutcome(fakeBackupOutcome{at: time.Now(), failed: true, ok: true})
+
+	got, err := c.SampleOnce(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, got.LastBackupFailed)
+}
+
 func TestCollectorMultipleCyclesAccumulate(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)

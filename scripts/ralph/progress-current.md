@@ -5,6 +5,38 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 1.5 (data durability) · backup-failed alert can no longer go silent when the failure-row insert also fails
+Audit-surfaced gap (state.json notes, iter 44): the immediate critical
+`backup-failed` alert is derived by the telemetry collector SOLELY from the
+newest `backup_history` row (`enrichBackup`), but `recordBackup`
+(backup/manager.go) is best-effort and swallows insert errors. So if a scheduled
+backup FAILS (e.g. S3 outage) AND its `fail` row insert ALSO fails (SQLite
+contention / disk pressure on the panel volume), the newest row stays the prior
+SUCCESS → the alert never fires, degrading to the 26h `backup-stale` warning.
+That defeats the north-star "loud alert on backup failure" guarantee.
+
+FIX (test-first): the backup `Manager` now remembers its last backup outcome IN
+MEMORY (`lastOutcome{at, failed, valid}`, guarded by an `outcomeMu` RWMutex),
+recorded in `Backup` right after the run completes — BEFORE and independent of
+the best-effort `recordBackup` store write. New `Manager.LastOutcome()` exposes
+it. The collector gained an optional `BackupOutcomeSource` (one method, satisfied
+structurally by `*backup.Manager`, wired via `collector.UseBackupOutcome(s.backups)`
+in `newServer`). `enrichBackup` now merges the newest stored row with the
+in-memory outcome and takes whichever is MORE RECENT to drive `LastBackupFailed`
+— so a failed-but-unpersisted backup still fires, a recovery still clears, and
+the persisted row stays authoritative on a tie (and across restarts, where memory
+is empty). No-backups-yet still leaves the signal at 0 (fresh box not "failed").
+
+Tests: manager — failure records in-memory outcome with NO store at all, success
+clears it, never-ran leaves it unset. collector — stale-store-success +
+newer-in-memory-fail still fires (the regression), in-memory recovery clears a
+stale stored fail, store-wins-when-newer, in-memory-only (no rows) fires. All
+non-vacuous (the regression test reads 0 against old code). Reviewed
+(feature-dev:code-reviewer): both Important findings applied — `outcomeMu` is an
+RWMutex with an RLock read path (matches the `mu` convention; readers don't block
+the writer), and `UseBackupOutcome` documents the construct-before-goroutines
+ordering. Go gate green incl. `-race` on backup/telemetry/server; web untouched.
+
 ## 2026-06-24 · band 2.5 (resource & config safety) · self-healing rollback: judge PG health by a real liveness probe, not the systemd exit code
 North-star audit (bands 0–3 complete; only band-4 cosmetic shadcn redo remained,
 which conflicts with the non-negotiable YAGNI/KISS + security-supply-chain rules,
