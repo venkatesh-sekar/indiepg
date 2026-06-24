@@ -3,6 +3,39 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 21 — Mode F (SHIP) (Login: lockout no longer dead-ends the form) — stable_streak 0 → 0
+Ran a fresh discovery/convergence pass (5-agent Mode-S panel, same coverage as iters 15–19). **Four of five
+agents converged** ("no new high/med item" — Dashboard+Query, Roles+Backups, Alerts+Migrate, nav/IA+first-run+
+consistency, each citing the mature state: graduated destructive gates, honest state, co-located backup config,
+paired empty states + hints). The Settings/Login agent surfaced a **genuine functional defect**: the Login form
+was a **permanent dead-end after a server lockout**. On repeated wrong admin passwords the server returns
+`CodeLocked` (HTTP 429); the handler set `locked=true` (disabling the input) and cleared the password (disabling
+the Sign-in button), and `locked` only resets inside `onSubmit` — which could no longer fire, so the only escape
+was a full-page reload, and the form stayed frozen **even after the server lock expired**. **Verified against the
+code** before promoting: `Login.tsx` input `disabled={busy || locked}` (line 91), button `disabled={busy ||
+!password}` (line 98), `setLocked(false)` only at line 38; and the existing test literally *encoded* the dead-end
+(`"…disables the input"` → `toBeDisabled()`). Distinct from the parked "Try again later" copy nit — this is a
+state-machine trap, not wording. Promoted to Mode F.
+Fix (subtractive, zero net surface): input `disabled={busy || locked}` → **`disabled={busy}`** (removed the
+lockout-disable; added a 5-line comment). The lockout is still surfaced by the existing warn-tone `Callout`, and
+the **server remains the sole enforcer** — the UI disable was never the enforcement, only the trap. A locked-out
+user can now retype + resubmit; the resubmit clears `locked` and the server re-decides. Updated the test that
+encoded the dead-end to assert the lockout is still surfaced (warn alert + cleared field) AND the input stays
+editable AND a retype+resubmit fires a second auth attempt (recovery without reload).
+Review panel: **4 SHIP, zero blockers** — UX heuristics ("absolute User-Control-&-Freedom violation: a
+permanently unrecoverable state with no visible escape; one-char removal, no weakened security boundary; H#4
+consistency win"); Sam ("I'd have sat there reloading like an idiot; now the box stays alive, I retype and I'm
+in — no docs"); Priya ("removes a wall, keeps the gate where it belongs — on the server; nothing buried,
+nothing slowed"); restraint critic ("the rare change a simplicity critic should wave through — makes the code
+smaller and removes a trap; do-nothing leaves every locked-out admin frozen until they guess 'reload'"). Both
+personas re-flagged the lockout-duration copy as non-blocking polish (the parked low/watch item). Gates:
+typecheck ✓, 145 tests ✓ (updated 1 existing case, no net new), build ✓ (dist regenerated + staged), go build ✓
+(exit 0, outside sandbox). **stable_streak stays 0** (shipped a real improvement — convergence clock restarts).
+**LESSON:** a disabled state with no path to re-enable itself is a dead-end, not a safeguard — trace every
+guard flag to "what re-enables this, and can the user reach it?"; if the only answer is "reload the page," it's
+a defect, and removing the disable is a subtractive fix the restraint critic waves through. Next iteration: run
+a fresh Mode-S discovery/convergence pass.
+
 ## 2026-06-25 — iter 20 — Mode F (SHIP) (Roles: secrets modal closes only by explicit ack) — stable_streak 0 → 0
 Took the top backlog quick-win filed by the iter-19 Roles/Backups convergence agent: the one-time
 `SecretsModal` ("Save these now", shown after New App / rotate) displays passwords + connection strings

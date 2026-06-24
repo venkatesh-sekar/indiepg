@@ -74,7 +74,7 @@ describe("Login", () => {
     expect(input).toHaveAttribute("aria-describedby", alert.id);
   });
 
-  it("surfaces a lockout and disables the input", async () => {
+  it("surfaces a lockout but lets the user retype and retry (no dead-end)", async () => {
     login.mockRejectedValue(
       new ApiError(429, { code: "locked", message: "Locked out for a while." }),
     );
@@ -85,7 +85,22 @@ describe("Login", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
+    // The lockout is surfaced as a (warn-tone) alert and the field is cleared…
     expect(await screen.findByRole("alert")).toHaveTextContent(/locked out/i);
-    expect(screen.getByLabelText(/admin password/i)).toBeDisabled();
+    const input = screen.getByLabelText(/admin password/i) as HTMLInputElement;
+    expect(input.value).toBe("");
+
+    // …but the form is NOT a dead-end: the input stays editable so the user can
+    // retype once the server-side lock expires (the server remains the gate).
+    expect(input).toBeEnabled();
+    expect(login).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(input, { target: { value: "correct-horse" } });
+    expect(screen.getByRole("button", { name: /sign in/i })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    // Retyping + resubmitting fires another auth attempt — recovery without reload.
+    await waitFor(() => expect(login).toHaveBeenCalledTimes(2));
+    expect(login).toHaveBeenLastCalledWith("correct-horse");
   });
 });

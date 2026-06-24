@@ -88,7 +88,12 @@ export function Login() {
                   autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  disabled={busy || locked}
+                  // Don't disable on lockout: the server enforces the lock, and a
+                  // disabled input + cleared password traps the user with no way to
+                  // retry (locked only resets inside onSubmit) until a full reload.
+                  // The warn Callout above conveys the lockout; let them retype and
+                  // resubmit so the server can re-decide once the lock expires.
+                  disabled={busy}
                   aria-invalid={error ? true : undefined}
                   aria-describedby={error ? "login-error" : undefined}
                   autoFocus

@@ -129,6 +129,23 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
 
 ## Rules of thumb
 
+- **A disabled state with no path to re-enable itself is a dead-end, not a safeguard — and removing it is a
+  subtractive fix the restraint critic waves through.** Iter 21: Login set `locked=true` (disabling the input)
+  + cleared the password (disabling the button) on a server lockout, but `locked` only reset inside `onSubmit`
+  — which could never fire because the controls it needed were disabled. The form froze with no exit but a
+  full-page reload, and stayed frozen even after the server lock expired. The fix is to *remove* the disable
+  (`disabled={busy || locked}` → `disabled={busy}`), not to add a timer/retry button: the **server was always
+  the real enforcer** (it returns the lock again on resubmit), so the UI disable bought nothing but the trap,
+  and the existing warn Callout already conveys the locked state. All four reviewers (incl. restraint) shipped
+  it as code-gets-smaller. **The diagnostic:** when a boolean disables the only control that can clear that
+  boolean, you have an unrecoverable state — trace every disabled/`readonly`/guard flag to "what re-enables
+  this, and can the user reach it?" If the only answer is "reload the page," it's a defect. **Why it's the
+  strong case (vs the rejected adds):** it's behavior-correctness at *negative* surface (like iter-17's scroll
+  reset and iter-20's non-dismissible modal) — the rejected items all *added* UI/copy; this removes a
+  restriction. Watch for tests that *encode* the bug: the existing Login test literally asserted
+  `input.toBeDisabled()` after lockout — a green test over a dead-end. Updating it to assert the recovery path
+  is part of the fix, not a regression.
+
 - **Once-only content must close only by an explicit acknowledgement — strip the casual dismiss paths, don't
   just add a warning.** Iter 20: the `SecretsModal` showed credentials that "cannot be retrieved again," but
   it was a plain `Modal`, so Escape, a backdrop click, OR the corner X each routed to `onClose` →

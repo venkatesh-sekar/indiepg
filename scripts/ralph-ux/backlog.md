@@ -10,13 +10,18 @@ Format per item:
 
 ## Open
 
-> **Status (iter 20):** shipped the iter-19 SecretsModal find — the one-time credentials modal was
-> dismissible by Escape/backdrop/X, any of which destroyed the only copy of just-shown passwords. Added an
-> opt-in `dismissible?: boolean` to the shared `Modal` (default unchanged) and set it false on `SecretsModal`
-> so only the explicit "I've saved them" button closes it. **4 SHIP, zero blockers (incl. restraint critic).**
-> `stable_streak` stays **0** (shipped a real improvement). Backlog is now actionable-empty again (only a
-> NEEDS-BACKEND item + two low/watch items remain). Next iteration: run a fresh Mode-S discovery/convergence
-> pass — if it surfaces nothing high/med, that's the next stable_streak increment toward convergence.
+> **Status (iter 21):** ran a fresh 5-agent Mode-S discovery/convergence pass (same coverage as iters 15–19).
+> **Four of five agents converged** ("no new high/med item"). The Settings/Login agent surfaced a **genuine
+> functional defect**: the Login form was a permanent dead-end after a server lockout — `locked` disabled the
+> input, the cleared password disabled the button, and `locked` only resets inside `onSubmit` (which can't
+> fire), so the only escape was a full-page reload (and the form stayed frozen even after the server lock
+> expired). Verified against the code (`Login.tsx` lines 38/55/91/98 + the test that *encoded* the dead-end).
+> Promoted to Mode F and shipped a **subtractive** fix: input `disabled={busy || locked}` → `disabled={busy}`
+> (the warn Callout still surfaces the lockout; the server still enforces it), so a locked-out user can retype
+> and resubmit. **4 SHIP, zero blockers (incl. restraint critic — "the rare change a simplicity critic should
+> wave through; it makes the code smaller and removes a trap").** `stable_streak` stays **0** (shipped a real
+> improvement — the convergence clock restarts). Backlog is actionable-empty again. Next iteration: run a fresh
+> Mode-S discovery/convergence pass.
 
 ### Quick wins (high/med payoff, S effort) — do these first
 - [x] (high/S) Roles & Databases — the one-time `SecretsModal` was a plain `Modal`, so Escape/backdrop/X
@@ -119,11 +124,45 @@ Format per item:
 - [ ] (med/M) Query — accidental write SQL (DELETE/UPDATE/DROP pasted in) is only
   rejected server-side after Run. → Optional: client-side keyword detector that warns
   before Run that the editor is read-only. (Keep restrained — copy hint, not a parser.)
-- [ ] (low/S) Login — lockout message "Try again later" gives no sense of how long.
-  → Frontend-only: soften to "Try again in a few minutes" (a precise duration needs a
-  backend hint, which is out of scope).
+- [x] (high/S) Login — the form was a **permanent dead-end after a server lockout**: `locked` disabled
+  the input + the cleared password disabled the button, and `locked` only reset inside `onSubmit` (which
+  could no longer fire), so the only escape was a full-page reload — and the form stayed frozen even after
+  the server lock expired. **Shipped iter 21** via a subtractive fix (input `disabled={busy || locked}` →
+  `disabled={busy}`); the warn Callout still surfaces the lockout, the server still enforces it, and the
+  user can now retype + resubmit to recover. 4 SHIP, zero blockers. See Done.
+- [ ] (low/S) Login — lockout message "Try again later" gives no sense of how long. → Frontend-only:
+  soften to "Try again in a few minutes" (a precise duration needs a backend hint, which is out of scope).
+  Still open as a low/watch copy nit; both personas re-flagged it as non-blocking polish in the iter-21
+  review (the functional dead-end, the real problem, is now fixed).
 
 ## Done
+
+- [x] (high/S) Login — the sign-in form became a **permanent dead-end after a server-enforced lockout**.
+  On repeated wrong admin passwords `auth.Authenticate` returns `CodeLocked` (HTTP 429); the handler set
+  `locked=true` and cleared the password. The password `Input` was `disabled={busy || locked}` → **disabled**,
+  and the Sign-in `Button` is `disabled={busy || !password}` → **disabled** (password just cleared). The
+  `locked` flag is reset **only** inside `onSubmit` (`setLocked(false)`), which could never run again because
+  both controls were disabled — so the form froze with **no recovery path but a full-page browser reload**
+  (which a user has no reason to discover), and it stayed frozen **even after the server lock window expired**.
+  Distinct from the parked "Try again later" copy nit — this is a state-machine dead-end, not wording.
+  **Shipped iter 21.** Subtractive fix: input `disabled={busy || locked}` → **`disabled={busy}`** (removed the
+  lockout-disable; added a 5-line comment explaining why). The lockout is still surfaced by the existing
+  warn-tone `Callout`, and the **server remains the sole enforcer** of the lock — the UI disable was never the
+  enforcement, only the trap. Now a locked-out user can retype + resubmit; the resubmit clears `locked` and the
+  server re-decides (still locked → warn again; expired → logs in). Zero added UI/controls/copy. Updated the
+  test that *encoded* the dead-end (`"…disables the input"`) to assert the lockout is still surfaced (warn
+  alert + cleared field) AND the input stays editable AND a retype+resubmit fires a second auth attempt
+  (recovery without reload). **4 SHIP, zero blockers** — UX heuristics ("absolute User-Control-&-Freedom
+  violation: a permanently unrecoverable state with no escape; one-char removal, no weakened security
+  boundary; H#4 consistency win — lockout now clears+re-enables like the wrong-password path"); Sam ("I'd have
+  sat there reloading like an idiot; now the box stays alive, I retype and I'm in — no docs"); Priya ("removes
+  a wall, keeps the gate where it belongs — on the server; nothing buried, nothing slowed"); restraint critic
+  ("the rare change a simplicity critic should wave through — makes the code smaller and removes a trap;
+  do-nothing leaves every locked-out admin frozen until they guess 'reload'"). Surfaced by the iter-21
+  Settings/Login convergence agent (the other 4 of 5 agents converged); verified against the code before
+  promoting (the existing test literally asserted the dead-end). Gates: typecheck ✓, 145 tests ✓ (updated 1
+  existing case, no net new), build ✓ (dist regenerated + staged), go build ✓ (exit 0, outside sandbox).
+  stable_streak stays 0.
 
 - [x] (high/S) Roles & Databases — the one-time **`SecretsModal`** ("Save these now", shown after New App
   / rotate) displays passwords + connection strings that **"cannot be retrieved again."** It was a plain
