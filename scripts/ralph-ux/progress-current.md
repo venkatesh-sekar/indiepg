@@ -3,6 +3,42 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 11 — Mode F (SHIP) (Backups+Settings: co-locate backup config — the canonical seed item)
+The anchor improvement of this loop, flagged by 4 of 11 audit agents. Backup **config**
+(S3 destination, retention, encryption) lived on `/settings`; backup **operations** (run,
+history, restore, restore-tests) lived on `/backups` — so a user bounced between routes to
+configure-then-run and could discover the dependency mid-flow. Fix (a *move*, not an add):
+extracted the config form into a shared `web/src/components/BackupStorageForm.tsx` (identical
+fields + the save-doubles-as-connection-test behavior), and surfaced it ON the Backups page
+via a "Backup storage" header button → right-side `Sheet`. The existing `LocalBackupWarning`
+CTA ("Set up an S3 bucket") now opens that same Sheet **in-page** instead of `<Link to="/settings">`,
+so the user never leaves the backups workflow; the Sheet stays open after save so the form's
+"ready / not ready" connection-test feedback persists. Removed the form from Settings, which is
+now Database tuning + Connection pooler + a one-line info Callout pointing to /backups (so
+old-muscle-memory users aren't stranded). Single home, no duplication, Settings got simpler
+(28 lines). Moved the 4 form tests to a new `BackupStorageForm.test.tsx`; rewrote Settings.test
+to assert the form is gone + the pointer link; updated the Backups `LocalBackupWarning` test
+(link → button calling `onConfigure`). 140 tests. Review panel: **Sam REJECTED first** — on a
+*failed* Save&connect, a non-expert can't tell if they're still protected, and the green "Stored
+in S3" badge could imply working off-host backups over a broken target. Verified the real
+behavior in `internal/server/handlers_config.go` (config saves and the live target switches even
+when stanza-create fails → new backups to it fail until fixed; past/local backups untouched), then
+addressed in-iteration by leading the failed-save Callout with an **honest** reassurance ("Your
+existing backups are untouched and still safe — but new backups to this bucket will fail until this
+is fixed…") rather than the false "still lands locally". Sam's second point (badge claims S3 over a
+broken target on a *cold reload*) is backend-limited — `GET /config` returns no target-health signal —
+so it's out of this frontend-only loop's scope; filed as a NEEDS-BACKEND backlog item. Re-ran Sam → SHIP.
+Also fixed two cheap nits the panel raised: stale success copy "run a backup from the Backups page" →
+"Close this panel and run a backup" (you're already there), and a stale `backupDestination` doc comment
+("The Settings form" → "The backup-storage form"). Panel: **4 SHIP, zero blockers** (UX heuristics —
+"directly fixes the panel's own most-cited UX problem"; Sam — after the honest-reassurance fix; Priya —
+"one click from where I run backups, fewer route hops than before, nothing buried or dumbed down";
+restraint critic — "kills a top-cited route bounce at net-neutral surface; form moved not duplicated;
+Settings got simpler"). Gates: typecheck ✓, 140 tests ✓, build ✓ (dist regenerated + staged), go build ✓
+(outside sandbox — snap-confine blocks it in-sandbox). stable_streak stays 0 (shipped a real improvement).
+Next top item: Migrate — reset the form state when returning from a terminal job ("Start another" leaves
+the previous source/target/overwrite pre-filled).
+
 ## 2026-06-25 — iter 10 — Mode F (SHIP) (Dashboard: drop the duplicate "Connections" row)
 Top quick-win, consistency/minimalism fix. The Dashboard rendered the connections metric
 (active / max_connections) **twice on one screen**: a plain `Kv` row in the **Postgres**

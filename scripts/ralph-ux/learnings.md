@@ -77,6 +77,46 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
 
 ## Rules of thumb
 
+- **Co-locate config with the operation it configures by *moving* it (one home), not by
+  adding a second copy.** Iter 11: backup config lived on /settings, operations on /backups
+  — the canonical "configure-then-run bounce." The restraint-defensible fix was to MOVE the
+  form into a shared component rendered on /backups (in a `Sheet`) and REMOVE it from
+  Settings — net-neutral surface, single home, no duplication, and Settings got *simpler*.
+  All three of {heuristics expert, technical persona, restraint critic} shipped it straight
+  up; the critic explicitly preferred "moved, not duplicated." **Lesson:** when an item says
+  "co-locate," resist the tempting additive version (keep it on page A *and* add it to page B)
+  — two homes for one setting is the consistency/over-surface trap a restraint critic kills.
+  Move it. A `Sheet` (side panel) is the right disclosure when the destination page is already
+  dense and the config is an occasional task — it's progressive disclosure, not new machinery,
+  and keeps the page's primary (operational) content unburied.
+- **When you move a setting off its old home, leave a one-line pointer so muscle-memory users
+  aren't stranded.** Iter 11: removed backup config from Settings → added a single info Callout
+  ("Looking for backup storage? It's on the Backups page →"). The restraint critic called it
+  the weakest element but kept it as "minimum-clutter migration breadcrumb" — flagging it as
+  time-boxable debt to remove once users relearn the location. Recognition-over-recall beats a
+  silent disappearance.
+- **An honest failed-state message beats a comforting false one — and beats no message.** Iter 11:
+  Sam (REJECT→SHIP) froze on the failed "Save & connect" state — "am I still backed up right now?"
+  The tempting reassurance ("backups still land locally") was FALSE: verified in `handlers_config.go`
+  that a failed save still persists the config and switches the live target, so new backups to the
+  broken bucket *fail* until fixed. The shippable fix led with the *true* reassurance instead:
+  "Your existing backups are untouched and still safe — but new backups to this bucket will fail
+  until this is fixed." **Lesson:** find the precise truthful thing that answers the user's real
+  question ("am I protected?") — don't paper over a failure with a falsehood, and don't dump a raw
+  error without first answering the human question. Verify the backend behavior before writing
+  reassurance copy.
+- **A "make it fully honest" ask that needs a backend signal is out of scope for this frontend
+  loop — defer it as a NEEDS-BACKEND backlog item, don't fake it.** Iter 11: Sam also wanted the
+  green "Stored in S3" badge to not claim S3 until a connect succeeds. But `GET /config` returns
+  no target-health signal, so on a cold reload the frontend genuinely *cannot* know — the badge
+  has always meant "a bucket is configured," panel-wide, and this change neither created nor
+  worsened that. Faking per-session health state would be hacky and inconsistent. Filed it as a
+  backend item and shipped, because the in-form failed-save copy already prevents the gap from
+  biting *during configuration* (only a cold reload over a never-initialized stanza is left).
+  **Lesson:** a reviewer's blocker can be real *and* correctly deferred when the honest fix
+  requires backend work this loop can't touch and the change didn't introduce the gap — document
+  it precisely rather than overrule it or hack around it.
+
 - **For an action whose effect requires manual follow-up, the confirm copy must name
   the follow-up explicitly — passive "X then happens" framing implies automation.**
   Iter 9: the pooler-enable confirm said "Your apps then connect to <addr> instead of

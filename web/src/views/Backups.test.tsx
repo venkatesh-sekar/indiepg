@@ -105,21 +105,26 @@ describe("backupDestination", () => {
 });
 
 describe("LocalBackupWarning", () => {
-  function renderWarning(destination: Parameters<typeof LocalBackupWarning>[0]["destination"]) {
+  function renderWarning(
+    destination: Parameters<typeof LocalBackupWarning>[0]["destination"],
+    onConfigure: () => void = () => undefined,
+  ) {
     return render(
       <MemoryRouter>
-        <LocalBackupWarning destination={destination} />
+        <LocalBackupWarning destination={destination} onConfigure={onConfigure} />
       </MemoryRouter>,
     );
   }
 
-  it("warns (warn tone) about disk/host loss and points to S3 when backups are local-only", () => {
-    renderWarning({ kind: "local" });
+  it("warns (warn tone) about disk/host loss and opens backup storage when backups are local-only", () => {
+    const onConfigure = vi.fn();
+    renderWarning({ kind: "local" }, onConfigure);
     expect(document.querySelector('[data-slot="alert"]')).toHaveAttribute("data-variant", "warning");
     expect(screen.getByText(/disk failure or losing the server/i)).toBeInTheDocument();
-    // Nudges off-host: a link into Settings to connect a bucket.
-    const link = screen.getByRole("link", { name: /set up an s3 bucket/i });
-    expect(link).toHaveAttribute("href", "/settings");
+    // Nudges off-host: an in-page action that opens the backup-storage panel —
+    // no route jump, so the user stays in the backups workflow.
+    fireEvent.click(screen.getByRole("button", { name: /set up an s3 bucket/i }));
+    expect(onConfigure).toHaveBeenCalledTimes(1);
   });
 
   it("renders nothing once an off-host S3 destination is configured", () => {

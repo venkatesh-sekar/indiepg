@@ -45,17 +45,18 @@ Format per item:
   grouped with CPU/Mem/Disk). 4 SHIP. See Done.
 
 ### Higher-effort, clear payoff
-- [ ] (high/M) Backups + Settings — backup **config** (S3 destination, retention,
-  encryption) lives under `/settings` while backup **operations** (run, history,
-  restore) live at `/backups`; a user must bounce between routes to configure then
-  run, and discovers the dependency mid-flow (e.g. restore with no S3 configured). →
-  Co-locate: bring backup-destination config into `/backups` as a "Backup
-  destination" card (and/or a quick-config dialog from the local-backup warning), so
-  configure-then-run is one place. **The canonical seed item — 4 agents flagged it.**
-- [ ] (med/S→M) Settings — the backup-config card gives no next step after saving
-  ("is it actually working?"). → If the co-location item above isn't taken first,
-  add a "Good to go — run a test backup" `<Link>` to `/backups` after the success
-  state. (Subsumed by the co-location item if that ships.)
+- [x] (high/M) Backups + Settings — backup **config** (S3 destination, retention,
+  encryption) lived under `/settings` while backup **operations** (run, history,
+  restore) lived at `/backups`. **Shipped iter 11 — the canonical seed item (4 agents).**
+  Moved the config form into a shared `BackupStorageForm` component and surfaced it on
+  `/backups` via a "Backup storage" header button → right-side `Sheet`; the local-only
+  warning's "Set up an S3 bucket" CTA now opens that same Sheet in-page (was a /settings
+  link). Removed the form from Settings (now just tuning + pooler + a one-line pointer to
+  Backups). Single home, no duplication, configure-then-run in one place. 4 SHIP. See Done.
+- ~~(med/S→M) Settings — the backup-config card gives no next step after saving~~ —
+  **subsumed by the co-location (iter 11)**: the form's success Callout now lives on the
+  Backups page itself and says "Close this panel and run a backup" — the next step is
+  right there, no cross-route link needed.
 - [ ] (med/M) Migrate — completing a migration and clicking "Start another" leaves
   the previous source connection, target name, and overwrite checkbox pre-filled;
   batch-migrating users must clear each field. → Reset form state when returning
@@ -64,10 +65,21 @@ Format per item:
   (checkbox → button text flips to "Continue…" → modal asks to type the name) with no
   inline warning when overwrite is checked. → Surface a single visible destructive
   confirmation section when overwrite is on, instead of the silent button-label flip.
-- [ ] (med/M) Settings — the page conflates three unrelated domains (backup config,
-  read-only DatabaseTuning reference, Pooler add-on) with no grouping. → Group into
-  clearly-labeled sections/cards (e.g. Backup destination, Database performance,
-  Connection pooling). (Partly resolved if backup config moves to /backups.)
+- [ ] (low/M) Settings — the page used to conflate three domains; **backup config
+  moved to /backups in iter 11**, so Settings is now just Database tuning + Connection
+  pooler (two coherent, self-titled cards) + a pointer. Largely resolved; only re-open
+  if the remaining two cards need clearer grouping (low payoff — they already have
+  distinct titles).
+- [ ] (med/M, NEEDS BACKEND) Backups — honest backup-target health on the destination
+  badge. The header badge shows green "Stored in S3 · <bucket>" whenever a bucket is
+  *configured*, even if the last stanza-create failed (target unreachable). On a cold
+  page load there's no way to know — `GET /config` returns no target-health signal
+  (only the save response carries `backup_configured`/`backup_warning`). A user who
+  reloads and sees a green S3 badge over an uninitialized stanza trusts a destination
+  that doesn't work. → Surface target health on `GET /config` and tint the badge
+  (ok/warn) accordingly. Flagged by Sam in the iter-11 review; deferred because it's
+  out of this frontend-only loop's scope. The iter-11 failed-save Callout now tells the
+  truth in-form, so this can't bite during configuration — only on a cold reload.
 - [ ] (med/M) DatabaseTuning — parameter help text assumes DBA knowledge
   (shared_buffers, work_mem) and the page reads as prescriptive when it's really
   informational. → Add one reassuring intro line: defaults are already tuned for the
@@ -83,6 +95,29 @@ Format per item:
 
 ## Done
 
+- [x] (high/M) Backups + Settings co-location — **the canonical seed item** (flagged by
+  4 of 11 audit agents). Backup **config** (S3 destination, retention, encryption) lived
+  on `/settings`; backup **operations** (run, history, restore, restore-tests) lived on
+  `/backups`. A user had to bounce between routes to configure-then-run and could hit the
+  dependency mid-flow. Fix: extracted the config form into a shared
+  `web/src/components/BackupStorageForm.tsx` (identical fields/behavior — saving still
+  doubles as the connection/stanza test with inline result). On `/backups`: added a
+  "Backup storage" header button opening a right-side `Sheet` that hosts the form; the
+  `LocalBackupWarning` CTA ("Set up an S3 bucket") now opens that same Sheet **in-page**
+  (was a `<Link to="/settings">`), so the user never leaves the backups workflow. The
+  Sheet stays open after saving so the form's "ready / not ready" connection-test feedback
+  persists. Removed the form from Settings (now Database tuning + Connection pooler + a
+  one-line info Callout pointing to /backups so users with old muscle-memory aren't
+  stranded). Net surface roughly neutral — a form *moved*, not added; Settings got simpler;
+  single home, no duplication. During review Sam (REJECT→SHIP) caught that on a *failed*
+  Save&connect the user can't tell if they're still protected; addressed in-iteration by
+  leading the failed-save Callout with an honest reassurance ("Your existing backups are
+  untouched and still safe — but new backups to this bucket will fail until this is fixed…"),
+  verified truthful against `handlers_config.go` (config saves + live target switches even
+  on failed connect). The badge-health gap Sam also raised needs a backend signal (`GET
+  /config` has none) → filed as a separate item. Shipped iter 11 (4 SHIP — UX heuristics,
+  Sam (after fix), Priya, restraint critic; the critic emphatically: "kills a top-cited
+  route bounce at net-neutral surface; form moved not duplicated; Settings got simpler").
 - [x] (med/S) Dashboard — the "Connections" metric (active/max) was rendered twice on
   one screen: a plain `Kv` row in the **Postgres** card (`3 / 100 (3%)`, no tint) and a
   tinted saturation gauge in the **Server** card (`3/100`, sub `3%`, warn/danger as

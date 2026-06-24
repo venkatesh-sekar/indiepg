@@ -2,12 +2,12 @@
 // and a guarded restore flow (typed-name confirm equal to the stanza name).
 
 import { useEffect, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
 import { ApiError, api } from "@/api/client";
 import { ago, bytes, dateTime, duration, millis } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import { Modal } from "@/components/Modal";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { BackupStorageForm } from "@/components/BackupStorageForm";
 import { toast } from "sonner";
 import {
   Badge,
@@ -23,6 +23,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner as InlineSpinner } from "@/components/ui/spinner";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Field,
@@ -67,6 +74,11 @@ export function Backups() {
   const [deepOpen, setDeepOpen] = useState(false);
   const [deepBusy, setDeepBusy] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
+  // Backup-storage config (S3 destination, retention, encryption) is configured
+  // right here, in a side panel, so you set up where backups land and run one
+  // without leaving the page. The panel reloads config on save so the
+  // destination badge and the local-only warning update immediately.
+  const [storageOpen, setStorageOpen] = useState(false);
 
   // Backups now run in the background (the request returns a "running" row id
   // immediately). While any backup is in flight, poll history so the row's live
@@ -142,6 +154,13 @@ export function Backups() {
         }
         actions={
           <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setStorageOpen(true)}
+              title="Choose where backups are stored (local or an S3 bucket), retention, and encryption"
+            >
+              Backup storage
+            </Button>
             <Button variant="destructive" onClick={() => setRestoreOpen(true)}>
               Restore…
             </Button>
@@ -200,7 +219,10 @@ export function Backups() {
 
       {history.data ? <BackupStatusSummary backups={history.data.backups} /> : null}
 
-      <LocalBackupWarning destination={destination} />
+      <LocalBackupWarning
+        destination={destination}
+        onConfigure={() => setStorageOpen(true)}
+      />
 
       <Callout tone="info" title="How backups work here">
         {destination.kind === "s3" ? (
@@ -287,6 +309,33 @@ export function Backups() {
           }}
         />
       ) : null}
+
+      {/* Backup-storage config, co-located with the operations it configures. The
+          form keeps showing its inline save/connection-test result, so the panel
+          stays open after saving rather than dismissing that feedback. */}
+      <Sheet open={storageOpen} onOpenChange={setStorageOpen}>
+        <SheetContent
+          side="right"
+          className="w-full gap-0 overflow-y-auto sm:max-w-xl"
+        >
+          <SheetHeader>
+            <SheetTitle>Backup storage</SheetTitle>
+            <SheetDescription>
+              Choose where backups are stored, how long they&apos;re kept, and
+              whether they&apos;re encrypted.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="flex flex-col gap-5 p-4 pt-0">
+            {config.loading ? (
+              <Spinner label="Loading backup storage…" />
+            ) : config.error ? (
+              <ErrorNotice error={config.error} />
+            ) : config.data ? (
+              <BackupStorageForm initial={config.data} onSaved={config.reload} />
+            ) : null}
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
@@ -314,7 +363,7 @@ export type BackupDestination =
  * loading rather than flashing "stored on this server" for a box that actually has
  * S3 configured.
  *
- * We trim before testing for emptiness. The Settings form already trims on save
+ * We trim before testing for emptiness. The backup-storage form already trims on save
  * (so a whitespace-only value can't normally be persisted), and the Go server's
  * authoritative `remoteTargetConfigured` compares against "" without trimming —
  * trimming here is a deliberate, belt-and-suspenders UX choice so that a target
@@ -335,18 +384,31 @@ export function backupDestination(
 /**
  * LocalBackupWarning is the panel's primary "move your backups off-host" nudge:
  * it shouts (warn tone) that backups live on this same server and won't survive
- * disk or host loss, and links to Settings to connect S3. Rendered only when the
- * destination is local; kept as its own component so the message is covered by a
- * test and can't silently regress as the page evolves.
+ * disk or host loss, and opens the backup-storage panel to connect S3 — without
+ * leaving the page. Rendered only when the destination is local; kept as its own
+ * component so the message is covered by a test and can't silently regress.
  */
-export function LocalBackupWarning({ destination }: { destination: BackupDestination }) {
+export function LocalBackupWarning({
+  destination,
+  onConfigure,
+}: {
+  destination: BackupDestination;
+  onConfigure: () => void;
+}) {
   if (destination.kind !== "local") return null;
   return (
     <Callout tone="warn" title="Your backups are on this server — move them to S3">
       Backups are being written to <code>/var/lib/pgbackrest</code> on this same
       machine. That covers accidental drops and bad migrations, but{" "}
       <strong>not disk failure or losing the server</strong> — if this box goes, the
-      backups go with it. <Link to="/settings">Set up an S3 bucket in Settings</Link>{" "}
+      backups go with it.{" "}
+      <Button
+        variant="link"
+        className="h-auto p-0 align-baseline"
+        onClick={onConfigure}
+      >
+        Set up an S3 bucket
+      </Button>{" "}
       for real off-server backups. You can switch anytime and it takes effect
       immediately — new backups go to S3, and the local ones stay on disk.
     </Callout>
