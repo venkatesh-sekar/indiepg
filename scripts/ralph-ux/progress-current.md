@@ -3,6 +3,26 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 16 — Mode S (convergence check) — stable_streak 1 → 2
+Backlog still actionable-empty (same NEEDS-BACKEND backup-badge item + two low/watch items as iter 15;
+none promoted). Per the contract, ran a **second Mode-S convergence pass** rather than chew the
+low-value items. A fresh 5-agent parallel panel, each given its view(s) + the full already-shipped /
+already-rejected digest + a deliberately HIGH bar (genuinely new, high-or-med-payoff, non-over-design,
+frontend-only, fixable in one view). Coverage identical to iter 15 for comparability: (1) Dashboard +
+Query, (2) Roles & Databases + Backups + BackupStorageForm, (3) Alerts + Migrate, (4) Settings +
+DatabaseTuning + Pooler + Login, (5) nav/IA + first-run + cross-view consistency. **All five again
+independently returned "NO new high/med item — converged."** Agent 1 re-examined the Query zero-rows
+state and the speculative write-SQL detector and judged neither high-payoff; agent 3 re-probed the two
+nits the iter-15 pass had flagged (cluster "Exclude" FieldDescription — confirmed it already HAS one at
+Migrate.tsx; Alerts "Send test" disabled-state native `title` — a standard disabled affordance, not the
+iter-8 decorator-tooltip pattern) and confirmed both zero-payoff; agents 2/4/5 found the views mature and
+internally consistent (graduated destructive gates, honest state, co-located backup config, paired empty
+states + hints, plain-English copy throughout). No code shipped, docs-only commit, no hard gates needed.
+Per the contract (backlog actionable-empty AND a fresh discovery pass surfaced no high/med item) this is
+the **second stable_streak increment → 2/3**. One more clean convergence pass → write COMPLETE.md and stop
+the loop. Next iteration: run the final Mode-S convergence check; do NOT manufacture low-value work from
+the low/watch items to avoid converging (converging early is a win).
+
 ## 2026-06-25 — iter 15 — Mode S (convergence check) — stable_streak 0 → 1
 Backlog was actionable-empty for this frontend loop (only a NEEDS-BACKEND backup-badge item, out of
 scope, and two low/watch items — Query client-side write-detector, speculative/restraint-risky; Login

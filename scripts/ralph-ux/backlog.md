@@ -10,11 +10,11 @@ Format per item:
 
 ## Open
 
-> **Convergence status (iter 15):** backlog is actionable-empty for this frontend loop. A 5-agent
-> Mode-S discovery pass (all views + nav/IA + cross-view consistency) surfaced **no new high/med
-> item** — `stable_streak` is now **1/3**. The remaining open items below are either NEEDS-BACKEND
-> (out of scope) or low/watch (speculative / risk a false promise). Don't chew them to look busy;
-> run another convergence check next iteration. At 3/3, write COMPLETE.md.
+> **Convergence status (iter 16):** backlog is actionable-empty for this frontend loop. A second
+> 5-agent Mode-S discovery pass (all views + nav/IA + cross-view consistency) again surfaced **no
+> new high/med item** — `stable_streak` is now **2/3**. The remaining open items below are either
+> NEEDS-BACKEND (out of scope) or low/watch (speculative / risk a false promise). Don't chew them to
+> look busy; run ONE more convergence check next iteration. At 3/3, write COMPLETE.md and stop.
 
 ### Quick wins (high/med payoff, S effort) — do these first
 - ~~(high/S) Roles & Databases — `dropBusy` disables every Delete button during a
