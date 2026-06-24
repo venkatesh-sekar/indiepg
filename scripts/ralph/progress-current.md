@@ -5,6 +5,43 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2.5 (resource & config safety) · APPLY host-sized tuning — real-PG integration test
+Closed the first of the two ApplyTuning apply-follow-up items: proved
+`Manager.ApplyTuning` works against REAL Postgres, the one thing the fake-Runner
+unit tests cannot cover. Added `internal/pg/tuning_apply_integration_test.go`
+(`//go:build integration`, env-gated on `INDIEPG_PG_BINDIR`; never runs in the
+untagged loop gate). It stands up a throwaway PG14 cluster on a private socket and
+asserts: (1) a sane recommendation lands in `pg_settings` (memory normalised to
+bytes via the unit column, max_connections exact) — proving the restart-requiring
+shared_buffers/max_connections actually took effect via a real restart, not just a
+reload; (2) a second apply of the same rec is a no-op (changed=false, nothing
+re-written, no restart); (3) **self-healing**: a restart-requiring value the
+postmaster refuses to boot with is rolled back via `restartWithRollback` to
+last-known-good, with PG still UP and a `CodeSafety` error surfaced.
+
+KEY DECISIONS / GOTCHAS (for the next iteration):
+- To force a DETERMINISTIC, instant startup failure I set `max_connections = 1`
+  (in-range so ALTER SYSTEM accepts it, but the postmaster refuses: reserved(3) +
+  max_wal_senders(10) >= max_connections). My first attempt used an oversized
+  shared_buffers (~16TB) — it HUNG, because Linux memory overcommit lets the huge
+  anonymous mmap succeed/stall instead of failing fast. Avoid memory-size-based
+  boot failures in tests; use a cross-GUC constraint instead.
+- `pg_ctl start/restart` MUST be given `-l <logfile>`. Without it the daemonized
+  postmaster inherits the runner's captured stdout pipe and never closes it, so
+  the OSRunner's `cmd.Run` blocks FOREVER (both early test runs timed out at
+  600s/180s on exactly this). `-l` redirects server output to a file so the pipe
+  closes and the command returns.
+- The throwaway cluster has no systemd unit, so a `tuningTestRunner` wraps the
+  real OSRunner: strips `AsUser="postgres"` (run as current user), injects
+  PGHOST/PGPORT/PGUSER so psql hits the throwaway socket, and translates the exact
+  `systemctl restart postgresql` into `pg_ctl ... restart` of the test cluster —
+  so the real ApplyTuning→restartWithRollback path runs unmodified.
+Proven green against real PG14 (~1.5s); normal gate (gofmt/vet/test/build) green;
+web untouched. Reviewed (feature-dev:code-reviewer): tightened the systemctl
+intercept to match the exact 2-arg invocation + documented the as-current-user
+divergence for the auto.conf cat/tee. REMAINING band-2.5 item: the ApplyTuning UI
+surface (show applied defaults + workload-profile override labeled by effect).
+
 ## 2026-06-24 · band 2.5 (resource & config safety) · APPLY host-sized tuning at provision
 Made the host-sized recommendation actually take effect, completing the band-2.5
 arc (iter 28 only *surfaced* it because applying needed the self-healing restart

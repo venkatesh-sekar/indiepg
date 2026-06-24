@@ -41,6 +41,18 @@ the top, prune stale entries. One line each. Newest at the bottom of each group.
   `-tags integration`, so these never run in the normal gate (by design).
 - `go` here is a snap; the command sandbox blocks snap-confine
   (`cap_dac_override` missing). Run go/psql/pg_ctl with the sandbox disabled.
+- Integration tests that boot a throwaway cluster via the OSRunner: `pg_ctl
+  start/restart` MUST get `-l <logfile>`, else the daemonized postmaster inherits
+  the runner's captured stdout pipe and never closes it → `cmd.Run` blocks FOREVER
+  (the test hangs to the `go test` timeout). To force a DETERMINISTIC postmaster
+  boot failure (e.g. to exercise restartWithRollback), use a cross-GUC constraint
+  like `max_connections=1` (reserved 3 + max_wal_senders 10 >= it) — NOT an
+  oversized memory GUC (shared_buffers), which Linux overcommit lets mmap
+  succeed/stall instead of failing fast, so the test hangs. To exercise a path
+  that calls `systemctl restart postgresql` on a cluster with no systemd unit,
+  wrap the OSRunner and translate that exact 2-arg invocation into `pg_ctl
+  restart <dataDir>`; strip `AsUser="postgres"` and inject PGHOST/PGPORT/PGUSER so
+  psql (run as the current user) hits the throwaway socket.
 - Tampering a base64 value by flipping its LAST char can be a no-op: the final
   RawStdEncoding char of an N-byte blob whose length isn't a multiple of 3 carries
   padding bits that decode to nothing (a 32-byte key → 43 chars, last char = 4
