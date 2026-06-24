@@ -18,6 +18,30 @@ import {
   SecretValue,
   Spinner,
 } from "@/components/ui";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Spinner as InlineSpinner } from "@/components/ui/spinner";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+} from "@/components/ui/field";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import type { CredentialResult, DatabaseInfo, RoleInfo } from "@/api/types";
 
 type CreateFlow =
@@ -94,11 +118,7 @@ export function RolesDatabases() {
       <PageHeader
         title="Roles & Databases"
         description="Create databases and users safely. Every action here is guided and confirmed."
-        actions={
-          <button type="button" className="btn btn-primary" onClick={() => setFlow({ kind: "new-app" })}>
-            + New app (one-click)
-          </button>
-        }
+        actions={<Button onClick={() => setFlow({ kind: "new-app" })}>+ New app (one-click)</Button>}
       />
 
       <Callout tone="info" title="What is a “role”?">
@@ -111,9 +131,9 @@ export function RolesDatabases() {
       <Card
         title="Databases"
         actions={
-          <button type="button" className="btn btn-sm" onClick={() => setFlow({ kind: "database" })}>
+          <Button variant="outline" size="sm" onClick={() => setFlow({ kind: "database" })}>
             + Create database
-          </button>
+          </Button>
         }
       >
         {dbs.loading ? (
@@ -123,36 +143,35 @@ export function RolesDatabases() {
         ) : !dbs.data || dbs.data.length === 0 ? (
           <EmptyState title="No databases yet" hint="Create one to get started." />
         ) : (
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Owner</th>
-                  <th>Size</th>
-                  <th className="col-actions">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dbs.data.map((db) => (
-                  <tr key={db.name}>
-                    <td><strong>{db.name}</strong></td>
-                    <td>{db.owner}</td>
-                    <td>{bytes(db.size_bytes)}</td>
-                    <td className="col-actions">
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-danger-ghost"
-                        onClick={() => setDropTarget({ kind: "database", name: db.name })}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Owner</TableHead>
+                <TableHead>Size</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {dbs.data.map((db) => (
+                <TableRow key={db.name}>
+                  <TableCell className="font-medium">{db.name}</TableCell>
+                  <TableCell>{db.owner}</TableCell>
+                  <TableCell>{bytes(db.size_bytes)}</TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      disabled={dropBusy}
+                      onClick={() => setDropTarget({ kind: "database", name: db.name })}
+                    >
+                      Delete
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         )}
       </Card>
 
@@ -161,12 +180,12 @@ export function RolesDatabases() {
         title="Users & roles"
         actions={
           <>
-            <button type="button" className="btn btn-sm" onClick={() => setFlow({ kind: "readonly" })}>
+            <Button variant="outline" size="sm" onClick={() => setFlow({ kind: "readonly" })}>
               + Read-only user
-            </button>
-            <button type="button" className="btn btn-sm" onClick={() => setFlow({ kind: "user" })}>
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setFlow({ kind: "user" })}>
               + Login user
-            </button>
+            </Button>
           </>
         }
       >
@@ -177,54 +196,62 @@ export function RolesDatabases() {
         ) : !roles.data || roles.data.length === 0 ? (
           <EmptyState title="No roles yet" />
         ) : (
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th className="col-actions">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {roles.data.map((role) => (
-                  <tr key={role.name}>
-                    <td><strong>{role.name}</strong></td>
-                    <td>
-                      {role.is_superuser ? (
-                        <Badge tone="warn">superuser</Badge>
-                      ) : role.can_login ? (
-                        <Badge tone="info">login user</Badge>
-                      ) : (
-                        <Badge>group role</Badge>
-                      )}
-                    </td>
-                    <td className="col-actions">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {roles.data.map((role) => (
+                <TableRow key={role.name}>
+                  <TableCell className="font-medium">{role.name}</TableCell>
+                  <TableCell>
+                    {role.is_superuser ? (
+                      <Badge tone="warn">superuser</Badge>
+                    ) : role.can_login ? (
+                      <Badge tone="info">login user</Badge>
+                    ) : (
+                      <Badge>group role</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
                       {role.can_login && !role.is_superuser ? (
-                        <button
-                          type="button"
-                          className="btn btn-sm"
+                        <Button
+                          variant="outline"
+                          size="sm"
                           disabled={rotateBusy === role.name}
                           onClick={() => rotate(role.name)}
                         >
-                          {rotateBusy === role.name ? "…" : "Rotate password"}
-                        </button>
+                          {rotateBusy === role.name ? (
+                            <>
+                              <InlineSpinner data-icon="inline-start" />
+                              Rotating…
+                            </>
+                          ) : (
+                            "Rotate password"
+                          )}
+                        </Button>
                       ) : null}
                       {!role.is_superuser ? (
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-danger-ghost"
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          disabled={dropBusy}
                           onClick={() => setDropTarget({ kind: "role", name: role.name })}
                         >
                           Delete
-                        </button>
+                        </Button>
                       ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         )}
       </Card>
 
@@ -293,12 +320,19 @@ function ModalFooter({
 }) {
   return (
     <>
-      <button type="button" className="btn" onClick={onClose} disabled={busy}>
+      <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
         Cancel
-      </button>
-      <button type="submit" form="create-form" className="btn btn-primary" disabled={busy || disabled}>
-        {busy ? "Working…" : submitLabel}
-      </button>
+      </Button>
+      <Button type="submit" form="create-form" disabled={busy || disabled}>
+        {busy ? (
+          <>
+            <InlineSpinner data-icon="inline-start" />
+            Working…
+          </>
+        ) : (
+          submitLabel
+        )}
+      </Button>
     </>
   );
 }
@@ -346,13 +380,13 @@ function CreateUserModal({
       onClose={onClose}
       footer={<ModalFooter onClose={onClose} busy={busy} submitLabel="Create user" disabled={!username.trim()} />}
     >
-      <p className="muted">
+      <p className="text-muted-foreground">
         A login user (role) can connect to the database. We generate a strong password and show it
         once — copy it now, it can&apos;t be shown again.
       </p>
-      <form id="create-form" onSubmit={submit}>
+      <form id="create-form" onSubmit={submit} className="mt-4">
         {error ? <ErrorNotice error={error} /> : null}
-        <NameField label="User name" value={username} onChange={setUsername} placeholder="app_user" />
+        <NameField id="new-user-name" label="User name" value={username} onChange={setUsername} placeholder="app_user" />
       </form>
     </Modal>
   );
@@ -405,26 +439,43 @@ function CreateReadonlyModal({
         />
       }
     >
-      <p className="muted">
+      <p className="text-muted-foreground">
         This creates a user that can <strong>read but never change</strong> your data. We also set
         it up so it can automatically read <em>future</em> tables, so you don&apos;t have to
         re-grant access every time you add one.
       </p>
-      <form id="create-form" onSubmit={submit}>
+      <form id="create-form" onSubmit={submit} className="mt-4 flex flex-col gap-5">
         {error ? <ErrorNotice error={error} /> : null}
-        <NameField label="User name" value={username} onChange={setUsername} placeholder="readonly_user" />
-        <label className="field">
-          <span className="field-label">Database</span>
-          <select value={database} onChange={(e) => setDatabase(e.target.value)} required>
-            {databases.length === 0 ? <option value="">No databases — create one first</option> : null}
-            {databases.map((db) => (
-              <option key={db.name} value={db.name}>
-                {db.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <NameField label="Schema" value={schema} onChange={setSchema} placeholder="public" />
+        <NameField
+          id="ro-user-name"
+          label="User name"
+          value={username}
+          onChange={setUsername}
+          placeholder="readonly_user"
+        />
+        <Field>
+          <FieldLabel htmlFor="ro-database">Database</FieldLabel>
+          <Select value={database} onValueChange={setDatabase} disabled={databases.length === 0}>
+            <SelectTrigger
+              id="ro-database"
+              className="w-full"
+              aria-describedby={databases.length === 0 ? "ro-database-hint" : undefined}
+            >
+              <SelectValue placeholder="Select a database" />
+            </SelectTrigger>
+            <SelectContent>
+              {databases.map((db) => (
+                <SelectItem key={db.name} value={db.name}>
+                  {db.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {databases.length === 0 ? (
+            <FieldDescription id="ro-database-hint">No databases — create one first.</FieldDescription>
+          ) : null}
+        </Field>
+        <NameField id="ro-schema" label="Schema" value={schema} onChange={setSchema} placeholder="public" />
       </form>
     </Modal>
   );
@@ -474,21 +525,29 @@ function CreateDatabaseModal({
         />
       }
     >
-      <form id="create-form" onSubmit={submit}>
+      <form id="create-form" onSubmit={submit} className="flex flex-col gap-5">
         {error ? <ErrorNotice error={error} /> : null}
-        <NameField label="Database name" value={name} onChange={setName} placeholder="myapp" />
-        <label className="field">
-          <span className="field-label">Owner</span>
-          <select value={owner} onChange={(e) => setOwner(e.target.value)} required>
-            {owners.length === 0 ? <option value="">No suitable roles — create a user first</option> : null}
-            {owners.map((r) => (
-              <option key={r.name} value={r.name}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-          <span className="field-help muted">The owner can fully manage this database.</span>
-        </label>
+        <NameField id="db-name" label="Database name" value={name} onChange={setName} placeholder="myapp" />
+        <Field>
+          <FieldLabel htmlFor="db-owner">Owner</FieldLabel>
+          <Select value={owner} onValueChange={setOwner} disabled={owners.length === 0}>
+            <SelectTrigger id="db-owner" className="w-full" aria-describedby="db-owner-hint">
+              <SelectValue placeholder="Select an owner" />
+            </SelectTrigger>
+            <SelectContent>
+              {owners.map((r) => (
+                <SelectItem key={r.name} value={r.name}>
+                  {r.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <FieldDescription id="db-owner-hint">
+            {owners.length === 0
+              ? "No suitable roles — create a user first."
+              : "The owner can fully manage this database."}
+          </FieldDescription>
+        </Field>
       </form>
     </Modal>
   );
@@ -528,19 +587,19 @@ function NewAppModal({
         <ModalFooter onClose={onClose} busy={busy} submitLabel="Create app" disabled={!database.trim()} />
       }
     >
-      <p className="muted">This creates everything a new application needs:</p>
-      <ul className="bullet-list">
+      <p className="text-muted-foreground">This creates everything a new application needs:</p>
+      <ul className="mt-1 list-disc pl-5 text-muted-foreground">
         <li>A database</li>
         <li>A read/write user (for your app to use)</li>
         <li>A read-only user (for dashboards, reporting, debugging)</li>
       </ul>
-      <p className="muted">
+      <p className="mt-3 text-muted-foreground">
         You&apos;ll get connection strings (DSNs) at the end — copy them now, the passwords are
         shown only once.
       </p>
-      <form id="create-form" onSubmit={submit}>
+      <form id="create-form" onSubmit={submit} className="mt-4">
         {error ? <ErrorNotice error={error} /> : null}
-        <NameField label="App / database name" value={database} onChange={setDatabase} placeholder="myapp" />
+        <NameField id="new-app-name" label="App / database name" value={database} onChange={setDatabase} placeholder="myapp" />
       </form>
     </Modal>
   );
@@ -555,17 +614,17 @@ function SecretsModal({ creds, onClose }: { creds: CredentialResult; onClose: ()
       tone="danger"
       onClose={onClose}
       footer={
-        <button type="button" className="btn btn-primary" onClick={onClose}>
+        <Button type="button" onClick={onClose}>
           I&apos;ve saved them
-        </button>
+        </Button>
       }
     >
       <Callout tone="warn" title="Shown only once">
         These passwords and connection strings cannot be retrieved again. Copy them into your
         password manager before closing.
       </Callout>
-      {creds.result.message ? <p className="muted">{creds.result.message}</p> : null}
-      <div className="secrets-list">
+      {creds.result.message ? <p className="mt-3 text-muted-foreground">{creds.result.message}</p> : null}
+      <div className="mt-3.5 flex flex-col gap-3">
         {Object.entries(secrets).map(([key, value]) => (
           <SecretValue key={key} label={prettyKey(key)} value={value} />
         ))}
@@ -575,11 +634,13 @@ function SecretsModal({ creds, onClose }: { creds: CredentialResult; onClose: ()
 }
 
 function NameField({
+  id,
   label,
   value,
   onChange,
   placeholder,
 }: {
+  id: string;
   label: string;
   value: string;
   onChange: (v: string) => void;
@@ -587,22 +648,26 @@ function NameField({
 }) {
   const invalid = value.length > 0 && !/^[a-z_][a-z0-9_]*$/.test(value);
   return (
-    <label className="field">
-      <span className="field-label">{label}</span>
-      <input
+    <Field data-invalid={invalid ? "true" : undefined}>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <Input
+        id={id}
         type="text"
         value={value}
         placeholder={placeholder}
         autoComplete="off"
         spellCheck={false}
-        aria-invalid={invalid}
+        aria-invalid={invalid || undefined}
+        aria-describedby={invalid ? `${id}-help ${id}-error` : `${id}-help`}
         onChange={(e) => onChange(e.target.value)}
       />
-      <span className="field-help muted">
+      <FieldDescription id={`${id}-help`}>
         Lowercase letters, numbers and underscores. Must start with a letter or underscore.
-      </span>
-      {invalid ? <span className="field-error">That name has characters Postgres won&apos;t accept.</span> : null}
-    </label>
+      </FieldDescription>
+      {invalid ? (
+        <FieldError id={`${id}-error`}>That name has characters Postgres won&apos;t accept.</FieldError>
+      ) : null}
+    </Field>
   );
 }
 

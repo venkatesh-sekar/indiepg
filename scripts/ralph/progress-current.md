@@ -5,6 +5,34 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band D · RolesDatabases → shadcn
+Third band-D view. Rebuilt `RolesDatabases.tsx` on shadcn primitives:
+- All `.btn*` buttons → `Button` (variants: primary CTA = default; card/table
+  actions = `outline size="sm"`; destructive Delete = `destructive size="sm"`;
+  modal Cancel = `outline`). Rotate-password + modal-submit busy states compose
+  the raw `Spinner` (`@/components/ui/spinner`) with `data-icon="inline-start"`.
+- Both `.data-table` tables → `Table`/`TableHeader`/`TableBody`/`TableRow`/
+  `TableHead`/`TableCell`; `.table-scroll` dropped (Table has its own overflow
+  container); `.col-actions` → `text-right` + a `flex justify-end gap-2` row for
+  the two-button roles cell.
+- All forms moved to `Field`+`FieldLabel`+`FieldDescription`+`FieldError` with
+  `Input`; the two native `<select>`s → shadcn `Select` (Trigger/Value/Content/
+  Item), `disabled` when their option set is empty. `NameField` rebuilt on
+  `Field`/`Input`; a11y wired: `data-invalid` on `Field`, `aria-invalid` +
+  `aria-describedby` (help id, plus the FieldError id when invalid) on `Input`;
+  the Select triggers describe their FieldDescription hint.
+- `bullet-list`/`muted`/`secrets-list` markup → Tailwind tokens (`list-disc pl-5`,
+  `text-muted-foreground`, `flex flex-col gap-3`).
+Behavior identical: same create flows (Modal), same typed-name drop confirm
+(TypedConfirmDialog), same rotate/secrets one-time reveal, same toasts. Shared
+`Card`/`PageHeader`/`EmptyState`/`Spinner`/`ErrorNotice`/`SecretValue`/`Callout`
+kept (migrated separately). Deleted dead `.bullet-list`/`.field-error`/
+`.secrets-list` CSS (RolesDatabases-only; `.secret-*`/`.field-help` kept — shared).
+Added `RolesDatabases.test.tsx` (5 tests: tables render, role typing/actions,
+empty states, create-database dialog, typed-confirm gating) → 106 web tests green.
+ui-heuristics-reviewer: accepted all 3 a11y findings (FieldError described-by,
+Select described-by, Delete `disabled` while a drop is in flight).
+
 ## 2026-06-24 · band D · Dashboard → shadcn
 Second band-D view. Rebuilt `Dashboard.tsx` on shadcn `Card` composition
 (`Card`/`CardHeader`/`CardTitle`/`CardContent`) — the Postgres, Latest-backup and
