@@ -76,4 +76,24 @@ describe("Dashboard refresh-failure surfacing", () => {
     expect(screen.queryByText("Dashboard")).toBeNull();
     expect(screen.getByRole("alert")).toBeInTheDocument();
   });
+
+  it("shows a labeled loading skeleton (not the dashboard) on the very first load", () => {
+    pollState.current = state({ loading: true });
+    render(<Dashboard />);
+    // First load with no cached data → skeleton placeholder, announced to AT.
+    expect(screen.getByRole("status", { name: "Loading dashboard…" })).toBeInTheDocument();
+    expect(screen.queryByText("Dashboard")).toBeNull();
+  });
+
+  it("renders the live Postgres + Server cards once data arrives", () => {
+    pollState.current = state({ data: SAMPLE });
+    render(<Dashboard />);
+    // Card titles render, and host metrics are surfaced from the snapshot.
+    expect(screen.getByText("Postgres")).toBeInTheDocument();
+    expect(screen.getByText("Latest backup")).toBeInTheDocument();
+    expect(screen.getByText("Server")).toBeInTheDocument();
+    expect(screen.getByText("Running")).toBeInTheDocument();
+    // No backup yet → the warn callout points the operator at Backups.
+    expect(screen.getByText(/No successful backup yet/)).toBeInTheDocument();
+  });
 });

@@ -88,27 +88,6 @@ export function Card({
   );
 }
 
-/** A single labeled metric for the dashboard. */
-export function StatCard({
-  label,
-  value,
-  sub,
-  tone = "neutral",
-}: {
-  label: string;
-  value: ReactNode;
-  sub?: ReactNode;
-  tone?: BadgeTone;
-}) {
-  return (
-    <div className={`stat-card stat-${tone}`}>
-      <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
-      {sub ? <div className="stat-sub">{sub}</div> : null}
-    </div>
-  );
-}
-
 // --- Callouts --------------------------------------------------------------
 
 /** Maps the panel's callout tones onto the shadcn Alert variants. */

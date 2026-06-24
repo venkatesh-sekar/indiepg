@@ -5,6 +5,34 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band D · Dashboard → shadcn
+Second band-D view. Rebuilt `Dashboard.tsx` on shadcn `Card` composition
+(`Card`/`CardHeader`/`CardTitle`/`CardContent`) — the Postgres, Latest-backup and
+Server panels now use the real shadcn primitive instead of the hand-rolled
+`ui.tsx` `Card` wrapper (left in place for the 8 unmigrated views). The host-metric
+tiles moved off the `StatCard` from `ui.tsx` to a local `StatCard` built on
+`Card size="sm"` (threshold tinting via semantic `text-warning`/`text-destructive`);
+`StatCard` deleted from `ui.tsx` (Dashboard was its only consumer). Hand-rolled
+layout classes replaced by Tailwind semantic tokens: `card-grid`→`grid gap-5
+sm:grid-cols-2`, `stat-grid`→`grid grid-cols-2 gap-3.5 sm:grid-cols-4`,
+`kv-list`/`kv`→a semantic `<dl>`/`<dt>`/`<dd>` row (`flex justify-between … border-b
+border-dashed last:border-b-0`), `bullet-list`→`list-disc pl-5`, `updated-at`/`muted`
+→`text-muted-foreground`. First-load `<Spinner>` swapped for a `Skeleton` placeholder
+(`role="status"` + `aria-label="Loading dashboard…"` so AT is still informed).
+Behavior identical: same poll cadence + data, same three render states (skeleton /
+hard `ErrorNotice` / live cards), same `StaleBanner` on a failed refresh over cached
+data, same warn `Callout` when no backup exists. A11y additions on authored markup:
+each `<dl>` named (`aria-label`), refresh timestamp wrapped in `<time dateTime>`.
+Deleted the now-dead `.card-grid`/`.stat-*`/`.kv-*`/`.updated-at` CSS (Dashboard-only;
+`.bullet-list` kept — RolesDatabases still uses it). Updated `Dashboard.test.tsx`:
++2 tests (labeled loading skeleton; live Postgres/Server cards render). 101 web tests
+green (was 99). Reviewer (ui-heuristics) findings: accepted the two zero-risk a11y
+nits on my own markup (dl `aria-label`, `<time>`); declined the rest as either
+non-issues (no real `Card` name collision — Dashboard imports the shadcn `Card`
+explicitly) or pre-existing shared-component behavior / content changes that would
+break behavior parity (`role="alert"` on the shared Callout/StaleBanner; the
+duplicated Connections metric; the `●` status bullet).
+
 ## 2026-06-24 · band D · Login → shadcn
 First band-D view. Rebuilt `Login.tsx` on shadcn: the sign-in screen is now a
 `Card` (Header = brand square + `CardTitle` + `CardDescription`; Content = the form;
