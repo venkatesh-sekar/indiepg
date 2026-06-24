@@ -8,6 +8,33 @@ loop doesn't re-propose them. Newest at top.
 These surfaced in the Mode-S audit (iter 1) but were dropped before reaching the
 backlog — they violate the loop's anti-over-design / one-view-per-iteration rules.
 
+- **Migrate: make the overwrite typed-confirm `Modal` non-dismissible (`dismissible={false}`).**
+  Rejected iter 22 on a **false premise**, self-rejected with decisive code evidence (no panel).
+  A nav/IA audit agent argued that letting Escape/click-outside dismiss the typed-confirm dialog
+  "undermines the safety gate — users could proceed without typing the confirmation." **This is
+  backwards.** Verified in `Migrate.tsx` (lines 336–361 single-db, 507–530 cluster): the destructive
+  action fires *only* via the `<Button onClick={start}>` whose `disabled={busy || !overwriteMatches}`
+  requires the typed name to match; **dismissing the modal (Escape / backdrop / Back) just calls
+  `setConfirmOpen(false)` and executes nothing.** So dismissing is the **safe escape**, not a bypass —
+  it cancels a destructive action. This is the **mirror opposite of iter-20's SecretsModal**: there,
+  dismissing destroyed a once-shown credential (irreversible *loss*), so `dismissible={false}` was the
+  fix; here, dismissing *avoids* a destructive action, so non-dismissibility would *trap a user inside a
+  destructive dialog* and make backing out harder — negative payoff. **Lesson:** before locking down a
+  dialog's dismiss paths, ask **which direction is the dangerous one.** `dismissible={false}` is correct
+  only when *dismissing itself* causes irreversible loss (SecretsModal). When dismissing *cancels* a
+  destructive action (every type-to-confirm execute-gate), the casual escape is a feature — keep it. Don't
+  copy iter-20's pattern onto a confirm dialog whose gate is on the execute button, not on the dismiss.
+
+- **BackupStorageForm: add a "clear saved credential" affordance.** Rejected iter 22 — speculative and
+  backend-dependent (out of scope for this frontend-only loop). The audit agent couldn't confirm the API
+  accepts an empty/clear signal ("the backend must support empty string as 'clear', which it may already
+  do"). *Changing* a credential already works (the field placeholder reads "Leave blank to keep current";
+  type a new key to replace). *Clearing to empty* isn't a coherent indie-hacker goal (you don't blank an
+  S3 secret while keeping the bucket; you reconfigure or stop using S3 — a different, larger question), and
+  it requires an unconfirmed backend behavior. **Lesson:** a "you can't UNSET X" gap is only a real item
+  when unsetting is a goal a user actually has AND the backend already supports it; otherwise it's a
+  NEEDS-BACKEND/speculative item, not a frontend fix.
+
 - **Sweeping loading-state refactor (Skeleton everywhere).** Converging every view
   from `Spinner` to a shared `PageSkeleton` is a multi-page redesign for marginal
   polish — explicitly forbidden ("never a sweeping multi-page refactor"). If a single

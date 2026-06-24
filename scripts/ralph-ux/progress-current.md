@@ -3,6 +3,35 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 22 — Mode S (convergence check) — stable_streak 0 → 1
+Backlog was actionable-empty after iter 21 (only the NEEDS-BACKEND backup-badge item + two low/watch nits —
+Query write-detector, Login lockout-duration copy). Per the contract, ran a fresh **Mode-S discovery /
+convergence pass** rather than chew the low/watch items: a 5-agent parallel panel, each given its view(s) + the
+full already-shipped/already-rejected digest + a deliberately HIGH bar. Coverage identical to iters 15–21 for
+comparability: (1) Dashboard + Query, (2) Roles & Databases + Backups + BackupStorageForm, (3) Alerts + Migrate,
+(4) Settings + DatabaseTuning + Pooler + Login, (5) nav/IA + first-run + cross-view consistency.
+**All five views converged.** Three returned clean "no new high/med item" (Dashboard+Query — StaleBanner/honest
+state mature; Alerts+Migrate — verified the 3-stage overwrite gate + that `reset()` clears `confirm`; Settings/
+Tuning/Pooler/Login — verified the lockout recovery, the DatabaseTuning reassurance Callouts, the Pooler
+repoint copy). Two candidates surfaced and **both collapsed on code-level inspection**, self-rejected with
+decisive evidence and no panel (iter-5/13/14 precedent):
+- **Migrate overwrite confirm — add `dismissible={false}`** (nav/IA agent). **FALSE PREMISE** — the agent said
+  an Escape/click-outside could "proceed without typing the confirmation." Verified in `Migrate.tsx`
+  (336–361): the destructive action fires ONLY via the "Overwrite & migrate" button
+  (`disabled={busy || !overwriteMatches}` — must type the target name); dismissing calls
+  `setConfirmOpen(false)` and executes nothing. Dismissing is the **safe escape** — the mirror opposite of
+  iter-20's SecretsModal (dismiss = irreversible loss). Non-dismissible here would TRAP a user inside a
+  destructive dialog — negative payoff.
+- **BackupStorageForm — "clear saved credential"** (Roles/Backups agent). Speculative + backend-dependent (the
+  agent couldn't confirm the API accepts a clear signal); *changing* a credential already works. Out of scope.
+No code shipped, docs-only commit, no hard gates needed. Per the contract (backlog actionable-empty AND a fresh
+discovery pass surfaced no high/med item) this is the **first `stable_streak` increment → 1/3**. Two more clean
+passes → write COMPLETE.md and stop. **LESSON:** before locking down a dialog's dismiss paths, ask *which
+direction is dangerous* — `dismissible={false}` is right only when dismissing itself causes irreversible loss
+(SecretsModal); when dismissing *cancels* a destructive action (every type-to-confirm execute-gate), the casual
+escape is a feature, keep it. Next iteration: run another Mode-S convergence check (don't manufacture low-value
+work to avoid converging — converging early is a win).
+
 ## 2026-06-25 — iter 21 — Mode F (SHIP) (Login: lockout no longer dead-ends the form) — stable_streak 0 → 0
 Ran a fresh discovery/convergence pass (5-agent Mode-S panel, same coverage as iters 15–19). **Four of five
 agents converged** ("no new high/med item" — Dashboard+Query, Roles+Backups, Alerts+Migrate, nav/IA+first-run+

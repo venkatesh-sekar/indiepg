@@ -10,18 +10,25 @@ Format per item:
 
 ## Open
 
-> **Status (iter 21):** ran a fresh 5-agent Mode-S discovery/convergence pass (same coverage as iters 15–19).
-> **Four of five agents converged** ("no new high/med item"). The Settings/Login agent surfaced a **genuine
-> functional defect**: the Login form was a permanent dead-end after a server lockout — `locked` disabled the
-> input, the cleared password disabled the button, and `locked` only resets inside `onSubmit` (which can't
-> fire), so the only escape was a full-page reload (and the form stayed frozen even after the server lock
-> expired). Verified against the code (`Login.tsx` lines 38/55/91/98 + the test that *encoded* the dead-end).
-> Promoted to Mode F and shipped a **subtractive** fix: input `disabled={busy || locked}` → `disabled={busy}`
-> (the warn Callout still surfaces the lockout; the server still enforces it), so a locked-out user can retype
-> and resubmit. **4 SHIP, zero blockers (incl. restraint critic — "the rare change a simplicity critic should
-> wave through; it makes the code smaller and removes a trap").** `stable_streak` stays **0** (shipped a real
-> improvement — the convergence clock restarts). Backlog is actionable-empty again. Next iteration: run a fresh
-> Mode-S discovery/convergence pass.
+> **Status (iter 22):** ran a fresh 5-agent Mode-S discovery/convergence pass (same coverage as iters 15–21).
+> **All five views converged** ("no new high/med item"). Two candidates surfaced and BOTH collapsed on
+> code-level inspection (self-rejected, no panel — iter-5/13/14 precedent: don't run a panel to rubber-stamp a
+> provably-zero-payoff or false-premise change):
+> - **Migrate overwrite confirm — add `dismissible={false}`** (nav/IA agent). **FALSE PREMISE.** The agent
+>   claimed an Escape/click-outside could "proceed without typing the confirmation." Verified in `Migrate.tsx`
+>   (lines 336–361): the destructive action fires ONLY via the "Overwrite & migrate" button
+>   (`onClick={start}`, `disabled={busy || !overwriteMatches}` — you must type the target name); dismissing
+>   calls `setConfirmOpen(false)` and executes nothing. Dismissing is the SAFE escape — the mirror opposite of
+>   iter-20's SecretsModal (where dismiss = irreversible credential loss). Non-dismissible here would trap a
+>   user inside a destructive dialog. Negative payoff. See learnings.md.
+> - **BackupStorageForm — "clear saved credential" affordance** (Roles/Backups agent). Speculative +
+>   backend-dependent: the agent couldn't confirm the API accepts an empty/clear signal; *changing* a credential
+>   already works (type a new key). Out of scope for this frontend-only loop. Not promoted.
+>
+> Backlog actionable-empty AND a fresh discovery pass surfaced no high/med item → **first `stable_streak`
+> increment, 0 → 1/3**. Two more clean convergence passes → write COMPLETE.md and stop. Next iteration: run a
+> fresh Mode-S convergence check (don't manufacture low-value work to avoid converging — converging early is a
+> win).
 
 ### Quick wins (high/med payoff, S effort) — do these first
 - [x] (high/S) Roles & Databases — the one-time `SecretsModal` was a plain `Modal`, so Escape/backdrop/X
