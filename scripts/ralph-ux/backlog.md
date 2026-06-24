@@ -11,10 +11,6 @@ Format per item:
 ## Open
 
 ### Quick wins (high/med payoff, S effort) — do these first
-- [ ] (high/S) Roles & Databases — the "No roles yet" empty state has no hint
-  (Databases card has one); a non-DBA doesn't know roles = login users or what to do
-  next. → Add `hint` naming the next step, e.g. "Create a login user or read-only
-  user above, or use 'New app' to set up everything at once." (2 agents flagged.)
 - [ ] (high/S) Dashboard — the Postgres "Version" row always renders "—" (backend
   never populates it); a blank version next to a green "Running" badge reads as
   "unknown / partial data" and undermines trust. → Remove the Version row.
@@ -83,7 +79,10 @@ Format per item:
 
 ## Done
 
-_(none yet)_
+- [x] (high/S) Roles & Databases — "No roles yet" empty state had no hint (the
+  Databases card had one). Added a `hint` pointing to the card's user buttons and the
+  page-header "New app (one-click)" path. Shipped iter 2 (3 SHIP; Sam's "above" vs
+  header-button ambiguity fixed in-iteration by disambiguating the copy).
 
 ## Rejected
 

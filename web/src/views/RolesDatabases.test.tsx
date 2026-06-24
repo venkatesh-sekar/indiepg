@@ -68,6 +68,8 @@ describe("RolesDatabases", () => {
 
     expect(await screen.findByText("No databases yet")).toBeInTheDocument();
     expect(screen.getByText("No roles yet")).toBeInTheDocument();
+    // The roles empty state points to the next step, not just a bare title.
+    expect(screen.getByText(/set up a database and its users/i)).toBeInTheDocument();
   });
 
   it("opens the create-database dialog with an owner select", async () => {

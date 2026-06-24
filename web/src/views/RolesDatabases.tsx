@@ -194,7 +194,10 @@ export function RolesDatabases() {
         ) : roles.error ? (
           <ErrorNotice error={roles.error} />
         ) : !roles.data || roles.data.length === 0 ? (
-          <EmptyState title="No roles yet" />
+          <EmptyState
+            title="No roles yet"
+            hint="Use the buttons above to add a login or read-only user — or “New app (one-click)” at the top of the page to set up a database and its users in one step."
+          />
         ) : (
           <Table>
             <TableHeader>
