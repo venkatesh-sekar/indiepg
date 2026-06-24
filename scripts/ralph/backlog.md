@@ -49,7 +49,7 @@ Format: `- [ ] (band) item — acceptance: how we know it's done`
 
 ## 3 · Usability
 - [ ] (3) Provision flow shows the computed best-defaults up front with each override clearly labeled by effect; safe to accept blindly — acceptance: UI lists defaults + overrides; copy reviewed.
-- [ ] (3) Every destructive action's confirm dialog states exactly what will happen and what is irreversible — acceptance: audit of ConfirmDialog usages; each has explicit consequence text.
+- [x] (3) Every destructive action's confirm dialog states exactly what will happen and what is irreversible — done 2026-06-24: audited all confirm sites (Backups run/deep-test/restore, Alerts delete-rule, RolesDatabases drop db/user, Migrate single/cluster overwrite) — each already states the consequence + irreversibility, and destructive ops gate behind a typed exact-name match. The audit was UNTESTED, so I added `web/src/components/ConfirmDialog.test.tsx` (8 tests) locking the two safety invariants: plain-language consequence is shown, and `TypedConfirmDialog` cannot fire `onConfirm` until the exact object name is typed (also gated while busy). Reviewed (feature-dev:code-reviewer: 2 robustness findings on assertion fragility, both applied).
 - [ ] (3) PgBouncer as an opt-in pooler: a simple toggle that, when on, installs/configures with DEFAULTS.md pool math and shows the app connection string (via pooler) — acceptance: backend + UI + test; off by default.
 
 ## 4 · UI redo (shadcn)

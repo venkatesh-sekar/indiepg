@@ -5,6 +5,35 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · destructive-confirm audit + lock it with tests
+First band-3 item. Audited every confirmation site against "states exactly what
+will happen and what is irreversible": Backups (run full/incr, deep restore test,
+restore-overwrite), Alerts (delete rule), RolesDatabases (drop database/user),
+Migrate (single-DB + whole-cluster overwrite). All already carry plain-language
+consequence text, and the truly destructive paths (drop db/user, restore,
+migrate-overwrite) gate behind typing the exact object name. **The copy was good
+but completely untested** — a refactor could silently weaken the typed-name gate
+that stands between the operator and irreversible data loss.
+
+So this iteration makes the audit durable: added `web/src/components/
+ConfirmDialog.test.tsx` (8 tests, the first coverage for these primitives):
+- `ConfirmDialog`: renders title/message, confirm+cancel handlers fire, danger
+  tone applies `btn-danger`, busy disables both buttons and shows "Working…"
+  (and a disabled confirm is a no-op), closed renders nothing.
+- `TypedConfirmDialog`: states what is destroyed + "cannot be undone", surfaces
+  the caller's consequence inside a `.callout-danger`, keeps the delete button
+  **disabled until the exact name is typed** (near-miss stays disabled + flags
+  the input invalid; clicking while disabled never calls `onConfirm`), fires
+  `onConfirm(typed)` only on an exact match, and stays gated while `busy` even
+  with a matching name.
+No component changes — pure test hardening, lowest-risk way to bank the audit.
+Reviewed (feature-dev:code-reviewer): two robustness findings — assert the
+danger callout by container class (not the accidental text node), and assert the
+input is "not invalid" rather than the exact `aria-invalid="false"` serialisation
+so a future spec-correct change stays green. Both applied. Gates: gofmt clean,
+go build OK (no Go touched), web typecheck + build (deterministic, no dist diff) +
+55 web tests all green.
+
 ## 2026-06-24 · band 2.5 (resource & config safety) · APPLY host-sized tuning — UI surface
 Closed the **last open band-2.5 item**: the operator can now SEE how Postgres is
 sized to their box. Provisioning is CLI-driven (`indiepg install`), so the
