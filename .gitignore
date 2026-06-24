@@ -39,3 +39,25 @@ scripts/ralph/COMPLETE.md
 
 # local npm cache used by the UI loop (keeps installs off the read-only ~/.npm)
 web/.npm-cache/
+
+# Root-level Node / npm artifacts (incidental installs; UI loop runs from web/)
+/node_modules/
+/.npm-cache/
+
+# AI tooling artifacts (Claude Code / skills / agents) — not project source
+/.claude/
+/.agents/
+/.mcp.json
+/skills-lock.json
+
+# Harness-injected home dotfiles & config that surface in the working tree
+/.bashrc
+/.bash_profile
+/.profile
+/.zprofile
+/.zshrc
+/.gitconfig
+/.ripgreprc
+/.gitmodules
+/.idea
+/.vscode
