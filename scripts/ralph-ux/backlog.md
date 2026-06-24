@@ -11,10 +11,11 @@ Format per item:
 ## Open
 
 ### Quick wins (high/med payoff, S effort) — do these first
-- [ ] (high/S) Roles & Databases — a single `dropBusy` boolean disables **every**
-  Delete button on both tables during any one drop, so the UI looks frozen for
-  unrelated rows. → Scope busy state to the target being dropped
-  (`dropBusy && dropTarget?.name === row.name`).
+- ~~(high/S) Roles & Databases — `dropBusy` disables every Delete button during a
+  drop~~ — **rejected iter 5**: `dropBusy` is true only while the modal
+  `TypedConfirmDialog` is open, which makes the background inert/`aria-hidden`; no
+  user can see or click an "unrelated frozen row," so per-row scoping has zero
+  payoff. See learnings.md.
 - [ ] (med/S) Dashboard — the "no backup yet" callout says "Run one from the Backups
   page" as plain text with no link; user has to hunt the sidebar. → Make "Backups
   page" a `<Link to="/backups">` (Link already imported).
@@ -92,5 +93,9 @@ Format per item:
 
 ## Rejected
 
-_(none yet — review-panel verdicts land here with a one-line why. Over-design items
-the audit surfaced but were dropped before the backlog are recorded in learnings.md.)_
+- ~~(high/S) Roles & Databases — scope `dropBusy` per-row~~ — iter 5. No observable
+  payoff: a drop only runs while the modal `TypedConfirmDialog` is open, so the
+  background table is already inert/`aria-hidden` and the user can't see or click the
+  "frozen" unrelated rows. A global busy flag that only flips under a modal is
+  effectively already scoped. Self-rejected on restraint (decisive evidence, no panel
+  needed). Full write-up in learnings.md.

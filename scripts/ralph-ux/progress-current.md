@@ -3,6 +3,24 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 5 — Mode F (REJECT) (Roles & DBs: scope `dropBusy` per-row)
+Took the top quick-win: the audit claimed a single `dropBusy` boolean disables *every*
+Delete button during any one drop, "freezing" unrelated rows. Implemented the scoped fix
+(`dropBusy && dropTarget?.kind === … && dropTarget.name === row.name` on both tables) and
+wrote a test for it — and the test exposed the flaw: while the drop runs, the modal
+`TypedConfirmDialog` is open, so Radix marks the background table inert/`aria-hidden` (the
+unrelated row's Delete button is in the DOM but unreachable via `getByRole`). Traced the
+lifecycle to confirm: `dropBusy` is true **iff** `doDrop` is running, and `doDrop` is only
+reachable from the dialog (`open={dropTarget !== null}`); on success the dialog closes *and*
+`reloadAll()` swaps the tables for a Spinner before busy clears. So no user can ever see or
+click an "unrelated frozen row" — the scoping changes nothing observable and only adds
+conditional logic. **Self-rejected on restraint** with decisive evidence (no review panel
+needed — running 4 agents to rubber-stamp a proven no-payoff change is the churn the loop
+guards against). Reverted code + test; recorded the lesson ("a global busy flag that only
+flips under a modal is already effectively scoped — the modal does the gating") in
+learnings.md and marked the backlog item rejected. No code shipped. Next top item:
+Dashboard — make the "no backup yet" callout's "Backups page" an actual `<Link>`.
+
 ## 2026-06-25 — iter 4 — Mode F (Alerts: warn when rules can't fire — no channel)
 Top quick-win, silent-failure honest-state fix. A user could enable alert rules while
 having no enabled notification channel — the rules then fired into the void with nothing

@@ -26,6 +26,18 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
 - **Login: stop clearing the password field on auth failure.** Clearing on failure
   is a defensible default; the "friction" is minor and reversing it trades a small
   convenience for a small security signal. Not worth an iteration.
+- **Roles & Databases: scope `dropBusy` per-row so unrelated Delete buttons stay
+  enabled during a drop.** Rejected iter 5 — the premise ("unrelated rows look frozen")
+  is false. `dropBusy` is true *only* while `doDrop` runs, and `doDrop` is reachable
+  only from the `TypedConfirmDialog` (open iff `dropTarget !== null`). So a modal
+  AlertDialog is always open during the entire busy window — Radix marks the
+  background inert/`aria-hidden` (proven: a background Delete button is in the DOM but
+  unreachable via `getByRole` while the dialog is open), and on success the dialog
+  closes *and* `reloadAll()` swaps the tables for a Spinner before busy clears. The
+  user can never see or click an "unrelated frozen row," so per-row scoping adds
+  conditional logic for zero observable payoff. **Lesson:** a global busy flag that
+  only flips while a modal is up is already effectively scoped — the modal does the
+  gating. Don't "fix" disabled-state breadth on rows a modal already covers.
 
 ## Rules of thumb
 
