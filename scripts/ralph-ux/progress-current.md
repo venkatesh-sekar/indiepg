@@ -3,6 +3,35 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 25 — Mode S (convergence check) — stable_streak 0 → 1
+Backlog actionable-empty after iter 24 (only the NEEDS-BACKEND backup-badge item + low/watch nits — Query
+write-detector, Login lockout-duration copy, Settings grouping). Per the contract, ran a fresh **Mode-S
+discovery/convergence pass** rather than chew the low-value items: a 5-agent parallel panel, each given its
+view(s) + the full already-shipped/already-rejected digest + a deliberately HIGH bar. Coverage identical to
+iters 15–24: (1) Dashboard+Query, (2) Roles & Databases+Backups+BackupStorageForm, (3) Alerts+Migrate,
+(4) Settings+DatabaseTuning+Pooler+Login, (5) nav/IA+first-run+cross-view consistency. **All five views
+converged.** Four agents hard-converged (no candidate). The Roles/Backups agent floated ONE borderline
+candidate — gate the **Restore… / Test-a-restore / Deep-restore-test** buttons on `hasNoBackups`
+(`history.data.backups.length === 0`) — but **self-rated it medium-LOW**, explicitly saying "CONVERGED if the
+bar is clearly high/medium." **Self-rejected on inspection** (decisive evidence, no panel — iter-5/13
+precedent): (a) the "no backups" state is **already shown twice** — the `BackupStatusSummary` danger Callout
+*"No backups yet — your data is not protected"* (`Backups.tsx:488`, rendered `:220`) + the Backup-history
+`EmptyState` (`:256`); the proposed button titles restate it a **third** time (rejected iter-6/7/13 pattern).
+(b) `RestoreModal` is a **typed-confirm** destructive flow (must type `main`, `:821`/`:835`) — an empty repo
+yields a **clear server error**, no data harm; the two restore-*test* buttons are **read-only**. (c) the
+`hasRunningBackup` gate it wanted to mirror prevents a **real conflict** (concurrent backups); "nothing to
+restore" is not a conflict, just a one-time fresh-instance state the page already narrates. The other finds
+were **backend-coupled → out of scope** (Pooler EnabledView omits routed roles — `PoolerStatus` carries no
+roles field; Migrate/Settings "configure in Settings" stale hint comes from the backend `WithHint`). No code
+shipped, docs-only commit, no hard gates needed. Per the contract (backlog actionable-empty AND a fresh
+discovery pass surfaced no high/med item) this is the **first stable_streak increment → 1/3**. Two more clean
+passes → write COMPLETE.md and stop the loop. **LESSON:** button-gating (`disabled` + `title`) is NOT exempt
+from the "don't restate an already-visible fact" rule — a title that repeats an on-screen empty-state message
+is the same redundancy as an extra Callout; and before mirroring an existing disable, check the new case is the
+*same kind* of problem (a destructive **conflict** gate ≠ a harmless "precondition not met yet" state). Next
+iteration: another Mode-S convergence check (don't manufacture low-value work to avoid converging — converging
+early is a win).
+
 ## 2026-06-25 — iter 24 — Mode F (Alerts: block creating an empty enabled channel) — stable_streak 2 → 0
 Ran the FINAL Mode-S convergence panel (5 agents, same coverage as iters 15–23, HIGH bar + full
 shipped/rejected digest). **4 of 5 views converged.** The Alerts/Migrate agent floated two Alerts candidates;

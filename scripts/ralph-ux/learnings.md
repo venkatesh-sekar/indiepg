@@ -8,6 +8,28 @@ loop doesn't re-propose them. Newest at top.
 These surfaced in the Mode-S audit (iter 1) but were dropped before reaching the
 backlog — they violate the loop's anti-over-design / one-view-per-iteration rules.
 
+- **Backups: disable the Restore… / Test-a-restore / Deep-restore-test buttons when there are zero backups
+  (`history.data.backups.length === 0`), with a "run a backup first" title.** Surfaced iter 25 by the
+  Roles/Backups audit agent, which itself rated it medium-**low** and said "CONVERGED if the bar is clearly
+  high/medium." **Self-rejected on inspection** (decisive evidence, no panel — iter-5/13 precedent), on
+  **restraint** and a **false-payoff** premise: (1) the "no backups" state is **already shown twice** on the
+  page — the `BackupStatusSummary` danger Callout *"No backups yet — your data is not protected"*
+  (`Backups.tsx:488`, rendered at `:220`) AND the Backup-history `EmptyState` *"No backups yet / Run your first
+  backup to protect your data"* (`:256`). The proposed button `title`s would restate that fact a **third** time
+  — exactly the iter-6/7/13 rejected pattern ("surface a fact only when it's otherwise hidden"; here it isn't).
+  (2) **No harm is possible:** `RestoreModal` is a **typed-confirm** destructive flow — the "Restore now" button
+  is `disabled={busy || !matches}` and requires typing the stanza name `main` (`:821`/`:835`) — so on an empty
+  repo the user gets a **clear server error**, not a silent failure or data loss; the two restore-*test* buttons
+  are **read-only** repository verifications, harmless on an empty repo. (3) The `hasRunningBackup` gate the
+  candidate wanted to mirror prevents a **real conflict** (two concurrent backups corrupting each other);
+  "nothing to restore" is **not a conflict** — it's a one-time fresh-instance state that the page already
+  narrates and the server already rejects cleanly. **Lesson:** button-gating is *not* automatically exempt from
+  the "don't restate an already-visible fact" rule — a `disabled` + `title` that just repeats an on-screen
+  empty-state message is the same redundancy as an extra Callout. And before mirroring an existing disable
+  (`hasRunningBackup`), check that the new case is the *same kind* of problem: that gate stops a destructive
+  **conflict**; a "precondition not yet met" state whose failure is a clear, harmless server error is not the
+  same case and doesn't earn the same gate.
+
 - **Query: clear the results panel when the SQL changes (sample-button click or editor edit).**
   Rejected iter 23 on a **false premise about the expected behavior**, self-rejected with code evidence
   (no panel). An audit agent noticed that clicking a "Try:" sample (`Query.tsx:88` `setSql(sample.sql)`)

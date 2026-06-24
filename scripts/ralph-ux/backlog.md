@@ -10,13 +10,20 @@ Format per item:
 
 ## Open
 
-> **Status (iter 24):** ran the FINAL Mode-S convergence panel (5 agents, same coverage). **4 of 5 views
-> converged**; the Alerts/Migrate agent floated two Alerts candidates. Candidate A (rule Switch lacks
-> loading/optimistic-revert) **self-rejected** on inspection — the Radix Switch is fully controlled by
-> `checked={rule.enabled}` bound to server data, so a failed `toggleRule` never moves the thumb (no
-> misleading state; false premise). Candidate B was **verified REAL and SHIPPED this iter** (see Done:
-> "Alerts — block creating a new enabled channel with no credentials"). **stable_streak RESETS 2 → 0** — a
-> genuine improvement shipped, so convergence has NOT occurred. Next iteration: resume normal Mode-F/Mode-S.
+> **Status (iter 25):** backlog actionable-empty after iter 24 (only the NEEDS-BACKEND backup-badge item +
+> low/watch nits). Ran a fresh **Mode-S discovery/convergence pass** (5 agents, same coverage as iters 15–24,
+> HIGH bar + full shipped/rejected digest). **All five views converged.** Four agents hard-converged; the
+> Roles/Backups agent floated **one borderline candidate** — gate the Restore… / Test-a-restore /
+> Deep-restore-test buttons on `hasNoBackups` — and **self-rated it medium-LOW**, saying "CONVERGED if the bar
+> is clearly high/medium." **Self-rejected on inspection** (decisive evidence, no panel): the "no backups" state
+> is already shown twice (the `BackupStatusSummary` danger Callout *"No backups yet — your data is not
+> protected"* at `Backups.tsx:488` + the Backup-history `EmptyState` at `:256`), so the proposed button titles
+> restate it a third time (rejected iter-6/7/13 pattern); `RestoreModal` is a typed-confirm flow so an empty
+> repo yields a clear server error (no data harm); the restore-test buttons are read-only. The other finds
+> (Pooler EnabledView omits routed roles; Migrate/Settings stale "configure in Settings" hint) are
+> **backend-coupled → out of scope.** **stable_streak increments 0 → 1.** Two more clean passes → write
+> COMPLETE.md and stop. Next iteration: another Mode-S convergence check (don't manufacture low-value work to
+> avoid converging — converging early is a win).
 >
 > ---
 > _Prior status (iter 23): a fresh 5-agent Mode-S pass. **All five views converged.** Three candidates
