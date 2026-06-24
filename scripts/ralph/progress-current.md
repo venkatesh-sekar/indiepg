@@ -5,6 +5,38 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · PgBouncer pooler — service-lifecycle primitives (enable-flow slice 6)
+Carved the mechanical service-control layer off the remaining enable-flow item
+(the riskiest sub-piece — touching apt + the systemd unit), mirroring
+`pg/manager.go`'s proven Provision/IsRunning patterns. Added
+`internal/pgbouncer/service.go` with four methods on the existing `Manager`:
+- `InstallPackage(ctx)` — `apt-get update` then `apt-get install -y pgbouncer`,
+  both `DEBIAN_FRONTEND=noninteractive` so a prompt can't wedge it; idempotent
+  (apt no-ops an already-installed pkg). Update failure stops before install.
+- `EnableNow(ctx)` — `systemctl enable --now pgbouncer` (idempotent: already-up
+  unit is a no-op → re-runnable enable flow).
+- `Reload(ctx)` — least-disruptive apply: tries `systemctl reload` first (SIGHUP,
+  PgBouncer re-reads config + reopens auth_file WITHOUT dropping client conns),
+  and only on failure falls back to `systemctl restart`; both failing surfaces a
+  CodeExec error. The enable flow calls this ONLY when config/auth_file changed
+  (EnsureConfig/EnsureUserlist report it), so an unchanged pooler is never bounced.
+- `IsRunning(ctx)` — `systemctl is-active`. A reported non-active state
+  ("inactive"/"failed", which exits non-zero) is a clean false; but an EMPTY
+  stdout + runner error (systemctl absent, cancelled ctx) is surfaced as the error
+  it is — improves on pg.IsRunning so the orchestrator's verify-after-start can't
+  mistake "couldn't ask" for "service down" and needlessly bounce it.
+NOT yet wired into a live path — the orchestrator `Enable(...)` (RoleVerifiers →
+EnsureUserlist + EnsureConfig + these, with "reload only when changed") is the
+next slice, then the UI toggle. Tests `service_test.go` (16): update-then-install
+ordering + noninteractive env, update-stops-install, install-hint, enable argv,
+reload-prefers-SIGHUP (never restarts on success), reload→restart fallback,
+both-fail error, is-active true/inactive-false/undeterminable-error, requires-runner
+for each. Reviewed (feature-dev:code-reviewer): applied the IsRunning
+error-surfacing finding (#1) + its companion test (#2); rejected #3 (suggested
+`WarnCtx` does not exist on `core.Logger` — only `Warn`, which matches pg's
+fallback-path convention). Gates: gofmt clean, go vet, go test ./..., CGO_ENABLED=0
+build all green; no web/ touched.
+
 ## 2026-06-24 · band 3 (usability) · PgBouncer pooler — pg_authid SCRAM verifier query (enable-flow slice 5)
 Carved the next enable-flow slice off: the one input the auth_file installer
 (`EnsureUserlist`) still needed fed — the app roles' SCRAM verifiers, read from
