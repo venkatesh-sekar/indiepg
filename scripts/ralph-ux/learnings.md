@@ -104,6 +104,29 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
   information the local label/modal doesn't (the cluster warning does; this one wouldn't).
   Refines iter 7's rule: "honest/safety surface only wins when the fact is otherwise hidden."
 
+- **DatabaseTuning: add a "reassuring intro line" (defaults tuned for the hardware; the
+  typical indie app needs no changes).** Rejected iter 14 on restraint — **the premise is
+  false on inspection** (the iter-5 pattern, not the iter-7/13 "plausible-but-redundant"
+  pattern), so self-rejected with decisive code evidence and no panel. The page **already
+  opens with exactly this reassurance, threefold**: (1) the card title is `Database tuning
+  (host-sized)` — "host-sized" signals automatic; (2) the first element is an info `Callout`
+  titled **"Sized to this server automatically"** whose body reads *"Postgres is tuned to this
+  machine on safe best defaults — you don't need to tune anything by hand"* — that IS the
+  proposed intro line, verbatim in spirit; (3) the active **Mixed** profile's own description
+  says *"the best default for an indie-hacker box"*, telling the indie user their profile is
+  already right; and the profile switcher's preview is explicitly framed *"This is a preview —
+  nothing changes here … applied at install/provision time — not from this screen."* The item's
+  second sub-concern ("help text assumes DBA knowledge: shared_buffers, work_mem") is also
+  already handled — each setting carries a plain-English one-liner (e.g. "Memory Postgres uses
+  to cache data pages. Sized to your RAM."), and the proposed fix didn't address it anyway.
+  There is no edit to make that wouldn't restate a reassurance the page already gives. Running a
+  4-agent panel to rubber-stamp a provably-zero-payoff change is the churn the loop guards
+  against (iter-5 precedent). **Lesson:** when a backlog item says "add a reassuring/intro line,"
+  *read the view's existing intro first* — an audit agent that skims a parameter table can miss
+  the Callout sitting right above it. If the page already opens with that exact reassurance,
+  the item is already done; mark it so and move on. This is the iter-7/13 rule ("surface a fact
+  only when it's otherwise hidden") applied to *reassurance copy*, not just data.
+
 ## Rules of thumb
 
 - **Co-locate config with the operation it configures by *moving* it (one home), not by

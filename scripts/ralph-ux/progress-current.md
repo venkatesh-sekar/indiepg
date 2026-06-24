@@ -3,6 +3,34 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 14 — Mode F (REJECT) (DatabaseTuning: add a "reassuring intro line")
+Took the top actionable item (the NEEDS-BACKEND backup-badge item above it is out of scope for
+this frontend-only loop): DatabaseTuning "reads as prescriptive when it's really informational →
+add one reassuring intro line." On reading `DatabaseTuning.tsx` the item's **premise is false** —
+the page *already* opens with exactly that reassurance, threefold: (1) the card title is
+**"Database tuning (host-sized)"** ("host-sized" = automatic); (2) the very first element is an
+info `Callout` titled **"Sized to this server automatically"** whose body reads *"Postgres is
+tuned to this machine on safe best defaults — you don't need to tune anything by hand"* — that IS
+the proposed intro line; (3) the active **Mixed** profile's own description says *"the best
+default for an indie-hacker box"*, telling the indie user their profile is already right (and the
+profile preview is explicitly framed "This is a preview — nothing changes here … applied at
+install/provision time — not from this screen"). The item's second sub-concern ("help text
+assumes DBA knowledge: shared_buffers, work_mem") is also already handled — each setting carries a
+plain-English one-liner (e.g. "Memory Postgres uses to cache data pages. Sized to your RAM.") —
+and the proposed fix didn't address it anyway. There is no edit to make that wouldn't restate a
+reassurance the page already gives. **Self-rejected on restraint with decisive code evidence and
+no panel** (the iter-5 pattern: premise false on inspection → running 4 agents to rubber-stamp a
+provably-zero-payoff change is the churn the loop guards against; unlike iters 7/13, this isn't a
+plausible change 3 reviewers would ship — there's literally nothing to add). No code shipped, no
+gates needed (docs-only). Recorded the lesson ("when an item says 'add a reassuring/intro line,'
+read the view's existing intro first — an audit agent skimming the parameter table can miss the
+Callout right above it"). stable_streak stays 0 (a Mode-F reject, not an actionable-empty
+discovery pass). **Backlog is now near-dry**: only a NEEDS-BACKEND item (out of scope) and two
+low/watch items (Query client-side write-detector — speculative/restraint-risky; Login lockout
+copy — risks a false duration promise) remain. Next iteration should run a **Mode-S discovery /
+convergence check** rather than chew the low/watch items — if it surfaces nothing high/med, that's
+the first stable_streak increment toward convergence.
+
 ## 2026-06-25 — iter 13 — Mode F (REJECT) (Migrate: inline danger warning when overwrite is armed)
 Took the top open item: the single-db overwrite "gate is split across three intent-shifts with
 no inline warning when overwrite is checked." Implemented the restraint-aware version — a

@@ -92,10 +92,15 @@ Format per item:
   (ok/warn) accordingly. Flagged by Sam in the iter-11 review; deferred because it's
   out of this frontend-only loop's scope. The iter-11 failed-save Callout now tells the
   truth in-form, so this can't bite during configuration — only on a cold reload.
-- [ ] (med/M) DatabaseTuning — parameter help text assumes DBA knowledge
-  (shared_buffers, work_mem) and the page reads as prescriptive when it's really
-  informational. → Add one reassuring intro line: defaults are already tuned for the
-  hardware and the typical indie app needs no changes. (Intro-only change is S.)
+- ~~(med/M) DatabaseTuning — add a reassuring intro line (defaults tuned for the
+  hardware; the typical indie app needs no changes)~~ — **rejected iter 14** on restraint
+  (premise false on inspection, iter-5 pattern, self-rejected with decisive evidence — no
+  panel). The page **already** opens with that reassurance threefold: the title is "Database
+  tuning (host-sized)", the first element is an info Callout titled "Sized to this server
+  automatically" reading "tuned on safe best defaults — you don't need to tune anything by
+  hand", and the active Mixed profile's description says "the best default for an indie-hacker
+  box". The help-text sub-concern is also handled (each setting has a plain-English one-liner).
+  Nothing to add that wouldn't restate existing copy. See learnings.md / Rejected.
 
 ### Lower / watch
 - [ ] (med/M) Query — accidental write SQL (DELETE/UPDATE/DROP pasted in) is only
@@ -209,6 +214,15 @@ Format per item:
 
 ## Rejected
 
+- ~~(med/M) DatabaseTuning — add a reassuring intro line ("defaults tuned for the hardware;
+  the typical indie app needs no changes")~~ — iter 14. **Premise false on inspection** (iter-5
+  pattern): the page already opens with that exact reassurance — title "Database tuning
+  (host-sized)", an info Callout "Sized to this server automatically / tuned on safe best
+  defaults — you don't need to tune anything by hand", and the active Mixed profile reads "the
+  best default for an indie-hacker box". The "help text assumes DBA knowledge" sub-concern is
+  also already handled (plain-English one-liner per setting). No edit possible that wouldn't
+  restate present copy. Self-rejected with decisive evidence, no panel (rubber-stamping a
+  zero-payoff change is the churn the loop guards against). learnings.md.
 - ~~(med/M) Migrate — inline danger warning when the single-db overwrite checkbox is
   armed~~ — iter 13. Clean conditional implementation; 3 SHIP (UX heuristics, Sam, Priya).
   Restraint critic blocked and is never overruled: the overwrite already has a three-stage
