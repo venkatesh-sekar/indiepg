@@ -5,6 +5,31 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · PgBouncer pooler — enable-flow ORCHESTRATOR (slice 7)
+Wired the six already-built primitives into one opt-in entry point:
+`internal/pgbouncer/enable.go` `Manager.Enable(ctx, src VerifierSource, state
+PoolerState, p EnableParams) (EnableResult, error)`. OFF by default; idempotent /
+re-runnable. Steps: InstallPackage → RoleVerifiers (via `src`, satisfied by
+`*pg.Manager`) → EnsureConfig → EnsureUserlist → EnableNow → Reload **only when
+config/auth_file changed** → IsRunning verify → persist `enabled=true` LAST (only
+once the unit is confirmed up, so the stored flag can never contradict a failed
+bring-up). Added `IsEnabled(ctx, state)` (unset key = default-off, not an error)
+for the upcoming UI toggle. `PoolerState` is a narrow GetConfig/SetConfig
+interface `*store.Store` satisfies — no store coupling pulled into the package.
+SECURITY ORDERING (reviewer-caught, fixed before commit): EnsureConfig runs
+BEFORE EnsureUserlist. EnsureConfig's marker guard is the flow's only ownership
+check; EnsureUserlist (secret-adjacent SCRAM verifiers, no marker possible) must
+not write into /etc/pgbouncer until that guard confirms indiepg owns the dir — so
+a foreign distro/operator pgbouncer.ini is a hard stop with NO auth_file left
+behind. Logs only role COUNT, never names/verifiers. Tests (enable_test.go, fake
+VerifierSource + in-memory PoolerState, files in a temp confdir): happy-path
+step-ordering + 0640 + auth_file path, idempotent-no-bounce, reload-only-on-change
+(adding a role reloads, unchanged doesn't), verifier-error-before-any-write,
+foreign-config-stops-before-auth_file, non-SCRAM-refused, not-running-not-recorded,
+enable-fails-not-persisted, persist-failure-surfaces, input validation, IsEnabled
+default-off. Reviewed (feature-dev:code-reviewer): both findings applied (the
+ordering swap + bring-up-failure test hardening). REMAINING: the UI toggle slice.
+
 ## 2026-06-24 · band 3 (usability) · PgBouncer pooler — service-lifecycle primitives (enable-flow slice 6)
 Carved the mechanical service-control layer off the remaining enable-flow item
 (the riskiest sub-piece — touching apt + the systemd unit), mirroring
