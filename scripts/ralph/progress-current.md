@@ -5,6 +5,24 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band E · prune orphaned `next-themes` dependency
+Dropped `next-themes` (`^0.4.6`) from `web/package.json` + lockfile via
+`npm uninstall next-themes --offline`. It was orphaned when `Toast.tsx` → `sonner`
+in band C: the generated `sonner.tsx` no longer imports it (only a *comment*
+mentions it, explaining this SPA themes via `prefers-color-scheme`, not a
+ThemeProvider), and nothing else depends on it (sonner does not peer-require it).
+Pure dependency-manifest prune — **no view/component/markup/rendered-output change**,
+so the UI-heuristics review was N/A (skipped: nothing rendered changed). Embedded
+`internal/server/web/dist` rebuilt byte-identical (next-themes was never bundled).
+130 web tests green; typecheck/build/`go build` green. Diff: `package.json` (−1
+line) + `package-lock.json` (−11). NEXT open E items: migrate global `body`/`code`/`a`
+element rules onto semantic tokens to free `--bg`/`--text`/`--surface-2`/`--mono`/
+`--sans` — CAREFUL, this is coupled to the legacy `@media (prefers-color-scheme:
+dark)` block, which is currently the app's only firing dark-mode path (shadcn
+`.dark` class is never toggled), so it's a deliberate visual/parity change, not a
+mechanical one; then consistency sweep + `--info-soft` distinctness (note:
+`--primary-soft` no longer exists, so re-confirm that finding) → COMPLETE.md.
+
 ## 2026-06-24 · band E · prune unreferenced legacy design-token vars from `styles.css`
 First slice of the E "delete the design-token *vars*" item, now unblocked (all
 legacy class rules + classNames are gone). Removed only the legacy `:root` /
