@@ -22,6 +22,15 @@ const ConfigMarker = "# managed by indiepg — regenerated from panel config; do
 // which the project forbids). The [databases] line and listen_addr both use it.
 const loopbackHost = "127.0.0.1"
 
+// DefaultListenPort is the loopback port the managed pooler listens on, and
+// LoopbackHost is the only host it ever binds. Both are exported so the panel can
+// honestly show same-box apps where to reach the pooler; neither is ever widened
+// to a public interface (the least-secure option, which the project forbids).
+const (
+	DefaultListenPort = defaultListenPort
+	LoopbackHost      = loopbackHost
+)
+
 // Conventional defaults filled in when a ConfigParams field is left zero/empty.
 const (
 	defaultPGPort     = 5432                          // local Postgres

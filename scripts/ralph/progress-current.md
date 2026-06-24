@@ -5,6 +5,32 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · PgBouncer pooler — read-only status endpoint (UI slice 1 of 3)
+The remaining pooler item was "the UI toggle", but the panel had no backend for
+it to read — `Manager.Enable` exists but is unexposed. Built the safe, no-side-
+effect half first: `GET /api/pooler` (`handlers_pooler.go`), behind `requireAuth`,
+returning `{enabled, host, listen_port, pool}`. `enabled` comes from
+`pgbouncer.IsEnabled` (config key `pooler.enabled`; absent = default-off);
+`host`/`listen_port` are the loopback target same-box apps use (new exported
+`pgbouncer.LoopbackHost` / `DefaultListenPort`, aliasing the existing unexported
+constants — one source of truth); `pool` is the host-sized
+`RecommendPool(max_connections, Mixed)` sizing that enabling would apply, so the
+UI can label each pool setting by its effect. Pool sizing is best-effort via
+`s.pg.CurrentTuning` — if Postgres is unreachable (`Applied==nil`) Pool stays nil
+and the UI explains it's computed at enable time, never a guess. The endpoint
+NEVER mutates host state (no install, no service touch); a tuning read error is
+non-fatal so the enabled flag still renders. Split the old single "UI toggle"
+backlog item into three slices (this status endpoint ✓, a future POST enable
+endpoint, the React UI). Tests `handlers_pooler_test.go`: default-off,
+reflects-persisted-enable (proves it reads the same key `Enable` writes),
+requires-auth (401, never an SPA leak). Dropped a premature unused `pooler
+*pgbouncer.Manager` Server field (YAGNI — it belongs to the enable slice).
+Reviewed (feature-dev:code-reviewer): no critical/blocking; declined the one
+Important finding (test the `CurrentTuning`-error branch) — that branch is
+currently unreachable and testing it needs an injection seam nothing else uses.
+Why: the UI toggle's first dependency, shipped as the safe read-only half so the
+system-mutating enable path lands as its own confirmed, separately-reviewed slice.
+
 ## 2026-06-24 · band 3 (usability) · PgBouncer pooler — enable-flow ORCHESTRATOR (slice 7)
 Wired the six already-built primitives into one opt-in entry point:
 `internal/pgbouncer/enable.go` `Manager.Enable(ctx, src VerifierSource, state

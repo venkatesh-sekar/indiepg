@@ -50,6 +50,9 @@ func (s *Server) buildRouter() http.Handler {
 			// recommendation for each workload profile.
 			pr.Get("/tuning", s.handleGetTuning)
 
+			// Opt-in PgBouncer pooler (read-only status: on/off + host-sized sizing).
+			pr.Get("/pooler", s.handleGetPoolerStatus)
+
 			pr.Get("/audit", s.handleListAudit)
 
 			// Dashboard (host + Postgres telemetry snapshot).
