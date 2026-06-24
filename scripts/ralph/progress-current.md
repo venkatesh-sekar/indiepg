@@ -5,6 +5,33 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · PgBouncer pooler — config installer (slice 3)
+Third PgBouncer slice, mirroring how the pgBackRest installer split the atomic
+config write out from `stanza-create`. Added `internal/pgbouncer/install.go`:
+- `Manager` (Runner/Logger/ConfDir, ConfDir defaults to `/etc/pgbouncer`) with
+  `EnsureConfig(ConfigParams) (changed bool, err)` — renders the pgbouncer.ini
+  (slice 2's `RenderConfig`) and installs it **atomically** (temp + rename),
+  owner `pgbouncer` **0640** (DEFAULTS.md; the .ini holds no secret — SCRAM
+  verifiers live in the separate auth_file), returning whether it changed.
+- **Safety (mirrors pgBackRest installer):** marker-guarded — a config lacking
+  indiepg's first-line marker (hand-written or distro pgbouncer.ini) is surfaced
+  as `CodeConflict`, never clobbered; deterministic render → byte-compare no-op
+  when unchanged (so the future enable flow can skip a needless reload);
+  `O_NOFOLLOW` path-hijack guard refuses a symlink at the config path as a clear
+  conflict; chown to the pgbouncer user is root-fatal / non-root-best-effort.
+- **No package-install / service-touch yet** — that's the enable slice (apt +
+  SCRAM userlist + `systemctl enable --now` + SIGHUP reload/restart-fallback +
+  verify running). Split slice (iii) in the backlog accordingly.
+
+Tests (`install_test.go`): writes-marked-0640, idempotent-no-rewrite
+(mtime-stable), rewrites-on-change, refuses-foreign + marker-not-first-line,
+refuses-symlink (target untouched), rejects-injection-before-any-write,
+requires-runner, default-confdir. Reviewed (feature-dev:code-reviewer): one
+finding applied — the symlink case now returns a clear `CodeConflict` instead of
+an opaque `CodeInternal`, honoring the "errors loudly" contract on the guard.
+Gates: gofmt clean, go vet, go test ./..., CGO_ENABLED=0 build all green; no
+web/ touched.
+
 ## 2026-06-24 · band 3 (usability) · PgBouncer pooler — pgbouncer.ini render (slice 2)
 Second PgBouncer slice, mirroring how `RecommendTuning` was built (pure render
 before any install). Added `internal/pgbouncer/config.go`:
