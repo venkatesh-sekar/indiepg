@@ -51,6 +51,10 @@ RUN_LOG_DIR="$SCRIPT_DIR/run-logs"
 mkdir -p "$RUN_LOG_DIR"
 cd "$PROJECT_ROOT"
 
+# Keep npm/npx (shadcn) off the read-only ~/.npm cache the sandbox exposes —
+# use a project-local, writable cache so `shadcn add` works inside the loop.
+export NPM_CONFIG_CACHE="$PROJECT_ROOT/web/.npm-cache"
+
 # Cleanliness is judged on TRACKED files only. Untracked files (e.g. sandbox
 # device-dotfiles, editor scratch) are intentionally ignored so they never
 # trip the loop or get destroyed.

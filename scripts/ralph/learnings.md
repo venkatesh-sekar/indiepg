@@ -3,6 +3,26 @@
 Active rules-of-thumb discovered while working. Keep it short — compact toward
 the top, prune stale entries. One line each. Newest at the bottom of each group.
 
+## UI/UX track (shadcn) — READ FIRST for this track
+- The operator EXPLICITLY authorized the shadcn/Tailwind/Radix dep tree — do NOT
+  re-litigate rule-4/5 (the old hardening track kept refusing the UI redo on those
+  grounds). shadcn is required; use shadcn components, never hand-roll one shadcn
+  provides. See UI-RULES.md + PROMPT.md.
+- shadcn is initialised: radix base, Nova preset, Tailwind v4 (`@tailwindcss/vite`
+  in vite.config.ts; `@import "tailwindcss"` in src/styles.css). 24 ui components
+  in `src/components/ui/`; `cn()` in `src/lib/utils.ts`.
+- npm/npx hit a read-only `~/.npm` (EROFS) in the sandbox. ralph.sh exports
+  `NPM_CONFIG_CACHE=web/.npm-cache` (gitignored) so `shadcn add` works. Run web
+  commands from `web/`. Composition (editing views to use installed components)
+  needs NO network — only `shadcn add` of a NEW component does.
+- shadcn alias bug: the CLI reads root `tsconfig.json`; without
+  `compilerOptions.paths` there it writes to a literal `web/@/` dir. FIXED (added
+  `baseUrl`+`paths {"@/*":["src/*"]}`). If a future `add` drops files in `web/@/`,
+  move them into `src/`.
+- Embedded SPA: `cd web && npm run build` regenerates `internal/server/web/dist`
+  — STAGE dist with any web change, then `CGO_ENABLED=0 go build ./cmd/indiepg`.
+- vitest has `css:false`, so the `@import` lines in styles.css don't affect tests.
+
 ## Build / test / verify
 - Verify gates: `gofmt -l $(git ls-files '*.go')` (must be empty), `go vet ./...`,
   `go test ./... -count=1`, `CGO_ENABLED=0 go build ./cmd/indiepg`. Web: `npm run

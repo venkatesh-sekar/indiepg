@@ -5,6 +5,18 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · NEW TRACK: pure UI/UX (shadcn) · band A scaffold
+Reconfigured the loop into a pure UI/UX track to rebuild the panel on shadcn/ui
+(operator explicitly authorized the dep tree, overriding the old rule-4/5 refusal
+that left band 4 untouched across 57 hardening iterations). Set up the scaffold
+manually because installs need network/cache the loop's sandbox lacks: shadcn init
+(radix base, Nova preset, Tailwind v4), added 24 ui components to src/components/ui/,
+fixed the CLI's literal-`@/`-dir alias bug (relocated into src/, added paths to root
+tsconfig.json), wired NPM_CONFIG_CACHE=web/.npm-cache into ralph.sh. Scaffold smoke
+test proves the `@/` alias resolves + components render. Gates green: typecheck,
+88 web tests (85+3), build, go build. New PROMPT.md/UI-RULES.md/backlog drive bands
+B (shell) → C (primitives) → D (views, one per iteration) → E (cleanup).
+
 ## 2026-06-24 · COMPLETE · final north-star audit of the last two uncovered angles came back clean → loop done
 North-star audit over the two not-yet-deep-audited angles the iter-56 note named, run as two parallel
 read-only subagents: (1) the pg_dump/pg_restore/pgBackRest/psql/pg_ctl/systemctl **argv construction**

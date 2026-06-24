@@ -1,122 +1,108 @@
-# indiepg Ralph loop — orchestrator (one iteration)
+# indiepg Ralph loop — UI/UX orchestrator (one iteration)
 
-You are **one iteration** of a self-improving loop that hardens **indiepg** — a
-single self-hosted Go binary that installs and owns a native PostgreSQL and
-serves a private web admin panel for indie hackers.
+You are **one iteration** of a loop whose ONLY job is to rebuild the indiepg web
+panel on **shadcn/ui**. This is a **pure UI/UX loop** — do not touch Go/backend
+behavior, the API shape, or business logic. Frontend only (`web/`).
 
 Do **exactly one** thing this iteration. End with **one atomic commit** and a
 **clean tree**. Then stop. The shell loop will run you again.
 
 ---
 
-## North star (the definition of done)
+## Goal (definition of done)
 
-> An indie hacker can stand up and run a **rock-solid Postgres** entirely from
-> the indiepg UI, on **best defaults**, with **safe, clearly-labeled optional
-> overrides** — and never lose data, never get stuck, never be confused.
+> Every view in the panel is rebuilt with **shadcn/ui components**, composed and
+> styled the shadcn way. **No hand-rolled component survives where a shadcn one
+> exists.** The panel looks clean, simple, and consistent; behavior is identical
+> to before; every change is tested.
 
-Everything you do serves that. If a change doesn't make the panel more stable,
-more secure, more durable, or easier to use toward that goal, don't do it.
+You may only write `COMPLETE.md` when ALL of these hold:
+1. shadcn is initialised (`web/components.json` + Tailwind configured).
+2. Every view (`web/src/views/*.tsx`) is rebuilt with shadcn components.
+3. The hand-rolled components are **gone**, replaced by shadcn equivalents:
+   `ui.tsx`→Button/Badge/Alert/etc · `Modal.tsx`→Dialog · `ConfirmDialog.tsx`→
+   AlertDialog · `Toast.tsx`→sonner · `Layout.tsx`→Sidebar shell.
+4. The hand-rolled `styles.css` design-token CSS is removed in favor of Tailwind
+   + shadcn semantic tokens (keep only minimal unavoidable globals).
+5. `npm run typecheck`, `npm test`, `npm run build`, and `go build` are all green;
+   no behavior regressions.
 
 ## Non-negotiable rules
 
 1. **One item per iteration. One atomic commit. Never `git push`.**
 2. **Never leave the tree dirty.** If you can't finish cleanly, revert
-   everything you touched (`git checkout -- .` / `git reset --hard HEAD` and
-   delete any files you created) and pick a smaller item.
-3. **Never park work for a human.** You decide. If an item turns out not to be
-   worth doing, delete it from `backlog.md` with a one-line reason and pick
-   another. There is no parked queue.
-4. **Security tie-break: the most secure option always wins.** Assume a single
-   trusted operator on a private instance. Never widen access, never log a
-   secret, never weaken a default for convenience.
-5. **YAGNI / KISS.** No new features unless they are load-bearing for the north
-   star. Prefer hardening, testing, and simplifying what exists. Don't add
-   abstractions, dependencies, or config the indie hacker didn't ask for.
-6. **Best-defaults-first.** New capability ships working on safe defaults;
-   overrides are optional and labeled with what they do.
-7. **Every change is tested.** Backend: Go tests. Frontend: a vitest/RTL test
-   once the runner exists (an early backlog item is to add it). UI text must
-   say *what an action will do* before it does it.
+   everything (`git checkout -- .` / `git reset --hard HEAD`, delete new files)
+   and pick a smaller item.
+3. **Never park work.** You decide. Drop an item from `backlog.md` with a
+   one-line reason if it's not worth doing, and pick another.
+4. **Use shadcn components — never roll your own when shadcn has one.** This is
+   the whole point. Before building any UI, check the shadcn component table and
+   the installed `web/src/components/ui/` dir. See `scripts/ralph/UI-RULES.md`.
+5. **Use the `shadcn` skill** for every component task: `npx shadcn@latest
+   search`, `add`, and `docs <component>` (fetch the docs URLs before using a
+   component). Follow its Critical Rules exactly.
+6. **Behavior parity.** The migrated view must do exactly what it did before —
+   same data, same actions, same confirmations. Update that view's test to match
+   and keep it green. UI text must still say what an action will do.
+7. **KISS.** Clean, simple, consistent. No new features, no decorative
+   complexity, no extra dependencies beyond what shadcn pulls in.
 
 ## Steps for this iteration
 
 1. **Read context:** `scripts/ralph/state.json`, `scripts/ralph/backlog.md`,
-   the top of `scripts/ralph/learnings.md`, and `scripts/ralph/DEFAULTS.md`
-   (the trusted "best defaults" ported from the `sm` CLI). Skim `CLAUDE.md` /
-   `AGENTS.md` if present for project conventions.
-2. **Pick ONE item** — the highest-priority one by band (see Priority below).
-   If the backlog is thin or the top items are stale, spend this iteration
-   auditing the panel against the north star and appending concrete items
-   (that itself can be the iteration — committing an improved backlog counts).
-3. **Plan briefly**, then **implement test-first** where it makes sense (write
-   or extend the test, watch it fail, make it pass).
-4. **Review pass (required).** Use the Task tool to launch a code-reviewer
-   subagent (`subagent_type: feature-dev:code-reviewer`) on your working diff.
-   Ask it for bugs, security holes, regressions, and YAGNI/KISS violations.
-   Address every blocking finding. If it flags the change as wrong, revert and
-   reconsider rather than committing anyway.
-5. **Verify gates — ALL must pass** (see Verify below). If you cannot get them
-   green, revert (rule 2), append a one-line note to `learnings.md`, and either
-   pick a smaller slice or drop the item. Do **not** commit red.
-6. **Record + commit atomically.** Prepend a short entry to
-   `progress-current.md` (what you did, why) and update `state.json` counters.
-   Commit the code change *and* these state updates together:
-   `git commit -am "ralph(<band>): <concise summary>"`. Leave the tree clean.
-7. **Completion check.** If — and only if — you genuinely believe the panel is
-   rock-solid against the north star and nothing load-bearing remains in the
-   backlog, write `scripts/ralph/COMPLETE.md` explaining why, and stop.
+   the top of `scripts/ralph/learnings.md`, and `scripts/ralph/UI-RULES.md`.
+2. **Pick ONE item** — the highest one open in `backlog.md` (scaffold first, then
+   the shared shell, then views one at a time, then cleanup). One view or one
+   shared component per iteration — keep the diff reviewable.
+3. **Do it the shadcn way:** invoke the `shadcn` skill; `add` the components you
+   need (don't re-add installed ones); fetch their docs; compose them. Match the
+   `frontend-design` skill's guidance for a clean, intentional look. Replace the
+   hand-rolled markup; delete the dead component/CSS it supersedes.
+4. **Update the view's test** to the new markup and keep it green. Add a test if
+   one is missing for what you touched.
+5. **Review pass (required).** Use the Task tool to launch the
+   `ui-heuristics-reviewer` subagent on the changed view (UX heuristics: clarity,
+   error/empty/loading states, affordances, consistency) and address blocking
+   findings. Then self-check against `UI-RULES.md` (no hand-rolled where shadcn
+   exists; semantic tokens; `gap-*` not `space-*`; forms use `Field`/`FieldGroup`).
+6. **Verify gates — ALL must pass** (see Verify). If you can't get them green,
+   revert (rule 2), note a one-line learning, pick a smaller slice.
+7. **Record + commit atomically.** Prepend a short entry to
+   `progress-current.md`, update `state.json`, and
+   `git commit -am "ralph(ui): <view/component> → shadcn — <note>"`.
+8. **Completion check.** Only if every condition in "Goal" above holds, write
+   `scripts/ralph/COMPLETE.md` and stop.
 
-## Priority (pick the highest band with open work)
+## Order of work (bands)
 
 ```
-0  Foundation      test infra, shared conventions — unblocks "everything tested"
-1  Security         auth/session/CSRF, read-only enforced at DB level,
-                    secrets at rest (0600, never logged), login brute-force lockout
-1.5 Data durability backups proven-restorable, off-host (S3) by default,
-                    "last good backup" surfaced, loud alert on backup failure
-2  Stability        every API path error-handled; idempotent, re-runnable
-                    provisioning; statement timeouts + auto-LIMIT verified
-2.5 Resource/config disk/conn/WAL/log headroom defaults + early alerts;
-     safety          SELF-HEALING config: a bad change (even a user override)
-                    that stops Postgres must auto-rollback to last-known-good;
-                    host-sized tuning (shared_buffers/work_mem/max_connections)
-3  Usability        provision-on-best-defaults with labeled overrides;
-                    confirms that state exactly what they will do; PgBouncer
-                    as an opt-in pooler; clear empty/loading/error states
-4  UI redo (shadcn) migrate views to Tailwind + shadcn ONE at a time, each with
-                    a test, kept simple — no new complexity, no regressions
+A  Scaffold     shadcn init (base style, neutral) + Tailwind into the Vite app;
+                wire globals/tokens; add a pilot component; keep build green
+B  App shell    Layout.tsx → shadcn Sidebar + header; nav, active state, sign-out
+C  Primitives   replace shared hand-rolled: ui.tsx → Button/Badge/Alert/Spinner;
+                Modal → Dialog; ConfirmDialog → AlertDialog; Toast → sonner
+D  Views        migrate one per iteration: Login, Dashboard, RolesDatabases,
+                Query, Backups, Migrate, Alerts, Settings, Pooler, DatabaseTuning
+E  Cleanup      delete dead styles.css tokens + any orphaned components; final
+                consistency pass (empty states → Empty, loaders → Skeleton)
 ```
 
-Within a band, prefer the smallest item that removes the most risk. A failing
-build/test anywhere is always priority `0` — fix it first.
+Within a band, smallest reviewable slice first. Scaffold (band A) must land
+before anything else — nothing imports shadcn until `components.json` exists.
 
 ## Verify (run from repo root; all must pass before commit)
 
 ```
-gofmt -l $(git ls-files '*.go')        # must print NOTHING
-go vet ./...
-go test ./... -count=1
-CGO_ENABLED=0 go build ./cmd/indiepg
+cd web && npm run typecheck
+cd web && npm test
+cd web && npm run build
+CGO_ENABLED=0 go build ./cmd/indiepg     # the SPA is embedded; build must still pass
 ```
 
-If you touched `web/`:
-
-```
-cd web && npm run typecheck && npm run build
-cd web && npm test                     # once the vitest runner exists
-```
-
-Prefer `make test`, `make vet`, `make build`, `make web` where convenient.
-
-## Best defaults — see `scripts/ralph/DEFAULTS.md`
-
-That file holds the trusted Postgres / PgBouncer / pgBackRest defaults ported
-from the original `sm` CLI. When you provision, tune, or configure, match those
-unless there's a documented reason to deviate. When in doubt about a real `sm`
-behavior, read the source at `/primary01/git/server-management/src/sm/`.
+(Backend Go tests are out of scope — you are not changing Go. `go build` only
+confirms the freshly-built SPA still embeds.)
 
 ## Remember
 
-Keep it simple. Move forward. One solid, reviewed, tested, committed
-improvement — then stop and let the loop run you again.
+shadcn components, composed cleanly. One view at a time. Behavior identical,
+tests green, tree clean — then stop and let the loop run you again.
