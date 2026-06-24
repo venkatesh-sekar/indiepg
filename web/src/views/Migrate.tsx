@@ -226,7 +226,7 @@ function SourceFields({
 // Mode 1: Direct pull — one database
 // ---------------------------------------------------------------------------
 
-function SingleDBForm() {
+export function SingleDBForm() {
   const [conn, setConn] = useState<ConnState>(emptyConn);
   const [target, setTarget] = useState("");
   const [overwrite, setOverwrite] = useState(false);
@@ -267,8 +267,21 @@ function SingleDBForm() {
     else void start();
   };
 
+  // "Start another" keeps the source connection (so the common case — pulling the
+  // next database off the same host — needs no re-typing) but clears the per-run
+  // fields: the database to copy, the target name, and crucially the destructive
+  // overwrite flag, so a leftover "replace" can't carry onto a different target.
+  const reset = () => {
+    setConn({ ...conn, database: "" });
+    setTarget("");
+    setOverwrite(false);
+    setConfirm("");
+    setError(null);
+    setJobId(null);
+  };
+
   if (jobId !== null) {
-    return <DirectJobProgress id={jobId} onReset={() => setJobId(null)} />;
+    return <DirectJobProgress id={jobId} onReset={reset} />;
   }
 
   const overwriteMatches = confirm.trim() === effectiveTarget;
@@ -425,8 +438,19 @@ function ClusterForm() {
     else void start();
   };
 
+  // "Start another" keeps the source connection (see SingleDBForm) but clears the
+  // per-run fields — exclude list and, crucially, the destructive overwrite flag,
+  // so a leftover "replace" can't carry into the next run.
+  const reset = () => {
+    setExclude("");
+    setOverwrite(false);
+    setConfirm("");
+    setError(null);
+    setJobId(null);
+  };
+
   if (jobId !== null) {
-    return <DirectJobProgress id={jobId} onReset={() => setJobId(null)} />;
+    return <DirectJobProgress id={jobId} onReset={reset} />;
   }
 
   const overwriteMatches = confirm.trim() === CLUSTER_OVERWRITE_CONFIRM;
@@ -705,8 +729,19 @@ function SessionReceive() {
     }
   };
 
+  // "Start another" clears the database name too, so the next receive session
+  // starts blank rather than re-using the last run's target.
   if (code) {
-    return <SessionProgress code={code} onReset={() => setCode(null)} />;
+    return (
+      <SessionProgress
+        code={code}
+        onReset={() => {
+          setDatabase("");
+          setError(null);
+          setCode(null);
+        }}
+      />
+    );
   }
 
   return (
@@ -928,8 +963,17 @@ function SessionSend() {
     }
   };
 
+  // "Start another" clears the one-time session code (so a stale code can't be
+  // re-submitted) but keeps the source connection for sending the next database
+  // off the same host.
+  const reset = () => {
+    setCode("");
+    setError(null);
+    setJobId(null);
+  };
+
   if (jobId !== null) {
-    return <DirectJobProgress id={jobId} onReset={() => setJobId(null)} />;
+    return <DirectJobProgress id={jobId} onReset={reset} />;
   }
 
   return (

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { AsyncState } from "@/lib/hooks";
-import { ApiError } from "@/api/client";
+import { ApiError, api } from "@/api/client";
 import type { MigrationRecord, MigrationSession } from "@/api/types";
 
 // Drive the views by stubbing the polling hook directly — no timers, no fetch.
@@ -20,7 +20,13 @@ vi.mock("sonner", () => ({
   toast: { info: () => {}, error: () => {}, success: () => {} },
 }));
 
-import { MigrationHistory, DirectJobProgress, SessionProgress, Migrate } from "./Migrate";
+import {
+  MigrationHistory,
+  DirectJobProgress,
+  SessionProgress,
+  SingleDBForm,
+  Migrate,
+} from "./Migrate";
 
 function state<T>(over: Partial<AsyncState<T>>): AsyncState<T> {
   return { data: null, error: null, loading: false, reload: () => {}, ...over };
@@ -154,6 +160,55 @@ describe("Migrate mode tabs", () => {
     expect(
       screen.queryByText("Pull one database from another server"),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("Migrate — 'Start another' readies the form for the next run", () => {
+  beforeEach(() => {
+    pollState.current = state({});
+    vi.restoreAllMocks();
+  });
+
+  // "Start another" keeps the reusable source connection (host/user/password) so
+  // pulling the next database off the same host needs no re-typing, but clears the
+  // per-run fields: the database to copy, the target name, and — safety-critical —
+  // the destructive "overwrite" flag, which must never survive onto a new target.
+  it("keeps the source connection but clears the database, target, and overwrite flag", async () => {
+    vi.spyOn(api, "migrateSingleDB").mockResolvedValue({ id: 7 } as MigrationRecord);
+    const { container } = render(<SingleDBForm />);
+
+    const host = () => container.querySelector<HTMLInputElement>("#src-host")!;
+    const db = () => container.querySelector<HTMLInputElement>("#src-database")!;
+    const target = () => container.querySelector<HTMLInputElement>("#single-target")!;
+    const overwrite = () => container.querySelector<HTMLButtonElement>("#single-overwrite")!;
+
+    fireEvent.change(host(), { target: { value: "db.old" } });
+    fireEvent.change(db(), { target: { value: "shop" } });
+    fireEvent.change(target(), { target: { value: "shop_copy" } });
+    fireEvent.click(overwrite()); // arm the destructive replace
+    expect(overwrite()).toHaveAttribute("aria-checked", "true");
+
+    // Once we submit, the poller reports a finished job so "Start another" shows.
+    pollState.current = state<MigrationRecord>({
+      data: { ...JOB, status: "completed", target_database: "shop_copy" },
+    });
+
+    // Overwrite path: submit opens the typed-name confirm, then start the job.
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    fireEvent.change(document.querySelector<HTMLInputElement>("#single-confirm")!, {
+      target: { value: "shop_copy" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /overwrite & migrate/i }));
+
+    // Land on the terminal job view, then choose to start over.
+    fireEvent.click(await screen.findByRole("button", { name: /start another/i }));
+
+    // The source host stays (cheap repeat from the same server)...
+    expect(host().value).toBe("db.old");
+    // ...but the per-run fields and the destructive flag are cleared.
+    expect(db().value).toBe("");
+    expect(target().value).toBe("");
+    expect(overwrite()).toHaveAttribute("aria-checked", "false");
   });
 });
 

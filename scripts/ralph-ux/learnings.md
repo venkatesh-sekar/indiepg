@@ -157,6 +157,19 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
   real improvement (which even the critic agreed existed) without the over-design. The
   blocker isn't always "do nothing"; sometimes it's "do the smaller thing."
 
+- **When resetting a form for "do it again", keep the reusable inputs and clear only the
+  per-run ones — and always reset destructive flags.** Iter 12: Migrate's "Start another"
+  used to leave the whole form pre-filled. The naive fix (full wipe) was REJECTED by the
+  restraint critic — the source connection (host/user/password) is genuinely reusable for
+  the next database off the same host, and blanking it adds friction to the likely-next
+  task. The shippable fix kept the connection but cleared the per-run identifiers
+  (database, target, exclude) AND force-reset the destructive `overwrite` flag + its typed
+  confirm. **Lesson:** "reset the form" is not one decision — split inputs into *reusable
+  infrastructure* (keep) vs *per-run intent* (clear), and treat any *destructive/armed
+  toggle* as must-clear regardless (a checked "replace/drop" silently surviving onto a new
+  target is a real footgun — all four reviewers, including the personas, flagged this as
+  THE value of the change). The "keep what's reusable, clear what's per-run" split reads as
+  natural, not inconsistent, even when it means different flows keep different fields.
 - The audit strongly corroborated the seed item: backup **config** (/settings) and
   backup **operations** (/backups) being split is the single most-cited UX problem
   (4 of 11 agents). Co-location is the anchor improvement for this loop.

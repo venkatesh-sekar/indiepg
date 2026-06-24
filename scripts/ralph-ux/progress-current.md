@@ -3,6 +3,29 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 12 — Mode F (SHIP) (Migrate: "Start another" — targeted form reset)
+The Migrate page's "Start another" button (shown once a migration job hits a terminal state)
+returned the user to the form with every prior value still filled in — source connection,
+database/target names, and a checked destructive "Replace if it already exists (overwrite)"
+flag. The footgun: pulling a second DB off the same host, you could skim past a still-armed
+"replace" and silently drop a database you never meant to touch. Fixed across all four flows
+(one-db, whole-cluster, cross-panel send/receive). I first wrote a **full reset** — and the
+**restraint critic REJECTED** it: the source connection is genuinely reusable for the next DB
+off the same host, so blanking it adds friction to the likely-next task. It proposed resetting
+only the destructive flag while keeping the connection. I revised to exactly that **targeted
+reset**: keep host/port/user/password/sslmode; clear the per-run fields (database-to-copy,
+target, cluster exclude) and reset `overwrite`+`confirm`+`error`. Send keeps the connection,
+clears the one-time session code; receive (no connection) clears its db + the generated code.
+Exported `SingleDBForm` and added a test asserting the source host *persists* through "Start
+another" while database/target blank out and overwrite disarms (141 tests). Re-ran the panel on
+the revised behavior → **4 SHIP** (UX heuristics: "keep infrastructure, clear intent" reads
+natural + a real error-prevention win on the overwrite flag; Sam: "worst case is a harmless
+re-type, never an accidental overwrite"; Priya: same-source repeat friction gone, destructive
+flag safely cleared; restraint critic: "minimal correct fix, nothing left to drop"). Priya's
+one non-blocking nit — the cluster exclude list is arguably source-stable too — left as-is
+(re-pulling the same whole cluster is rare; keeping it would be speculative). Gates: typecheck
+OK, 141 tests OK, build OK (dist regenerated + staged), go build OK (outside sandbox).
+
 ## 2026-06-25 — iter 11 — Mode F (SHIP) (Backups+Settings: co-locate backup config — the canonical seed item)
 The anchor improvement of this loop, flagged by 4 of 11 audit agents. Backup **config**
 (S3 destination, retention, encryption) lived on `/settings`; backup **operations** (run,

@@ -57,10 +57,17 @@ Format per item:
   **subsumed by the co-location (iter 11)**: the form's success Callout now lives on the
   Backups page itself and says "Close this panel and run a backup" — the next step is
   right there, no cross-route link needed.
-- [ ] (med/M) Migrate — completing a migration and clicking "Start another" leaves
-  the previous source connection, target name, and overwrite checkbox pre-filled;
-  batch-migrating users must clear each field. → Reset form state when returning
-  from a terminal job.
+- [x] (med/M) Migrate — completing a migration and clicking "Start another" left
+  the previous source connection, target name, and overwrite checkbox pre-filled.
+  **Shipped iter 12** as a *targeted* reset (not a full wipe): "Start another" now
+  KEEPS the reusable source connection (host/port/user/password/sslmode) so the next
+  database off the same host needs no re-typing, but CLEARS the per-run fields
+  (database-to-copy, target name, cluster exclude) and — safety-critical — resets the
+  destructive overwrite flag + typed-confirm so a leftover "replace" can't carry onto
+  a different target. Cross-panel send keeps the connection, clears the one-time code;
+  receive (no connection) clears its db + code. The full-reset version was REJECTED by
+  the restraint critic (kills the cheap same-source repeat); revised to its proposed
+  targeted fix → 4 SHIP. See Done.
 - [ ] (med/M) Migrate — the overwrite gate is split across three intent-shifts
   (checkbox → button text flips to "Continue…" → modal asks to type the name) with no
   inline warning when overwrite is checked. → Surface a single visible destructive
@@ -94,6 +101,26 @@ Format per item:
   backend hint, which is out of scope).
 
 ## Done
+
+- [x] (med/M) Migrate — "Start another" (shown after a terminal migration job) left the
+  whole form pre-filled with the prior run's values: source connection, database/target
+  names, and a checked destructive "overwrite/replace" flag. A user pulling a second DB
+  off the same host could skim past a still-armed "Replace if exists" and silently drop a
+  database they never meant to touch. Fixed across all four flows (one-db, cluster,
+  cross-panel send/receive) as a **targeted reset**: keep the reusable source connection
+  (host/port/user/password/sslmode); clear the per-run fields (database-to-copy, target,
+  cluster exclude) and reset `overwrite`+`confirm`+`error`. Send keeps the connection but
+  clears the one-time session code; receive (no connection) clears its db + the generated
+  code. Exported `SingleDBForm` and added a test that arms overwrite, runs a job to
+  terminal, clicks "Start another", and asserts the source host *persists* while
+  database/target are blank and overwrite is disarmed (141 tests). Review: the **first
+  (full-reset) version was REJECTED by the restraint critic** — the retained connection is
+  useful for same-source repeats; it proposed resetting only the destructive flag. Revised
+  to exactly that. Re-ran the panel → **4 SHIP** (UX heuristics — "keep infrastructure,
+  clear intent" reads as natural, error-prevention win on the overwrite flag; Sam — "worst
+  case is a harmless re-type, never an accidental overwrite"; Priya — same-source repeat
+  friction gone, destructive flag safely cleared; restraint critic — "minimal correct fix,
+  nothing left to drop"). Shipped iter 12.
 
 - [x] (high/M) Backups + Settings co-location — **the canonical seed item** (flagged by
   4 of 11 audit agents). Backup **config** (S3 destination, retention, encryption) lived
