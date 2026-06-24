@@ -143,18 +143,6 @@ code {
 
 /* --- App shell ----------------------------------------------------------- */
 
-.brand-mark {
-  display: inline-grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: var(--primary);
-  color: #fff;
-  font-weight: 700;
-  font-size: 14px;
-}
-
 .view {
   max-width: 1100px;
   margin: 0 auto;
@@ -218,10 +206,6 @@ code {
 .btn-sm {
   padding: 5px 10px;
   font-size: 13px;
-}
-
-.btn-block {
-  width: 100%;
 }
 
 .btn-primary {
@@ -789,50 +773,6 @@ fieldset.field legend {
   height: 100vh;
   display: grid;
   place-items: center;
-}
-
-/* --- Login --------------------------------------------------------------- */
-
-.login-screen {
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: var(--bg);
-}
-
-.login-card {
-  width: 100%;
-  max-width: 360px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
-  padding: 28px 26px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.login-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.login-brand h1 {
-  font-size: 20px;
-}
-
-.login-sub {
-  margin: 0;
-  color: var(--text-muted);
-}
-
-.login-help {
-  margin: 4px 0 0;
-  font-size: 12px;
-  text-align: center;
 }
 
 /* --- Channels ------------------------------------------------------------ */

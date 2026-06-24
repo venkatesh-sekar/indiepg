@@ -1,7 +1,7 @@
 // Small presentational primitives reused across views. Kept in one file to keep
 // the component tree shallow and the bundle lean.
 
-import { useState, type ReactNode } from "react";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import { ApiError } from "@/api/client";
 import { Badge as ShadcnBadge } from "@/components/ui/badge";
 import { Spinner as ShadcnSpinner } from "@/components/ui/spinner";
@@ -123,13 +123,14 @@ export function Callout({
   tone = "info",
   title,
   children,
+  ...props
 }: {
   tone?: "info" | "warn" | "danger" | "ok";
   title?: ReactNode;
   children: ReactNode;
-}) {
+} & ComponentProps<typeof Alert>) {
   return (
-    <Alert variant={calloutVariant[tone]}>
+    <Alert variant={calloutVariant[tone]} {...props}>
       {title ? <AlertTitle>{title}</AlertTitle> : null}
       <AlertDescription>{children}</AlertDescription>
     </Alert>

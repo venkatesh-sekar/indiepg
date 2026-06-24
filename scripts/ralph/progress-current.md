@@ -5,6 +5,33 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band D · Login → shadcn
+First band-D view. Rebuilt `Login.tsx` on shadcn: the sign-in screen is now a
+`Card` (Header = brand square + `CardTitle` + `CardDescription`; Content = the form;
+Footer = the reset-password help) wrapped in a centered `<form>` (`grid min-h-screen
+place-items-center bg-background`). Form body uses `FieldGroup` + `Field` +
+`FieldLabel` + `Input` (was a hand-rolled `<label className="field">` + raw `<input>`),
+the submit is a `Button` (`w-full`, was `.btn .btn-primary .btn-block`) that composes
+the shadcn `Spinner` + "Signing in…" while busy, and the error is the shared `Callout`
+(Alert) — tone `warn` on lockout / `danger` otherwise. Behavior identical: same login
+call, same `from` redirect, same error copy ("That password is not correct" / lockout
+message / connection fallback), password cleared on failure, input disabled while
+busy/locked, submit disabled until a password is typed.
+A11y: error `Callout` carries `id="login-error"` and the `Input` gets
+`aria-invalid` + `aria-describedby` pointing at it (and `data-invalid` on the `Field`)
+so AT reads the error in context — addressed the ui-heuristics-reviewer's
+field-association finding. To allow that, the shared `Callout` now forwards
+`...props` to `Alert` (safe; 40+ existing callsites unaffected). Declined the
+reviewer's "always-mounted live region" finding: its premise (Callout inside a
+`role="group"`) is wrong — the Callout is a sibling of `Field`, and conditionally
+mounting a `role="alert"` node is the canonical ARIA pattern shadcn's own `FieldError`
+uses; adding a nested live region would be a regression, not a fix.
+Deleted dead CSS: `.login-screen/.login-card/.login-brand/.login-sub/.login-help`,
+`.brand-mark`, `.btn-block` (all Login-only; `.btn`/`.btn-primary` kept — unmigrated
+views still use them). Added `Login.test.tsx` (first test for this view): submit-gating,
+happy-path login+redirect, wrong-password message + field clear + aria wiring, lockout
+disables input. Gates green: typecheck, 99 web tests (+4), build, go build.
+
 ## 2026-06-24 · band C · Toast → sonner
 Removed the hand-rolled toast system (`src/components/Toast.tsx` — a `ToastProvider`
 context + `useToast()` rendering a bottom-right `.toast-stack` with manual × buttons and
