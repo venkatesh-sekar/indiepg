@@ -39,6 +39,7 @@ scripts/ralph/COMPLETE.md
 
 # local npm cache used by the UI loop (keeps installs off the read-only ~/.npm)
 web/.npm-cache/
+web/web/
 
 # Root-level Node / npm artifacts (incidental installs; UI loop runs from web/)
 /node_modules/
