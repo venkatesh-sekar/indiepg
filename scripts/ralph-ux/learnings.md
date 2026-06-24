@@ -129,6 +129,22 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
 
 ## Rules of thumb
 
+- **Reassurance copy that is conditionally FALSE is a defect, not decoration — gate it on the condition that
+  makes it false, and verify the backend to know which condition that is.** Iter 19: Migrate's failed-job
+  Callout always said "your existing data is intact," but for an *overwrite* job the orchestrator drops the
+  target DB *before* the restore (verified in `orchestrator.go`: single-db `prepareTarget`→`DropDatabase`→
+  `Restore`; cluster per-db `DropDatabase`→`Restore`), so a mid-restore failure can leave the old data gone.
+  All four reviewers (incl. the restraint critic) shipped a `job.overwrite` ternary that swaps the line for an
+  honest "it may already have been dropped — restore from a backup." **Lesson:** this is the mirror of the
+  rejected "add a redundant warning" items — correcting a *false* statement at *zero net surface* (one string →
+  a ternary on an existing field) clears restraint easily, because the true fact ("your old DB may be gone")
+  appears NOWHERE else on the post-failure screen. Two tells it's the strong case: (a) the existing copy is
+  *false in a real branch*, not merely redundant, and (b) the corrected fact is otherwise hidden. **Hedge
+  honestly:** the failure can land *before* the destructive step too (e.g. during dump), so say "may already
+  have been dropped," not "is gone" — don't over-claim doom any more than you'd under-claim safety. And per the
+  iter-11 rule: *verify the backend before writing reassurance/failure copy* — the whole fix hinges on the
+  drop-before-restore ordering being real, which had to be confirmed in the Go orchestrator, not assumed.
+
 - **Adding the FIRST guard to an unguarded destructive-by-effect action is genuine error-prevention, not
   the decoration the restraint critic kills — and it's the mirror image of the rejected items.** Iter 18:
   Roles "Rotate password" rotated on a single unguarded click; rotation invalidates the old password

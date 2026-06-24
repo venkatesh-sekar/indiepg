@@ -10,14 +10,24 @@ Format per item:
 
 ## Open
 
-> **Status (iter 18):** the discovery/convergence pass did NOT converge — a fresh 5-agent Mode-S pass
-> (4 of 5 agents converged) surfaced a genuine new item (Roles: "Rotate password" was an unguarded
-> one-click destructive-by-effect action, while the sibling Delete is gated). **Shipped it (4 SHIP,
-> incl. restraint critic).** `stable_streak` stays **0**. The remaining open items below are
-> NEEDS-BACKEND (out of scope) or low/watch (speculative). Next iteration: run a fresh
-> discovery/convergence pass again — the convergence clock is still at 0.
+> **Status (iter 19):** the discovery/convergence pass did NOT converge — a fresh 5-agent Mode-S pass
+> (3 of 5 agents converged) surfaced TWO genuine new items. **Shipped the stronger one** (Migrate:
+> the failed-job Callout unconditionally claimed "your existing data is intact," which is FALSE for an
+> overwrite job — the orchestrator drops the target DB *before* the restore, verified in
+> `orchestrator.go`; **4 SHIP, incl. restraint critic**). The second (Roles `SecretsModal` accidental
+> Escape/backdrop dismissal destroys one-time credentials) is filed below as the next quick win.
+> `stable_streak` stays **0**. Next iteration: take the SecretsModal item (Mode F).
 
 ### Quick wins (high/med payoff, S effort) — do these first
+- [ ] (high/S) Roles & Databases — the one-time `SecretsModal` (shown after New App / rotate, with
+  passwords + connection strings that "cannot be retrieved again") is a plain `Modal`, so Escape or a
+  backdrop click routes to `onClose` → `setSecrets(null)` and the credentials are gone forever. A reflexive
+  Escape/click-away before copying destroys the only copy. → Make the secrets modal dismissible ONLY via
+  the explicit "I've saved them" button: either pass a guarded `onClose` (no-op on casual dismissal, mirror
+  `RestoreModal`'s `onClose={busy ? () => undefined : onClose}`) or add an opt-in `dismissible?: boolean`
+  prop to `Modal` (default unchanged) wiring Radix `onInteractOutside`/`onEscapeKeyDown` → `preventDefault`,
+  set false here. Surfaced by the iter-19 Roles/Backups convergence agent; same "harden an irreversible path"
+  class as the iter-18 rotate-confirm fix — adds zero visible surface, removes an accidental-loss vector.
 - ~~(high/S) Roles & Databases — `dropBusy` disables every Delete button during a
   drop~~ — **rejected iter 5**: `dropBusy` is true only while the modal
   `TypedConfirmDialog` is open, which makes the background inert/`aria-hidden`; no
@@ -118,6 +128,30 @@ Format per item:
   backend hint, which is out of scope).
 
 ## Done
+
+- [x] (high/S) Migrate — the failed-job Callout (`DirectJobProgress`, `Migrate.tsx`) **unconditionally**
+  printed *"Your existing data is intact — the import only writes a freshly created database."* That is
+  **FALSE for an overwrite ("Replace if exists / destructive") job**: verified in
+  `internal/migrate/orchestrator.go` that an overwrite **drops the existing target database BEFORE the
+  restore** (single-db: `prepareTarget`→`DropDatabase` then `Restore`; cluster: per-db
+  `DropDatabase`→`Restore`), so a mid-restore failure can leave the old DB gone — while the UI calmly told
+  the user their data was safe. **Shipped iter 19.** Gated the one line on the already-present `job.overwrite`
+  field: additive failure keeps the "intact" copy; overwrite failure now reads *"Because you chose to replace
+  the existing &lt;target_database&gt; (or 'existing databases' for a cluster), it may already have been
+  dropped before the failure — restore from a backup if you need the old data back."* The **"may" hedge** is
+  deliberate — the failure can land before or after the drop (e.g. during dump), so the UI doesn't over-claim
+  doom; it stops the false reassurance and points to recovery (the backup). Zero net surface (one string → a
+  ternary on an existing field), no new component/control. Added 2 tests: additive failure shows "intact" and
+  NOT "may already have been dropped"; overwrite failure shows "may already have been dropped" + "restore from
+  a backup" and NOT "intact". **4 SHIP, zero blockers** — UX heuristics ("textbook H#9 error-recovery; the old
+  copy made a false safety claim to users who just lost a database"); Sam ("the one lie a panel like this can
+  never tell — and it tells me my next move, restore from a backup"); Priya ("honest correction, accurately
+  hedged, right altitude — no nannying; the 'may' is correct not weasel-wording"); restraint critic ("corrects
+  a verified-false reassurance at zero net surface; the true state appears nowhere else on the screen — NOT the
+  Nth-warning-on-a-gated-flow pattern the loop rejects"). Surfaced by the iter-19 Alerts/Migrate convergence
+  agent (3 of 5 agents converged; this + the SecretsModal item were the two genuine finds); backend behavior
+  verified before writing the copy (iter-11 lesson). Gates: typecheck ✓, 145 tests ✓ (143 + 2 new), build ✓
+  (dist regenerated + staged), go build ✓ (exit 0, outside sandbox). stable_streak stays 0.
 
 - [x] (high/S) Roles & Databases — the per-row **"Rotate password"** button rotated immediately on a
   single unguarded click (`RolesDatabases.tsx:230` called `rotate()` directly). Rotating invalidates the

@@ -610,7 +610,18 @@ export function DirectJobProgress({ id, onReset }: { id: number; onReset: () => 
         <Callout tone="danger" title="Migration failed">
           {job.error || "The migration could not complete."}
           <div className="text-muted-foreground">
-            Your existing data is intact — the import only writes a freshly created database.
+            {job.overwrite ? (
+              <>
+                Because you chose to replace{" "}
+                {job.mode === "cluster"
+                  ? "existing databases"
+                  : `the existing ${job.target_database || "database"}`}
+                , it may already have been dropped before the failure — restore from a backup if
+                you need the old data back.
+              </>
+            ) : (
+              "Your existing data is intact — the import only writes a freshly created database."
+            )}
           </div>
         </Callout>
       ) : job.status === "completed" ? (

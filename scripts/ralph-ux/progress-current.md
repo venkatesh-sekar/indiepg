@@ -3,6 +3,37 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 19 — Mode F (SHIP) (Migrate: honest failed-job copy on an overwrite) — stable_streak 0 → 0
+Ran a fresh discovery/convergence pass (5-agent Mode-S panel, same coverage as iters 15–18). **Three of
+five agents converged** (Dashboard+Query, Settings/Tuning/Pooler/Login, nav/IA — all "no new high/med
+item"). The other two each surfaced a **genuine new item**: (1) Alerts/Migrate agent — the failed-job
+Callout in `DirectJobProgress` (Migrate.tsx) unconditionally claims *"Your existing data is intact"*, which
+is **false for an overwrite job**; (2) Roles/Backups agent — the one-time `SecretsModal` can be dismissed by
+an accidental Escape/backdrop click, destroying credentials that "cannot be retrieved again." Promoted the
+Migrate item (the stronger of the two — a verified-false statement on a destructive op); filed the
+SecretsModal item as the next high/S quick win.
+**Verified the backend before writing copy** (iter-11 lesson): `internal/migrate/orchestrator.go` drops the
+existing target DB *before* the restore when overwrite is set — single-db `prepareTarget`→`DropDatabase`→
+`Restore` (lines 156/159/541-542), cluster per-db `DropDatabase`→`Restore` (lines 250-261). So a mid-restore
+failure can leave the old data gone, yet the UI told the user it was intact.
+Fix (zero net surface): gated the one line on the already-present `job.overwrite` field. Additive failure
+keeps "Your existing data is intact — the import only writes a freshly created database." Overwrite failure
+now reads *"Because you chose to replace the existing &lt;target_database&gt; (or 'existing databases' for a
+cluster), it may already have been dropped before the failure — restore from a backup if you need the old
+data back."* The **"may" hedge** is deliberate — the failure can land before or after the drop (e.g. during
+dump), so the copy doesn't over-claim doom. Added 2 tests (additive→"intact", overwrite→"may already have
+been dropped"/"restore from a backup", neither bleeds into the other).
+Review panel: **4 SHIP, zero blockers** — UX heuristics ("textbook H#9; the old copy made a false safety
+claim to users who just lost a database"); Sam ("the one lie a panel like this can never tell — and it tells
+me my next move"); Priya ("honest correction, accurately hedged, right altitude, no nannying; 'may' is
+correct not weasel-wording"); restraint critic ("corrects a verified-false reassurance at zero net surface;
+the true state appears nowhere else — NOT the Nth-warning-on-a-gated-flow pattern the loop rejects"). Gates:
+typecheck ✓, 145 tests ✓ (143 + 2 new), build ✓ (dist regenerated + staged), go build ✓ (exit 0, outside
+sandbox). **stable_streak stays 0** (shipped a real improvement). **LESSON:** reassurance copy that is
+conditionally FALSE is a defect, not decoration — gate it on the condition that makes it false, hedge
+honestly, and verify the backend ordering before you trust the premise. Next iteration: take the SecretsModal
+accidental-dismiss item (Mode F).
+
 ## 2026-06-25 — iter 18 — Mode F (SHIP) (Roles: confirm before rotating a password) — stable_streak 0 → 0
 Ran a fresh discovery/convergence pass (5-agent Mode-S panel, same coverage as iters 15–17). **Four of
 five agents converged** ("no new high/med item") — but the Roles & Databases + Backups agent surfaced a

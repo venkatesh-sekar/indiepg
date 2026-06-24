@@ -138,6 +138,38 @@ describe("Migrate pollers — honest about a poll that fails AFTER first success
   });
 });
 
+describe("Migrate — a failed job is honest about whether the target survived", () => {
+  beforeEach(() => {
+    pollState.current = state({});
+  });
+
+  // An additive (non-overwrite) pull only ever writes a freshly created database,
+  // so the source/target data is genuinely untouched on failure.
+  it("DirectJobProgress: a failed ADDITIVE pull reassures the target is intact", () => {
+    pollState.current = state<MigrationRecord>({
+      data: { ...JOB, status: "failed", overwrite: false, error: "pg_restore exited 1" },
+    });
+    render(<DirectJobProgress id={7} onReset={() => {}} />);
+
+    expect(screen.getByText(/your existing data is intact/i)).toBeInTheDocument();
+    expect(screen.queryByText(/may already have been dropped/i)).not.toBeInTheDocument();
+  });
+
+  // An overwrite job drops the existing database BEFORE restoring (verified in the
+  // orchestrator), so a mid-restore failure can leave the old data gone. The copy
+  // must NOT claim the data is intact — it must point the user at their backup.
+  it("DirectJobProgress: a failed OVERWRITE pull warns the old database may be gone", () => {
+    pollState.current = state<MigrationRecord>({
+      data: { ...JOB, status: "failed", overwrite: true, error: "pg_restore exited 1" },
+    });
+    render(<DirectJobProgress id={7} onReset={() => {}} />);
+
+    expect(screen.getByText(/may already have been dropped/i)).toBeInTheDocument();
+    expect(screen.getByText(/restore from a backup/i)).toBeInTheDocument();
+    expect(screen.queryByText(/your existing data is intact/i)).not.toBeInTheDocument();
+  });
+});
+
 describe("Migrate mode tabs", () => {
   beforeEach(() => {
     pollState.current = state({});
