@@ -52,6 +52,37 @@ describe("Alerts", () => {
     expect(within(webhook as HTMLElement).getByRole("button", { name: "Send test" })).toBeDisabled();
   });
 
+  it("blocks saving a new enabled channel with no credentials, then allows it once filled", async () => {
+    const saveChannel = vi.spyOn(api, "saveChannel").mockResolvedValue({ ok: true } as never);
+    stub({ channels: [] }); // both channels brand-new (not set up)
+    render(<Alerts />);
+
+    // Open the Pushover setup modal (new channel, enabled by default).
+    const pushover = (await screen.findByText("Pushover")).closest("[data-slot=card]")!;
+    fireEvent.click(within(pushover as HTMLElement).getByRole("button", { name: "Set up" }));
+
+    const dialog = await screen.findByRole("dialog");
+    const save = within(dialog).getByRole("button", { name: "Save channel" });
+    // Empty token + user → a save would create a green "Configured" channel that
+    // can never notify. The button is disabled until the credentials are entered.
+    expect(save).toBeDisabled();
+
+    fireEvent.change(within(dialog).getByLabelText("Application token"), {
+      target: { value: "tok123" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("User key"), {
+      target: { value: "usr456" },
+    });
+    expect(save).toBeEnabled();
+
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(saveChannel).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "pushover", enabled: true, pushover_token: "tok123", pushover_user: "usr456" }),
+      ),
+    );
+  });
+
   it("renders a rule row with its condition, severity and an enable toggle", async () => {
     stub({ rules: [rule({ name: "CPU high", metric: "cpu_percent", op: ">", threshold: 80 })] });
     render(<Alerts />);

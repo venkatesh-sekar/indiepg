@@ -353,6 +353,16 @@ function ChannelModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
 
+  // A brand-new channel with no credentials can be saved enabled, after which it
+  // shows a green "Configured" badge but can never actually notify — a silent
+  // dead pipeline on the one feature meant to warn you. Block creating such a
+  // channel while it's enabled. Scoped to new channels only (`!config`): on an
+  // existing channel the secret fields come back blank (write-only/masked), so a
+  // blank token there means "keep the stored one", not "no credentials".
+  const requiredMissing =
+    kind === "pushover" ? !token.trim() || !user.trim() : !url.trim();
+  const blockEmptyNew = !config && enabled && requiredMissing;
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -382,7 +392,18 @@ function ChannelModal({
           <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button type="submit" form="channel-form" disabled={busy}>
+          <Button
+            type="submit"
+            form="channel-form"
+            disabled={busy || blockEmptyNew}
+            title={
+              blockEmptyNew
+                ? kind === "pushover"
+                  ? "Enter the application token and user key first"
+                  : "Enter the webhook URL first"
+                : undefined
+            }
+          >
             {busy ? (
               <>
                 <InlineSpinner data-icon="inline-start" />

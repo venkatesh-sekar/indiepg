@@ -10,9 +10,17 @@ Format per item:
 
 ## Open
 
-> **Status (iter 23):** ran a fresh 5-agent Mode-S discovery/convergence pass (same coverage as iters 15–22).
-> **All five views converged** ("no new high/med item"). Three candidates surfaced and ALL collapsed on
-> code-level inspection (self-rejected, no panel — iter-5/13/14 precedent):
+> **Status (iter 24):** ran the FINAL Mode-S convergence panel (5 agents, same coverage). **4 of 5 views
+> converged**; the Alerts/Migrate agent floated two Alerts candidates. Candidate A (rule Switch lacks
+> loading/optimistic-revert) **self-rejected** on inspection — the Radix Switch is fully controlled by
+> `checked={rule.enabled}` bound to server data, so a failed `toggleRule` never moves the thumb (no
+> misleading state; false premise). Candidate B was **verified REAL and SHIPPED this iter** (see Done:
+> "Alerts — block creating a new enabled channel with no credentials"). **stable_streak RESETS 2 → 0** — a
+> genuine improvement shipped, so convergence has NOT occurred. Next iteration: resume normal Mode-F/Mode-S.
+>
+> ---
+> _Prior status (iter 23): a fresh 5-agent Mode-S pass. **All five views converged.** Three candidates
+> surfaced and ALL collapsed on code-level inspection (self-rejected, no panel — iter-5/13/14 precedent):_
 > - **Query — clear the results panel when the SQL changes** (Dashboard/Query agent). **FALSE PREMISE about
 >   expected behavior.** Clicking a "Try:" sample (`Query.tsx:88`) or editing the textarea (`:99`) changes
 >   `sql` but leaves the prior `result` (`:38`) visible. The proposed `useEffect(…, [sql])` fires on every
@@ -131,6 +139,11 @@ Format per item:
   Nothing to add that wouldn't restate existing copy. See learnings.md / Rejected.
 
 ### Lower / watch
+- [ ] (low/S, NEEDS BACKEND) Alerts — durable fix for the empty-credential channel hole. The iter-24 fix is a
+  **client-side** guard in `ChannelModal`; the backend `handleSaveAlertChannel` still accepts an enabled channel
+  with blank credentials if anything POSTs outside the modal. → Have the handler reject (or auto-disable) an
+  enabled channel whose required credential is empty. Out of this frontend-only loop's scope; both technical
+  reviewers (Priya + UX) flagged it as the eventual honest fix but agreed it shouldn't block the UI guard.
 - [ ] (med/M) Query — accidental write SQL (DELETE/UPDATE/DROP pasted in) is only
   rejected server-side after Run. → Optional: client-side keyword detector that warns
   before Run that the editor is read-only. (Keep restrained — copy hint, not a parser.)
@@ -146,6 +159,31 @@ Format per item:
   review (the functional dead-end, the real problem, is now fixed).
 
 ## Done
+
+- [x] (high/S) Alerts — a **new notification channel could be saved enabled with no credentials**, producing
+  a **silent dead alert pipeline**. The backend `handleSaveAlertChannel` (`internal/server/handlers_alerts.go`)
+  validates **only the channel kind**, never credential presence — so an enabled Pushover/Webhook channel with
+  a blank token/user/URL saves fine. The `ChannelCard` then shows a green **"Configured"** badge
+  (`configured = Boolean(config?.enabled)`) and the existing `rulesWontFire` guard **misses it** (it only checks
+  `c.enabled`, not whether creds exist), so the user gets two green lights over a channel that can never notify —
+  the failure only surfaces when a real alert silently fails to reach them. **Shipped iter 24.** Fix in
+  `ChannelModal`: `requiredMissing` (pushover: token|user blank; webhook: url blank) +
+  `blockEmptyNew = !config && enabled && requiredMissing`; the **"Save channel"** button is
+  `disabled={busy || blockEmptyNew}` with an explanatory `title`. **Scoped to NEW channels (`!config`) on
+  purpose** — existing channels' secret fields (`PushoverToken`, `WebhookURL`) come back blank because
+  `maskAlertChannels` strips them (write-only), so a blank token on **edit** means "keep the stored secret";
+  gating that would break the edit flow. A **disabled** draft channel can still be saved with blanks. ~3 lines,
+  no new component/visible copy. Added a test: a new enabled pushover channel can't be saved blank, then saves
+  once token+user are filled. **4 SHIP, zero blockers** — UX heuristics ("textbook H#5 error-prevention; the
+  `!config` scope is the critical detail — it spares the edit flow where blank = keep-secret"); Sam ("a silent
+  safety net is worse than no safety net because I trust it; the greyed button + tooltip is the gentlest way to
+  stop me"); Priya ("the form refusing to lie to me at zero workflow cost; 'Send test' is opt-in so it's not a
+  guard; scoping to new-channel is correct, not a shortcut"); restraint critic ("the FIRST and ONLY guard on a
+  currently-unguarded silent-failure state, NOT an Nth redundant warning — the existing Callout inspects the
+  wrong field and literally can't catch this; disabling a submit on missing required fields is the most baseline
+  form affordance there is"). Surfaced by the iter-24 final convergence panel (4 of 5 views converged; verified
+  REAL against the backend before promoting — iter-11 lesson). Gates: typecheck ✓, 146 tests ✓ (145 + 1 new),
+  build ✓ (dist regenerated + staged), go build ✓ (exit 0, outside sandbox). stable_streak resets 2 → 0.
 
 - [x] (high/S) Login — the sign-in form became a **permanent dead-end after a server-enforced lockout**.
   On repeated wrong admin passwords `auth.Authenticate` returns `CodeLocked` (HTTP 429); the handler set

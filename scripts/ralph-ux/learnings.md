@@ -174,6 +174,31 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
 
 ## Rules of thumb
 
+- **A green "configured/ready" badge that keys off a single enable flag — not off the thing that makes the
+  feature actually work — is a silent-failure trap, and the FIRST guard on it is not a redundant warning.**
+  Iter 24 (Alerts): a notification channel could be saved `enabled` with blank credentials (the backend
+  `handleSaveAlertChannel` validates only the channel *kind*). The card showed green "Configured"
+  (`configured = Boolean(config?.enabled)`) and the existing "your rules won't fire" guard *missed it* because
+  that guard also only checks `c.enabled` — two green lights over a pipeline that can never notify. The fix is
+  the first and only guard on that state (disable "Save" for a new enabled channel missing creds), so the
+  restraint critic shipped it — categorically different from the rejected *Nth-warning-on-an-already-gated-flow*
+  items. **Diagnostic:** when a status indicator (badge/"ready"/guard) reads a *proxy* flag (`enabled`,
+  `configured`, `present`) instead of the actual precondition (credentials, reachability, non-empty payload),
+  the proxy can be true while the feature is dead — and the cost is highest on *silent* pipelines (alerting,
+  backups) where the user only learns at the moment of need. **Scope caveat that made it shippable:** gate only
+  where the precondition is *knowable* client-side — here, new channels (`!config`). On *edit*, the secret
+  fields come back blank because they're write-only/masked, so blank means "keep stored secret," not "no
+  creds"; gating edit would have been the actual bug. A client-side gate is the right immediate move; the
+  durable fix (handler-side credential validation) is a separate NEEDS-BACKEND item.
+
+- **An audit's "add a loading / optimistic-revert state" is only valid if the control is uncontrolled or
+  optimistically updated.** Iter 24: an agent claimed the rule-toggle `Switch` could "appear toggled but the
+  save failed." False — the shadcn/Radix `Switch` is fully *controlled* by `checked={rule.enabled}`, bound to
+  server data that only changes after `cfg.reload()`. A failed toggle never moves the thumb, so there's no
+  stale lie to revert; the proposed spinner/revert machinery would guard a state that cannot occur. **Before
+  adding loading/optimistic UI, check how the control derives its displayed value:** if it's a controlled
+  component reading server state (not local optimistic state), a failed mutation simply leaves it accurate.
+
 - **A disabled state with no path to re-enable itself is a dead-end, not a safeguard — and removing it is a
   subtractive fix the restraint critic waves through.** Iter 21: Login set `locked=true` (disabling the input)
   + cleared the password (disabling the button) on a server lockout, but `locked` only reset inside `onSubmit`

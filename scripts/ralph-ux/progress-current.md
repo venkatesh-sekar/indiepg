@@ -3,6 +3,30 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 24 — Mode F (Alerts: block creating an empty enabled channel) — stable_streak 2 → 0
+Ran the FINAL Mode-S convergence panel (5 agents, same coverage as iters 15–23, HIGH bar + full
+shipped/rejected digest). **4 of 5 views converged.** The Alerts/Migrate agent floated two Alerts candidates;
+I verified both against the code (iter-11 lesson: never act on an audit claim without checking the source):
+- **Candidate A — rule Switch lacks loading/optimistic-revert.** **Self-rejected (false premise).** The
+  shadcn/Radix `Switch` is fully *controlled* by `checked={rule.enabled}`, which is bound to server data and
+  only changes after `cfg.reload()`. On a failed `toggleRule` the thumb never moves, so there is no misleading
+  optimistic state to revert. The proposed spinner/revert machinery would guard a state that can't occur.
+- **Candidate B — a NEW notification channel can be saved enabled with no credentials.** **Verified REAL and
+  SHIPPED.** `handleSaveAlertChannel` validates only the channel *kind*, never credential presence, so an
+  enabled Pushover/Webhook channel with blank token/user/URL saves; the card then shows green "Configured" and
+  the `rulesWontFire` guard misses it (it checks `c.enabled`, not creds) — a *silent* dead alert pipeline.
+  Fix in `ChannelModal`: disable "Save channel" when creating a new channel (`!config`) that's enabled but
+  missing required creds, plus an explanatory `title`. Scoped to new channels because existing channels'
+  secret fields are masked/write-only (blank on edit = "keep stored secret"), so gating edit would break it.
+  Disabled drafts can still be saved blank. Ran the **full review panel → 4 SHIP, zero blockers** (restraint
+  critic affirmed: first/only guard on an unguarded silent-failure state, not a redundant warning; "Send test"
+  is optional so not sufficient; disabling a submit on missing required fields is the most baseline affordance).
+  Added 1 test (146 total). Filed the durable handler-side validation as a NEEDS-BACKEND follow-up.
+  **stable_streak RESETS 2 → 0** — a genuine improvement shipped, so the UX has NOT converged. Gates: typecheck
+  ✓, 146 tests ✓, build ✓ (dist staged), go build ✓ (exit 0, outside sandbox — snap-confine blocks in-sandbox).
+  LESSON: an audit's "add a loading/optimistic-revert state" claim is only valid if the control is *uncontrolled*
+  or *optimistically* updated — a fully-controlled component bound to server state already can't show a stale lie.
+
 ## 2026-06-25 — iter 23 — Mode S (convergence check) — stable_streak 1 → 2
 Backlog still actionable-empty after iter 22 (only the NEEDS-BACKEND backup-badge item + low/watch nits:
 Query write-detector, Login lockout-duration copy, Settings grouping). Per the contract, ran a fresh **Mode-S
