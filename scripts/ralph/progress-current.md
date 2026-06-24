@@ -5,6 +5,45 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band D · Migrate → shadcn
+Sixth band-D view. Rebuilt `Migrate.tsx` on shadcn primitives:
+- Mode selector (`.mode-tabs`/`ModeTab` custom buttons) → shadcn `Tabs`/
+  `TabsList`/`TabsTrigger`/`TabsContent` (first Tabs use in the app). Each trigger
+  stacks label + muted hint (`flex-col`). The `{mode === ...}` conditional render
+  became `TabsContent` — Radix unmounts inactive content, so per-mode form state
+  still resets on switch (parity). Receive/Send (`.segmented`/`.seg`) → a nested
+  `Tabs` inside `SessionPanel`.
+- `SourceFields` `<fieldset>` → `FieldSet`/`FieldLegend`/`FieldGroup`/`Field`/
+  `FieldLabel`/`FieldDescription` + `Input`; the two-input `.field-row`s →
+  responsive `grid` (`sm:grid-cols-[2fr_1fr]`, `sm:grid-cols-2`).
+- All other forms: `.field`/`.checkbox`/`.inline-form` → `Field`/`Checkbox` +
+  `flex flex-col gap-5` forms; overwrite checkboxes → `Field orientation=horizontal`
+  + `Checkbox`. Typed-confirm inputs (target-name / `OVERWRITE`) → `Field`+`Input`
+  with `FieldError` on mismatch + `aria-describedby` (gate logic unchanged).
+- `.btn*` → `Button` (submit=default self-start; "Start another"=`outline sm`;
+  session Cancel=`ghost sm` + `text-destructive`; modal footers=outline/destructive;
+  busy states compose the raw `Spinner` via `data-icon`).
+- History + verification-diff `.data-table` → `Table` family; `.session-code-block`/
+  `.session-code` → Tailwind tokens (`bg-muted`, `font-mono text-4xl`); progress
+  stepper (`.progress-step`/`.step-*`, no shadcn equivalent) kept as custom markup
+  but rebuilt on semantic tokens via `cn()` (done=`border-success`, active=
+  `bg-primary/10`, failed=`border-destructive`, pending=`opacity-60`); `.muted`/
+  `.small`/`.job-running` → `text-muted-foreground`/`text-sm`/`flex flex-col`.
+- Behavior identical: 3 modes, direct + cross-panel flows, overwrite gates, poll/
+  stale/error ladder, S3-or-error callout, verification verdict all unchanged.
+- ui-heuristics-reviewer: all findings were pre-existing (verified against the old
+  markup), so the parity rule applies — declined the behavior/copy changes (modal
+  error location, uppercase-on-change, "dumped"→"dump", card title). Applied only
+  two purely-additive a11y wins that change neither behavior nor visuals: `aria-label`
+  on the mismatch `Table`, and an sr-only `aria-live` status for the session stepper
+  (gated to non-terminal so it doesn't double-announce the failed/expired Callouts).
+- Tests: added a "Migrate mode tabs" describe (default form + tab-switch swaps the
+  mounted form; Radix activates on mousedown button 0). Existing poller tests
+  untouched and green. Dead Migrate-only CSS removed (`.mode-tab*`/`.session-code*`/
+  `.progress-step`/`.step-*`/`.source-fields`/`.segmented`/`.seg`/`.job-running`/
+  `.inline-form`/`@keyframes pulse`). 116 web tests green (+2); typecheck/build/
+  go build green.
+
 ## 2026-06-24 · band D · Backups → shadcn
 Fifth band-D view. Rebuilt `Backups.tsx` on shadcn primitives:
 - PageHeader actions: hand-rolled `.btn`/`.btn-primary`/`.btn-danger-ghost` +

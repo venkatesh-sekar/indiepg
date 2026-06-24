@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import type { AsyncState } from "@/lib/hooks";
 import { ApiError } from "@/api/client";
 import type { MigrationRecord, MigrationSession } from "@/api/types";
@@ -20,7 +20,7 @@ vi.mock("sonner", () => ({
   toast: { info: () => {}, error: () => {}, success: () => {} },
 }));
 
-import { MigrationHistory, DirectJobProgress, SessionProgress } from "./Migrate";
+import { MigrationHistory, DirectJobProgress, SessionProgress, Migrate } from "./Migrate";
 
 function state<T>(over: Partial<AsyncState<T>>): AsyncState<T> {
   return { data: null, error: null, loading: false, reload: () => {}, ...over };
@@ -129,6 +129,31 @@ describe("Migrate pollers — honest about a poll that fails AFTER first success
     render(<SessionProgress code="XK7M2P" onReset={() => {}} />);
 
     expect(screen.getByText(/Live updates paused/i)).toBeInTheDocument();
+  });
+});
+
+describe("Migrate mode tabs", () => {
+  beforeEach(() => {
+    pollState.current = state({});
+  });
+
+  it("defaults to the one-database direct-pull form", () => {
+    render(<Migrate />);
+    expect(screen.getByText("Pull one database from another server")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Pull an entire cluster from another server"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("switching tabs swaps the active form (only one mode mounted at a time)", () => {
+    render(<Migrate />);
+    // Radix Tabs activates on mousedown (button 0), not a synthetic click.
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /whole cluster/i }), { button: 0 });
+
+    expect(screen.getByText("Pull an entire cluster from another server")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Pull one database from another server"),
+    ).not.toBeInTheDocument();
   });
 });
 

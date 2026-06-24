@@ -14,6 +14,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { ApiError, api } from "@/api/client";
 import { bytes, count, dateTime, ago } from "@/lib/format";
 import { usePolling } from "@/lib/hooks";
+import { cn } from "@/lib/utils";
 import { Modal } from "@/components/Modal";
 import { toast } from "sonner";
 import {
@@ -26,6 +27,28 @@ import {
   Spinner,
   StaleBanner,
 } from "@/components/ui";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Spinner as InlineSpinner } from "@/components/ui/spinner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   CLUSTER_OVERWRITE_CONFIRM,
   type MigrationMode,
@@ -52,45 +75,35 @@ export function Migrate() {
         databases are never overwritten unless you explicitly confirm by name.
       </Callout>
 
-      <div className="mode-tabs" role="tablist">
-        <ModeTab id="single-db" active={mode} onSelect={setMode} label="One database" hint="Direct pull · recommended" />
-        <ModeTab id="cluster" active={mode} onSelect={setMode} label="Whole cluster" hint="All DBs + roles" />
-        <ModeTab id="ssh-less" active={mode} onSelect={setMode} label="Cross-panel session" hint="Two panels via S3" />
-      </div>
+      <Tabs value={mode} onValueChange={(v) => setMode(v as MigrationMode)}>
+        <TabsList className="h-auto w-full">
+          <ModeTab id="single-db" label="One database" hint="Direct pull · recommended" />
+          <ModeTab id="cluster" label="Whole cluster" hint="All DBs + roles" />
+          <ModeTab id="ssh-less" label="Cross-panel session" hint="Two panels via S3" />
+        </TabsList>
 
-      {mode === "single-db" ? <SingleDBForm /> : null}
-      {mode === "cluster" ? <ClusterForm /> : null}
-      {mode === "ssh-less" ? <SessionPanel /> : null}
+        <TabsContent value="single-db">
+          <SingleDBForm />
+        </TabsContent>
+        <TabsContent value="cluster">
+          <ClusterForm />
+        </TabsContent>
+        <TabsContent value="ssh-less">
+          <SessionPanel />
+        </TabsContent>
+      </Tabs>
 
       <MigrationHistory />
     </div>
   );
 }
 
-function ModeTab({
-  id,
-  active,
-  onSelect,
-  label,
-  hint,
-}: {
-  id: MigrationMode;
-  active: MigrationMode;
-  onSelect: (m: MigrationMode) => void;
-  label: string;
-  hint: string;
-}) {
+function ModeTab({ id, label, hint }: { id: MigrationMode; label: string; hint: string }) {
   return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active === id}
-      className={`mode-tab ${active === id ? "active" : ""}`}
-      onClick={() => onSelect(id)}
-    >
-      <span className="mode-tab-label">{label}</span>
-      <span className="mode-tab-hint muted">{hint}</span>
-    </button>
+    <TabsTrigger value={id} className="h-auto flex-col gap-0.5 py-2">
+      <span className="font-medium">{label}</span>
+      <span className="text-xs text-muted-foreground">{hint}</span>
+    </TabsTrigger>
   );
 }
 
@@ -139,65 +152,73 @@ function SourceFields({
 }) {
   const upd = (patch: Partial<ConnState>) => set({ ...conn, ...patch });
   return (
-    <fieldset className="field source-fields">
-      <legend className="field-label">Source Postgres</legend>
-      <div className="field-row">
-        <label className="field">
-          <span className="field-label">Host</span>
-          <input
-            type="text"
-            value={conn.host}
-            placeholder="db.old-server or 10.0.0.5"
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(e) => upd({ host: e.target.value })}
-          />
-        </label>
-        <label className="field field-narrow">
-          <span className="field-label">Port</span>
-          <input type="text" value={conn.port} placeholder="5432" onChange={(e) => upd({ port: e.target.value })} />
-        </label>
-      </div>
-      <div className="field-row">
-        <label className="field">
-          <span className="field-label">User</span>
-          <input
-            type="text"
-            value={conn.user}
-            placeholder="postgres"
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(e) => upd({ user: e.target.value })}
-          />
-        </label>
-        <label className="field">
-          <span className="field-label">Password</span>
-          <input
-            type="password"
-            value={conn.password}
-            autoComplete="new-password"
-            placeholder="••••••••"
-            onChange={(e) => upd({ password: e.target.value })}
-          />
-        </label>
-      </div>
-      {showDatabase ? (
-        <label className="field">
-          <span className="field-label">Database to copy</span>
-          <input
-            type="text"
-            value={conn.database}
-            placeholder="myapp"
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(e) => upd({ database: e.target.value })}
-          />
-        </label>
-      ) : null}
-      <span className="field-help muted">
-        The password is used once to run the copy and is never stored or logged.
-      </span>
-    </fieldset>
+    <FieldSet className="rounded-md border p-4">
+      <FieldLegend>Source Postgres</FieldLegend>
+      <FieldGroup>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-[2fr_1fr]">
+          <Field>
+            <FieldLabel htmlFor="src-host">Host</FieldLabel>
+            <Input
+              id="src-host"
+              value={conn.host}
+              placeholder="db.old-server or 10.0.0.5"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => upd({ host: e.target.value })}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="src-port">Port</FieldLabel>
+            <Input
+              id="src-port"
+              value={conn.port}
+              placeholder="5432"
+              onChange={(e) => upd({ port: e.target.value })}
+            />
+          </Field>
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field>
+            <FieldLabel htmlFor="src-user">User</FieldLabel>
+            <Input
+              id="src-user"
+              value={conn.user}
+              placeholder="postgres"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => upd({ user: e.target.value })}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="src-password">Password</FieldLabel>
+            <Input
+              id="src-password"
+              type="password"
+              value={conn.password}
+              autoComplete="new-password"
+              placeholder="••••••••"
+              onChange={(e) => upd({ password: e.target.value })}
+            />
+          </Field>
+        </div>
+        {showDatabase ? (
+          <Field>
+            <FieldLabel htmlFor="src-database">Database to copy</FieldLabel>
+            <Input
+              id="src-database"
+              value={conn.database}
+              placeholder="myapp"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => upd({ database: e.target.value })}
+            />
+          </Field>
+        ) : null}
+        <FieldDescription>
+          The password is used once to run the copy and is never stored or logged.
+        </FieldDescription>
+      </FieldGroup>
+    </FieldSet>
   );
 }
 
@@ -254,36 +275,49 @@ function SingleDBForm() {
 
   return (
     <Card title="Pull one database from another server">
-      <p className="muted">
+      <p className="text-muted-foreground">
         This server connects to the source Postgres directly and copies one database in. No S3 and
         no second panel needed — just network access to the source.
       </p>
-      <form className="inline-form" onSubmit={submit}>
+      <form className="mt-3 flex max-w-xl flex-col gap-5" onSubmit={submit}>
         {error ? <ErrorNotice error={error} /> : null}
         <SourceFields conn={conn} set={setConn} />
-        <label className="field">
-          <span className="field-label">Name on this server</span>
-          <input
-            type="text"
+        <Field>
+          <FieldLabel htmlFor="single-target">Name on this server</FieldLabel>
+          <Input
+            id="single-target"
             value={target}
             placeholder={conn.database || "myapp"}
             autoComplete="off"
             spellCheck={false}
             onChange={(e) => setTarget(e.target.value)}
           />
-          <span className="field-help muted">
+          <FieldDescription>
             Defaults to the source name. Use a new name to import alongside an existing database.
-          </span>
-        </label>
-        <label className="checkbox">
-          <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} />
-          <span>
+          </FieldDescription>
+        </Field>
+        <Field orientation="horizontal">
+          <Checkbox
+            id="single-overwrite"
+            checked={overwrite}
+            onCheckedChange={(c) => setOverwrite(c === true)}
+          />
+          <FieldLabel htmlFor="single-overwrite" className="font-normal">
             Replace <code>{effectiveTarget || "the target"}</code> if it already exists (destructive)
-          </span>
-        </label>
-        <button type="submit" className="btn btn-primary" disabled={!ready || busy}>
-          {busy ? "Starting…" : overwrite ? "Continue…" : "Start migration"}
-        </button>
+          </FieldLabel>
+        </Field>
+        <Button type="submit" className="self-start" disabled={!ready || busy}>
+          {busy ? (
+            <>
+              <InlineSpinner data-icon="inline-start" />
+              Starting…
+            </>
+          ) : overwrite ? (
+            "Continue…"
+          ) : (
+            "Start migration"
+          )}
+        </Button>
       </form>
 
       <Modal
@@ -294,12 +328,24 @@ function SingleDBForm() {
         onClose={busy ? () => undefined : () => setConfirmOpen(false)}
         footer={
           <>
-            <button type="button" className="btn" onClick={() => setConfirmOpen(false)} disabled={busy}>
+            <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)} disabled={busy}>
               Back
-            </button>
-            <button type="button" className="btn btn-danger" onClick={start} disabled={busy || !overwriteMatches}>
-              {busy ? "Starting…" : "Overwrite & migrate"}
-            </button>
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={start}
+              disabled={busy || !overwriteMatches}
+            >
+              {busy ? (
+                <>
+                  <InlineSpinner data-icon="inline-start" />
+                  Starting…
+                </>
+              ) : (
+                "Overwrite & migrate"
+              )}
+            </Button>
           </>
         }
       >
@@ -307,20 +353,26 @@ function SingleDBForm() {
           <strong>{effectiveTarget}</strong> on this server will be dropped and recreated from the
           source. This cannot be undone.
         </Callout>
-        <label className="field">
-          <span className="field-label">
+        <Field className="mt-4" data-invalid={confirm.length > 0 && !overwriteMatches}>
+          <FieldLabel htmlFor="single-confirm">
             Type <code>{effectiveTarget}</code> to confirm
-          </span>
-          <input
-            type="text"
+          </FieldLabel>
+          <Input
+            id="single-confirm"
             value={confirm}
             autoComplete="off"
             spellCheck={false}
             placeholder={effectiveTarget}
             aria-invalid={confirm.length > 0 && !overwriteMatches}
+            aria-describedby={confirm.length > 0 && !overwriteMatches ? "single-confirm-err" : undefined}
             onChange={(e) => setConfirm(e.target.value)}
           />
-        </label>
+          {confirm.length > 0 && !overwriteMatches ? (
+            <FieldError id="single-confirm-err">
+              Must match <code>{effectiveTarget}</code> exactly.
+            </FieldError>
+          ) : null}
+        </Field>
       </Modal>
     </Card>
   );
@@ -381,7 +433,7 @@ function ClusterForm() {
 
   return (
     <Card title="Pull an entire cluster from another server">
-      <p className="muted">
+      <p className="text-muted-foreground">
         Brings over <strong>every database</strong> plus the shared <strong>roles and grants</strong>{" "}
         (globals) from the source. Use this when you&apos;re replacing a whole server.
       </p>
@@ -389,28 +441,43 @@ function ClusterForm() {
         This is a big operation. With overwrite on, it can drop every matching database on this
         server. Make sure this is the right target.
       </Callout>
-      <form className="inline-form" onSubmit={submit}>
+      <form className="mt-3 flex max-w-xl flex-col gap-5" onSubmit={submit}>
         {error ? <ErrorNotice error={error} /> : null}
         <SourceFields conn={conn} set={setConn} showDatabase={false} />
-        <label className="field">
-          <span className="field-label">Exclude databases (optional)</span>
-          <input
-            type="text"
+        <Field>
+          <FieldLabel htmlFor="cluster-exclude">Exclude databases (optional)</FieldLabel>
+          <Input
+            id="cluster-exclude"
             value={exclude}
             placeholder="analytics, scratch"
             autoComplete="off"
             spellCheck={false}
             onChange={(e) => setExclude(e.target.value)}
           />
-          <span className="field-help muted">Comma-separated names to skip.</span>
-        </label>
-        <label className="checkbox">
-          <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} />
-          <span>Replace databases that already exist here (destructive)</span>
-        </label>
-        <button type="submit" className="btn btn-primary" disabled={!ready || busy}>
-          {busy ? "Starting…" : overwrite ? "Continue…" : "Migrate cluster"}
-        </button>
+          <FieldDescription>Comma-separated names to skip.</FieldDescription>
+        </Field>
+        <Field orientation="horizontal">
+          <Checkbox
+            id="cluster-overwrite"
+            checked={overwrite}
+            onCheckedChange={(c) => setOverwrite(c === true)}
+          />
+          <FieldLabel htmlFor="cluster-overwrite" className="font-normal">
+            Replace databases that already exist here (destructive)
+          </FieldLabel>
+        </Field>
+        <Button type="submit" className="self-start" disabled={!ready || busy}>
+          {busy ? (
+            <>
+              <InlineSpinner data-icon="inline-start" />
+              Starting…
+            </>
+          ) : overwrite ? (
+            "Continue…"
+          ) : (
+            "Migrate cluster"
+          )}
+        </Button>
       </form>
 
       <Modal
@@ -421,32 +488,50 @@ function ClusterForm() {
         onClose={busy ? () => undefined : () => setConfirmOpen(false)}
         footer={
           <>
-            <button type="button" className="btn" onClick={() => setConfirmOpen(false)} disabled={busy}>
+            <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)} disabled={busy}>
               Back
-            </button>
-            <button type="button" className="btn btn-danger" onClick={start} disabled={busy || !overwriteMatches}>
-              {busy ? "Starting…" : "Overwrite & migrate cluster"}
-            </button>
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={start}
+              disabled={busy || !overwriteMatches}
+            >
+              {busy ? (
+                <>
+                  <InlineSpinner data-icon="inline-start" />
+                  Starting…
+                </>
+              ) : (
+                "Overwrite & migrate cluster"
+              )}
+            </Button>
           </>
         }
       >
         <Callout tone="danger" title="This replaces databases on this server">
           Every matching database on this server will be dropped and recreated from the source.
         </Callout>
-        <label className="field">
-          <span className="field-label">
+        <Field className="mt-4" data-invalid={confirm.length > 0 && !overwriteMatches}>
+          <FieldLabel htmlFor="cluster-confirm">
             Type <code>{CLUSTER_OVERWRITE_CONFIRM}</code> to confirm
-          </span>
-          <input
-            type="text"
+          </FieldLabel>
+          <Input
+            id="cluster-confirm"
             value={confirm}
             autoComplete="off"
             spellCheck={false}
             placeholder={CLUSTER_OVERWRITE_CONFIRM}
             aria-invalid={confirm.length > 0 && !overwriteMatches}
+            aria-describedby={confirm.length > 0 && !overwriteMatches ? "cluster-confirm-err" : undefined}
             onChange={(e) => setConfirm(e.target.value)}
           />
-        </label>
+          {confirm.length > 0 && !overwriteMatches ? (
+            <FieldError id="cluster-confirm-err">
+              Must match <code>{CLUSTER_OVERWRITE_CONFIRM}</code> exactly.
+            </FieldError>
+          ) : null}
+        </Field>
       </Modal>
     </Card>
   );
@@ -484,9 +569,9 @@ export function DirectJobProgress({ id, onReset }: { id: number; onReset: () => 
       title="Migration in progress"
       actions={
         terminal ? (
-          <button type="button" className="btn btn-sm" onClick={onReset}>
+          <Button type="button" variant="outline" size="sm" onClick={onReset}>
             Start another
-          </button>
+          </Button>
         ) : null
       }
     >
@@ -500,17 +585,19 @@ export function DirectJobProgress({ id, onReset }: { id: number; onReset: () => 
       ) : job.status === "failed" ? (
         <Callout tone="danger" title="Migration failed">
           {job.error || "The migration could not complete."}
-          <div className="muted">
+          <div className="text-muted-foreground">
             Your existing data is intact — the import only writes a freshly created database.
           </div>
         </Callout>
       ) : job.status === "completed" ? (
         <CompletedView job={job} verification={verification} />
       ) : (
-        <div className="job-running">
+        <div className="flex flex-col gap-1.5">
           <Spinner label={PHASE_LABELS[job.phase] ?? "Working…"} />
           <ProgressMeter job={job} />
-          {job.source_summary ? <p className="muted small">From {job.source_summary}</p> : null}
+          {job.source_summary ? (
+            <p className="text-sm text-muted-foreground">From {job.source_summary}</p>
+          ) : null}
         </div>
       )}
     </Card>
@@ -526,7 +613,7 @@ function ProgressMeter({ job }: { job: MigrationRecord }) {
     parts.push(`${bytes(job.bytes_total)} dumped`);
   }
   if (parts.length === 0) return null;
-  return <p className="muted small">{parts.join(" · ")}</p>;
+  return <p className="text-sm text-muted-foreground">{parts.join(" · ")}</p>;
 }
 
 function CompletedView({
@@ -555,32 +642,27 @@ function SessionPanel() {
   const [role, setRole] = useState<"receive" | "send">("receive");
   return (
     <Card title="Cross-panel migration (no direct connection)">
-      <p className="muted">
+      <p className="text-muted-foreground">
         For moving between two indiepg servers that can&apos;t reach each other&apos;s Postgres but
         share an S3 bucket. The receiving server generates a code; the sending server enters it.
         This mode requires S3 configured on both panels.
       </p>
-      <div className="segmented" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={role === "receive"}
-          className={`seg ${role === "receive" ? "active" : ""}`}
-          onClick={() => setRole("receive")}
-        >
-          Receive here
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={role === "send"}
-          className={`seg ${role === "send" ? "active" : ""}`}
-          onClick={() => setRole("send")}
-        >
-          Send from here
-        </button>
-      </div>
-      {role === "receive" ? <SessionReceive /> : <SessionSend />}
+      <Tabs
+        value={role}
+        onValueChange={(v) => setRole(v as "receive" | "send")}
+        className="mt-3"
+      >
+        <TabsList>
+          <TabsTrigger value="receive">Receive here</TabsTrigger>
+          <TabsTrigger value="send">Send from here</TabsTrigger>
+        </TabsList>
+        <TabsContent value="receive">
+          <SessionReceive />
+        </TabsContent>
+        <TabsContent value="send">
+          <SessionSend />
+        </TabsContent>
+      </Tabs>
     </Card>
   );
 }
@@ -628,23 +710,30 @@ function SessionReceive() {
   }
 
   return (
-    <form onSubmit={create} className="inline-form">
+    <form onSubmit={create} className="mt-3 flex max-w-xl flex-col gap-5">
       {error ? <S3OrError error={error} /> : null}
-      <label className="field">
-        <span className="field-label">Database to receive</span>
-        <input
-          type="text"
+      <Field>
+        <FieldLabel htmlFor="receive-database">Database to receive</FieldLabel>
+        <Input
+          id="receive-database"
           value={database}
           placeholder="myapp"
           autoComplete="off"
           spellCheck={false}
           onChange={(e) => setDatabase(e.target.value)}
         />
-        <span className="field-help muted">The name this database will have on this server.</span>
-      </label>
-      <button type="submit" className="btn btn-primary" disabled={creating || !database.trim()}>
-        {creating ? "Creating…" : "Generate code"}
-      </button>
+        <FieldDescription>The name this database will have on this server.</FieldDescription>
+      </Field>
+      <Button type="submit" className="self-start" disabled={creating || !database.trim()}>
+        {creating ? (
+          <>
+            <InlineSpinner data-icon="inline-start" />
+            Creating…
+          </>
+        ) : (
+          "Generate code"
+        )}
+      </Button>
     </form>
   );
 }
@@ -681,13 +770,19 @@ export function SessionProgress({ code, onReset }: { code: string; onReset: () =
       title="Migration in progress"
       actions={
         terminal ? (
-          <button type="button" className="btn btn-sm" onClick={onReset}>
+          <Button type="button" variant="outline" size="sm" onClick={onReset}>
             Start another
-          </button>
+          </Button>
         ) : (
-          <button type="button" className="btn btn-sm btn-danger-ghost" onClick={() => setCancelOpen(true)}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setCancelOpen(true)}
+          >
             Cancel
-          </button>
+          </Button>
         )
       }
     >
@@ -696,11 +791,13 @@ export function SessionProgress({ code, onReset }: { code: string; onReset: () =
           frozen stepper can't look like the handshake is still progressing. */}
       {error && session && !terminal ? <StaleBanner error={error} /> : null}
 
-      <div className="session-code-block">
-        <span className="muted">On the source server&apos;s panel, choose “Send from here” and enter:</span>
-        <div className="session-code">{code}</div>
+      <div className="mb-4 flex flex-col items-center gap-1.5 rounded-md bg-muted p-5">
+        <span className="text-muted-foreground">
+          On the source server&apos;s panel, choose “Send from here” and enter:
+        </span>
+        <div className="font-mono text-4xl font-bold tracking-[0.18em] text-primary">{code}</div>
         {session ? (
-          <span className="muted small">
+          <span className="text-sm text-muted-foreground">
             Expires {dateTime(session.expires_at)}
             {session.database ? ` · database: ${session.database}` : ""}
           </span>
@@ -712,7 +809,14 @@ export function SessionProgress({ code, onReset }: { code: string; onReset: () =
         error ? null : <Spinner label="Connecting…" />
       ) : (
         <>
-          <ol className="progress-steps">
+          {/* Announce step advances to screen readers — the stepper below is
+              visual only; terminal states get their own role=alert Callout. */}
+          {!terminal ? (
+            <p className="sr-only" aria-live="polite" aria-atomic="true">
+              {STATUS_LABELS[status]}
+            </p>
+          ) : null}
+          <ol className="mb-3 flex flex-col gap-0.5">
             {PROGRESS_STEPS.map((step, i) => {
               const state =
                 status === "failed" || status === "expired"
@@ -725,11 +829,29 @@ export function SessionProgress({ code, onReset }: { code: string; onReset: () =
                       ? "active"
                       : "pending";
               return (
-                <li key={step} className={`progress-step step-${state}`}>
-                  <span className="step-dot" aria-hidden="true">
+                <li
+                  key={step}
+                  className={cn(
+                    "flex items-center gap-3 rounded-md px-3 py-2.5",
+                    state === "active" && "bg-primary/10",
+                    state === "pending" && "opacity-60",
+                  )}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "inline-grid size-6 shrink-0 place-items-center rounded-full border-2 text-xs font-bold",
+                      state === "done" && "border-success text-success",
+                      state === "active" && "border-primary text-primary",
+                      state === "failed" && "border-destructive text-destructive",
+                      state === "pending" && "border-input text-muted-foreground",
+                    )}
+                  >
                     {state === "done" ? "✓" : state === "failed" ? "✕" : i + 1}
                   </span>
-                  <span className="step-label">{STATUS_LABELS[step]}</span>
+                  <span className={cn("text-sm", state === "active" && "font-semibold")}>
+                    {STATUS_LABELS[step]}
+                  </span>
                 </li>
               );
             })}
@@ -757,12 +879,19 @@ export function SessionProgress({ code, onReset }: { code: string; onReset: () =
         onClose={() => setCancelOpen(false)}
         footer={
           <>
-            <button type="button" className="btn" onClick={() => setCancelOpen(false)} disabled={cancelBusy}>
+            <Button type="button" variant="outline" onClick={() => setCancelOpen(false)} disabled={cancelBusy}>
               Keep going
-            </button>
-            <button type="button" className="btn btn-danger" onClick={cancel} disabled={cancelBusy}>
-              {cancelBusy ? "Cancelling…" : "Cancel migration"}
-            </button>
+            </Button>
+            <Button type="button" variant="destructive" onClick={cancel} disabled={cancelBusy}>
+              {cancelBusy ? (
+                <>
+                  <InlineSpinner data-icon="inline-start" />
+                  Cancelling…
+                </>
+              ) : (
+                "Cancel migration"
+              )}
+            </Button>
           </>
         }
       >
@@ -804,26 +933,33 @@ function SessionSend() {
   }
 
   return (
-    <form className="inline-form" onSubmit={start}>
+    <form className="mt-3 flex max-w-xl flex-col gap-5" onSubmit={start}>
       {error ? <S3OrError error={error} /> : null}
-      <label className="field field-narrow">
-        <span className="field-label">Session code</span>
-        <input
-          type="text"
+      <Field className="max-w-[200px]">
+        <FieldLabel htmlFor="send-code">Session code</FieldLabel>
+        <Input
+          id="send-code"
           value={code}
           placeholder="XK7M2P"
           autoComplete="off"
           spellCheck={false}
           maxLength={6}
-          style={{ textTransform: "uppercase" }}
+          className="uppercase"
           onChange={(e) => setCode(e.target.value)}
         />
-        <span className="field-help muted">The code shown on the receiving server.</span>
-      </label>
+        <FieldDescription>The code shown on the receiving server.</FieldDescription>
+      </Field>
       <SourceFields conn={conn} set={setConn} />
-      <button type="submit" className="btn btn-primary" disabled={!ready || busy}>
-        {busy ? "Starting…" : "Send database"}
-      </button>
+      <Button type="submit" className="self-start" disabled={!ready || busy}>
+        {busy ? (
+          <>
+            <InlineSpinner data-icon="inline-start" />
+            Starting…
+          </>
+        ) : (
+          "Send database"
+        )}
+      </Button>
     </form>
   );
 }
@@ -848,29 +984,33 @@ export function MigrationHistory() {
       ) : data.length === 0 ? (
         <EmptyState title="No migrations yet" hint="Started migrations appear here with live status." />
       ) : (
-        <table className="data-table compact">
-          <thead>
-            <tr>
-              <th>When</th>
-              <th>Mode</th>
-              <th>Source / target</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>When</TableHead>
+              <TableHead>Mode</TableHead>
+              <TableHead>Source / target</TableHead>
+              <TableHead>Status</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {data.map((m) => (
-              <tr key={m.id}>
-                <td title={dateTime(m.created_at)}>{ago(m.created_at)}</td>
-                <td>{MODE_LABELS[m.mode] ?? m.mode}</td>
-                <td className="muted small">{m.source_summary || m.target_database || `code ${m.code}`}</td>
-                <td>
+              <TableRow key={m.id}>
+                <TableCell title={dateTime(m.created_at)}>{ago(m.created_at)}</TableCell>
+                <TableCell>{MODE_LABELS[m.mode] ?? m.mode}</TableCell>
+                <TableCell className="text-sm text-muted-foreground">
+                  {m.source_summary || m.target_database || `code ${m.code}`}
+                </TableCell>
+                <TableCell>
                   <StatusBadge status={m.status} phase={m.phase} />
-                  {m.status === "failed" && m.error ? <div className="muted small">{m.error}</div> : null}
-                </td>
-              </tr>
+                  {m.status === "failed" && m.error ? (
+                    <div className="text-sm text-muted-foreground">{m.error}</div>
+                  ) : null}
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
     </Card>
   );
@@ -927,30 +1067,30 @@ function VerificationView({ v }: { v: Verification }) {
     return (
       <Callout tone="ok" title="Verified">
         <Badge tone="ok">✓ {count(v.total)} rows matched</Badge>
-        <div className="muted">Source and target row counts are identical.</div>
+        <div className="text-muted-foreground">Source and target row counts are identical.</div>
       </Callout>
     );
   }
   return (
     <Callout tone="warn" title="Row counts do not match">
-      <table className="data-table compact">
-        <thead>
-          <tr>
-            <th>Table</th>
-            <th>Source</th>
-            <th>Target</th>
-          </tr>
-        </thead>
-        <tbody>
+      <Table aria-label="Row count mismatches by table">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Table</TableHead>
+            <TableHead>Source</TableHead>
+            <TableHead>Target</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {v.diffs.map((d) => (
-            <tr key={d.table}>
-              <td>{d.table}</td>
-              <td>{count(d.source)}</td>
-              <td>{count(d.target)}</td>
-            </tr>
+            <TableRow key={d.table}>
+              <TableCell>{d.table}</TableCell>
+              <TableCell>{count(d.source)}</TableCell>
+              <TableCell>{count(d.target)}</TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </Callout>
   );
 }
