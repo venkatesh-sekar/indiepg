@@ -248,37 +248,6 @@ code {
   color: var(--text);
 }
 
-/* --- Cards & stats ------------------------------------------------------- */
-
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border);
-}
-
-.card-head h3 {
-  font-size: 15px;
-}
-
-.card-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.card-body {
-  padding: 18px;
-}
-
 /* --- Callout content (rendered inside shadcn Alert) ---------------------- */
 
 .callout-hint {

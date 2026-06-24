@@ -10,6 +10,13 @@ import {
   AlertDescription,
   AlertTitle,
 } from "@/components/ui/alert";
+import {
+  Card as ShadcnCard,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
 // --- Badges ----------------------------------------------------------------
 
@@ -76,15 +83,15 @@ export function Card({
   className?: string;
 }) {
   return (
-    <section className={`card ${className ?? ""}`}>
+    <ShadcnCard className={className}>
       {title || actions ? (
-        <header className="card-head">
-          {title ? <h3>{title}</h3> : <span />}
-          {actions ? <div className="card-actions">{actions}</div> : null}
-        </header>
+        <CardHeader>
+          {title ? <CardTitle>{title}</CardTitle> : <span />}
+          {actions ? <CardAction>{actions}</CardAction> : null}
+        </CardHeader>
       ) : null}
-      <div className="card-body">{children}</div>
-    </section>
+      <CardContent>{children}</CardContent>
+    </ShadcnCard>
   );
 }
 

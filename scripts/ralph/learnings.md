@@ -21,6 +21,9 @@ the top, prune stale entries. One line each. Newest at the bottom of each group.
   move them into `src/`.
 - Embedded SPA: `cd web && npm run build` regenerates `internal/server/web/dist`
   — STAGE dist with any web change, then `CGO_ENABLED=0 go build ./cmd/indiepg`.
+- `go` is a snap: inside the command sandbox `go build` dies with `snap-confine ...
+  cap_dac_override not found` (exit 1). Re-run the `go build` gate with the sandbox
+  disabled (`dangerouslyDisableSandbox`); npm/npx run fine sandboxed.
 - vitest has `css:false`, so the `@import` lines in styles.css don't affect tests.
 
 ## Build / test / verify

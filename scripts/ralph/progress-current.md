@@ -5,6 +5,29 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band E · shared `Card` wrapper → shadcn `Card`
+First band-E cleanup slice. The `ui.tsx` `Card({title,actions,children,className})`
+wrapper was the last shared component still rendering hand-rolled `.card`/
+`.card-head`/`.card-actions`/`.card-body` markup, keeping that CSS block alive.
+- Recomposed it over shadcn `Card`/`CardHeader`/`CardTitle`/`CardAction`/
+  `CardContent` (band-C wrapper pattern) — public API unchanged, so all ~8 view
+  call-sites (RolesDatabases, Backups, Migrate, Pooler, Settings, Alerts outer,
+  DatabaseTuning) stay untouched. Divider dropped for parity with the already-
+  migrated Login/Dashboard (shadcn `Card` ring + `gap-(--card-spacing)` separate
+  the zones; no border needed).
+- Deleted the dead `.card`/`.card-head`/`.card-head h3`/`.card-actions`/
+  `.card-body` CSS from `styles.css`.
+- ui-heuristics-reviewer (blocking ×2): (1) `CardTitle` was a `<div>` → made the
+  primitive render `<h3>` so the wrapper keeps the old `<h3>` heading semantics
+  (also restores headings for the already-migrated Login/Dashboard/Alerts cards);
+  (2) restored the old `<span/>` placeholder in the header grid so an
+  actions-only card (no call-site today, but allowed by the API) can't collapse
+  the `col-start-2` action.
+- Remaining before E1 (delete styles.css tokens) can land: migrate `EmptyState`
+  → shadcn `Empty`, `SecretValue` buttons → `Button`, `PageHeader` divs →
+  Tailwind, `App.tsx` `.boot-screen`, `Settings.tsx` `.callout-detail`/`-hint`.
+- 125 web tests green; typecheck/build/`go build` green.
+
 ## 2026-06-24 · band D · DatabaseTuning → shadcn (LAST band-D view)
 Tenth and final band-D view (`src/views/DatabaseTuning.tsx`). Band D is now done;
 only band E (cleanup) remains.
