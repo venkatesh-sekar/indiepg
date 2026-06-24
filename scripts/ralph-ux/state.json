@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "track": "ux-improvement",
-  "iteration": 2,
-  "commits_total": 2,
+  "iteration": 3,
+  "commits_total": 3,
   "stable_streak": 0,
   "current_mode": "FIX",
-  "last_item": "Roles & Databases — added an actionable hint to the 'No roles yet' empty state (parity with the Databases card).",
-  "last_result": "SHIPPED. Review panel 3 SHIP + 1 REJECT (Sam: 'New app' isn't in the row labeled 'above' — it's in the page header); addressed in-iteration by rewording the hint to disambiguate (buttons above vs 'New app (one-click)' at the top), no layout change. Gates green: typecheck, 134 tests, build, go build (outside sandbox). Next top item: Dashboard — remove the always-blank Postgres 'Version' row (high/S, honest-state win).",
+  "last_item": "Dashboard — removed the always-blank Postgres 'Version' row (backend never populates it; rendered a permanent em-dash that read as missing data).",
+  "last_result": "SHIPPED. Review panel 4 SHIP, zero blockers (UX heuristics + Sam + Priya + restraint critic). Honest-state deletion: ~4 lines removed from the view; test fixture's misleading version value dropped + assertion added that the row no longer renders. Gates green: typecheck, 134 tests, build, go build (outside sandbox). Both personas flagged that a REAL PG version is worth surfacing later on a details/settings page — captured as a future idea, not backlogged. Next top item: Alerts — warn when rules exist but no notification channel is enabled (silent-failure, high/S).",
   "notes": "PURE UX-IMPROVEMENT LOOP. Sibling of the COMPLETED scripts/ralph/ shadcn-migration track. Capability parity is sacred (Vitest suite is the contract); layout/flow/copy are free to change. Restraint over churn — rejecting a change and recording why is a normal outcome. Frontend/UX only, never touch Go. go build is blocked in-sandbox (snap-confine); run with sandbox disabled. See PROMPT.md + UX-PRINCIPLES.md + PERSONAS.md + UI-RULES.md.",
   "north_star": "The indiepg panel is the easiest, clearest, safest way for an indie hacker to run their Postgres — minimal surface, co-located workflows, honest state, no over-design. Stop when the UX has converged (stable_streak >= 3)."
 }

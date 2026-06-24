@@ -11,9 +11,6 @@ Format per item:
 ## Open
 
 ### Quick wins (high/med payoff, S effort) — do these first
-- [ ] (high/S) Dashboard — the Postgres "Version" row always renders "—" (backend
-  never populates it); a blank version next to a green "Running" badge reads as
-  "unknown / partial data" and undermines trust. → Remove the Version row.
 - [ ] (high/S) Alerts — when no notification channel is enabled, alert rules are
   set up but will silently never fire; nothing warns the user. → Add a warning
   `Callout` above the rules card when rules exist (or are being added) and no channel
@@ -79,6 +76,12 @@ Format per item:
 
 ## Done
 
+- [x] (high/S) Dashboard — the Postgres "Version" row always rendered "—" (backend
+  never populates it; the field is `omitempty` and the foundation doesn't expose a
+  server version yet). A blank version next to a green "Running" badge read as
+  "unknown / partial data". Removed the row; remaining card rows are all live data.
+  Shipped iter 3 (4 SHIP — all reviewers; both personas noted version is worth
+  surfacing for real later, on a details page, not as a permanent placeholder).
 - [x] (high/S) Roles & Databases — "No roles yet" empty state had no hint (the
   Databases card had one). Added a `hint` pointing to the card's user buttons and the
   page-header "New app (one-click)" path. Shipped iter 2 (3 SHIP; Sam's "above" vs

@@ -18,7 +18,7 @@ function state(over: Partial<AsyncState<DashboardData>>): AsyncState<DashboardDa
 }
 
 const SAMPLE: DashboardData = {
-  pg: { running: true, version: "16.2" },
+  pg: { running: true },
   snapshot: {
     taken_at: "2026-06-24T10:00:00Z",
     cpu_percent: 12,
@@ -93,6 +93,9 @@ describe("Dashboard refresh-failure surfacing", () => {
     expect(screen.getByText("Latest backup")).toBeInTheDocument();
     expect(screen.getByText("Server")).toBeInTheDocument();
     expect(screen.getByText("Running")).toBeInTheDocument();
+    // The Postgres "Version" row was removed: the backend never populates it, so
+    // it always rendered an empty "—" that read as missing/partial data.
+    expect(screen.queryByText("Version")).toBeNull();
     // No backup yet → the warn callout points the operator at Backups.
     expect(screen.getByText(/No successful backup yet/)).toBeInTheDocument();
   });

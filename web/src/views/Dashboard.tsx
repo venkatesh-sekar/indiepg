@@ -86,7 +86,6 @@ export function Dashboard() {
               <Kv label="Status">
                 {pg.running ? <Badge tone="ok">Running</Badge> : <Badge tone="danger">Stopped</Badge>}
               </Kv>
-              <Kv label="Version">{pg.version ?? "—"}</Kv>
               <Kv label="Connections">
                 {count(s.connections)} / {count(s.max_connections)}{" "}
                 <span className="text-muted-foreground">({pct(connPct)})</span>

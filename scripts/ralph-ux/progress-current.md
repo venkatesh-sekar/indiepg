@@ -3,6 +3,21 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 3 — Mode F (Dashboard: remove always-blank Version row)
+Top quick-win honest-state fix. The Postgres card's "Version" row always rendered an
+em-dash "—": confirmed in `internal/server/handlers_dashboard.go` the field is
+`omitempty` with the comment "the foundation does not expose a server version yet", so
+`pg.version` is never sent and the row was permanently blank. A blank field next to a
+green "Running" badge reads as missing/partial data and erodes trust in the rest of the
+card. Removed the `<Kv label="Version">` row (~4 lines); the card still shows Status,
+Connections, Cache hit ratio, TPS, Deadlocks, Replication lag — all live. Dropped the
+misleading `version: "16.2"` fixture value (backend never sends it) and added a
+`queryByText("Version")` → null assertion. Review panel: 4 SHIP, zero blockers (UX
+heuristics + Sam + Priya + restraint critic). Both personas independently noted PG
+version is genuinely useful and the right next move is to surface a *real* version on a
+details/settings page later — not to keep a placeholder. Gates: typecheck ✓, 134 tests
+✓, build ✓, go build ✓ (outside sandbox — snap-confine blocks it in-sandbox).
+
 ## 2026-06-25 — iter 2 — Mode F (Roles & Databases empty state)
 Top quick-win: the "Users & roles" card's empty state showed a bare "No roles yet"
 while the sibling Databases card already had an actionable hint. Added a `hint` to the
