@@ -138,12 +138,27 @@ func TestRecoveryTargetValidate(t *testing.T) {
 		{"empty ok", RecoveryTarget{}, false},
 		{"only time", RecoveryTarget{Time: &tm}, false},
 		{"only xid", RecoveryTarget{XID: "7"}, false},
+		{"only lsn", RecoveryTarget{LSN: "0/16B6A50"}, false},
 		{"only name", RecoveryTarget{Name: "rp"}, false},
+		{"name with space", RecoveryTarget{Name: "before migration"}, false},
 		{"action pause", RecoveryTarget{Action: "pause"}, false},
 		{"action shutdown", RecoveryTarget{Action: "shutdown"}, false},
 		{"two targets", RecoveryTarget{Time: &tm, LSN: "0/1"}, true},
 		{"three targets", RecoveryTarget{XID: "1", LSN: "0/1", Name: "n"}, true},
 		{"bad action", RecoveryTarget{Action: "explode"}, true},
+		// Content validation: a malformed target must be rejected up front
+		// (a clear message instead of an opaque mid-restore pgBackRest failure).
+		{"xid non-numeric", RecoveryTarget{XID: "abc"}, true},
+		{"xid negative", RecoveryTarget{XID: "-1"}, true},
+		{"xid with space", RecoveryTarget{XID: "1 2"}, true},
+		{"lsn max width", RecoveryTarget{LSN: "FFFFFFFF/FFFFFFFF"}, false},
+		{"lsn no slash", RecoveryTarget{LSN: "16B6A50"}, true},
+		{"lsn non-hex", RecoveryTarget{LSN: "0/XYZ"}, true},
+		{"lsn segment too long", RecoveryTarget{LSN: "FFFFFFFFF/0"}, true},
+		{"lsn trailing slash", RecoveryTarget{LSN: "0/"}, true},
+		{"lsn two slashes", RecoveryTarget{LSN: "0/1/2"}, true},
+		{"name with newline", RecoveryTarget{Name: "a\nb"}, true},
+		{"name with null", RecoveryTarget{Name: "a\x00b"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

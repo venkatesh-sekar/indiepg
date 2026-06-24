@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"strings"
 	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/core"
@@ -58,7 +59,78 @@ func (t RecoveryTarget) Validate() error {
 	default:
 		return core.ValidationError("invalid recovery action %q (want promote|pause|shutdown)", t.Action)
 	}
+	return t.validateContent()
+}
+
+// validateContent rejects a malformed XID/LSN/Name up front. Each is joined into
+// a single `--target=<value>` argv token (no shell, value position), so this is
+// not an injection boundary — it is defense-in-depth plus a clear, fail-fast error
+// for the operator instead of an opaque pgBackRest failure partway through a
+// restore (the most data-critical moment to get a confusing error). At most one of
+// the three is set here (the n>1 conflict is rejected above).
+func (t RecoveryTarget) validateContent() error {
+	switch {
+	case t.XID != "":
+		// A transaction id is a non-negative integer. 64-bit xid8 is at most
+		// 20 digits; cap there so a junk value can't be unbounded.
+		if len(t.XID) > 20 || !isAllDigits(t.XID) {
+			return core.ValidationError("invalid recovery xid %q (want a numeric transaction id)", t.XID)
+		}
+	case t.LSN != "":
+		if !isValidLSN(t.LSN) {
+			return core.ValidationError("invalid recovery lsn %q (want hex form like 0/16B6A50)", t.LSN)
+		}
+	case t.Name != "":
+		// A named restore point can contain spaces and printable Unicode, but
+		// never control characters or line/paragraph separators.
+		if len(t.Name) > 128 {
+			return core.ValidationError("recovery target name too long (max 128 bytes)")
+		}
+		for _, r := range t.Name {
+			if r < 0x20 || r == 0x7f || r == ' ' || r == ' ' {
+				return core.ValidationError("invalid recovery target name %q (control characters not allowed)", t.Name)
+			}
+		}
+	}
 	return nil
+}
+
+// isAllDigits reports whether s is a non-empty run of ASCII digits.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidLSN reports whether s is a Postgres log sequence number: two non-empty
+// hex runs joined by exactly one slash (e.g. "0/16B6A50"). A Postgres LSN is a
+// 64-bit value rendered as two 32-bit halves, so each hex run is at most 8 digits.
+func isValidLSN(s string) bool {
+	hi, lo, ok := strings.Cut(s, "/")
+	if !ok {
+		return false
+	}
+	if strings.IndexByte(lo, '/') >= 0 {
+		return false // more than one slash
+	}
+	return len(hi) > 0 && len(hi) <= 8 && len(lo) > 0 && len(lo) <= 8 && isHex(hi) && isHex(lo)
+}
+
+// isHex reports whether s is a run of ASCII hex digits.
+func isHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // targetArgs renders the pgBackRest --target* flags for this recovery target.

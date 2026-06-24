@@ -5,6 +5,34 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2 (stability) · PITR recovery target validated up front before a restore
+North-star audit of the TWO subsystems prior audits skipped — the exec/runner layer
+(`internal/exec`, `internal/pg/adminexec.go`) and the web handler input-validation surface
+(`internal/server/handlers_*.go`) — i.e. the command-injection / untrusted-input attack surface.
+Both came back fundamentally SOLID (no CRITICAL/HIGH): the exec layer uses `os/exec` argv with
+NO shell anywhere, `AsUser` is a fixed `sudo -u <user>` triple (never interpolated), `Sensitive`
+keeps secrets out of argv/logs; every operator identifier reaching SQL goes through
+`ValidateIdentifier`/`QuoteIdent`/`QuoteLiteral`, request bodies are bounded by `MaxBytesReader`
++ `DisallowUnknownFields`, and every state-changing route sits inside `requireAuth` (CSRF-gated).
+FIXED the one real load-bearing gap (LOW): the PITR recovery target's `XID`/`LSN`/`Name` came
+straight from the restore JSON body and reached `pgbackrest --target=<value>` with NO content
+validation — `RecoveryTarget.Validate()` checked only the COUNT of set targets and the Action
+enum. Not an injection (argv value-position, no shell), but a malformed value produced an opaque
+pgBackRest failure PARTWAY through a restore — the worst moment (data recovery) for a confusing
+error, and after the safety-backup work already ran. Added `validateContent` at the tail of
+`Validate()` (which `Manager.Restore` calls BEFORE `takeSafetyBackup`, so a bad target now fails
+fast with NO side effects): XID ≤20 digits all-numeric; LSN two hex runs (≤8 digits each — a PG
+LSN is two 32-bit halves) joined by exactly one slash; Name rejects control chars / DEL / U+2028
+/ U+2029 and caps at 128 bytes (spaces + printable Unicode still allowed, matching real
+restore-point names). Test-first (proven RED): extended `TestRecoveryTargetValidate` with valid
+(only-lsn, max-width-lsn, name-with-space) and invalid (non-numeric/negative/spaced xid,
+slash-less/non-hex/trailing-slash/two-slash/overlong-segment lsn, newline/null name) cases.
+Reviewed (feature-dev:code-reviewer): applied the one Important finding — LSN segment cap
+tightened 16→8 + an overlong-segment test added; the no-false-reject invariant (no legitimate
+LSN/xid/name rejected) and no-regression-to-the-restore-path confirmed. The audit's other finding
+(direct-migration source Port/User/SSLMode unvalidated, also LOW) was added to the backlog, not
+fixed (rule 1 = one item). Go gates green (gofmt/vet/test/build); web untouched. Tree clean.
+
 ## 2026-06-24 · band 2 (stability) · SQLite connection pragmas now apply to EVERY connection
 North-star audit (store/config/notifier — areas prior audits skipped) found a MEDIUM "never
 get stuck" defect: the four connection pragmas (`busy_timeout=5000`, `foreign_keys=on`,
