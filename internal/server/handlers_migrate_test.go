@@ -293,3 +293,67 @@ func TestMigrateSingleDBWritesAudit(t *testing.T) {
 func idPath(id int64) string {
 	return "/api/migrate/" + strconv.FormatInt(id, 10)
 }
+
+// TestValidateDirectSource pins the fail-fast input validation for a
+// user-supplied source connection. Port/User/SSLMode flow into libpq argv/env
+// (-p / -U / PGSSLMODE) in os/exec value position with no shell, so this is not
+// an injection guard — it turns an opaque mid-connect libpq failure into a clear
+// up-front "what's wrong" error on a user-facing migration path.
+func TestValidateDirectSource(t *testing.T) {
+	base := migrate.ConnInfo{Host: "db.example.com", Database: "appdb"}
+	with := func(mut func(*migrate.ConnInfo)) migrate.ConnInfo {
+		c := base
+		mut(&c)
+		return c
+	}
+
+	valid := []struct {
+		name string
+		in   migrate.ConnInfo
+	}{
+		{"bare host", base},
+		{"empty port defaults later", with(func(c *migrate.ConnInfo) { c.Port = "" })},
+		{"numeric port", with(func(c *migrate.ConnInfo) { c.Port = "5432" })},
+		{"max port", with(func(c *migrate.ConnInfo) { c.Port = "65535" })},
+		{"min port", with(func(c *migrate.ConnInfo) { c.Port = "1" })},
+		{"empty user", with(func(c *migrate.ConnInfo) { c.User = "" })},
+		{"ordinary user", with(func(c *migrate.ConnInfo) { c.User = "reader" })},
+		{"mixed-case symbol user", with(func(c *migrate.ConnInfo) { c.User = "App_Reader-1" })},
+		{"empty sslmode", with(func(c *migrate.ConnInfo) { c.SSLMode = "" })},
+		{"sslmode require", with(func(c *migrate.ConnInfo) { c.SSLMode = "require" })},
+		{"sslmode verify-full", with(func(c *migrate.ConnInfo) { c.SSLMode = "verify-full" })},
+		{"sslmode disable", with(func(c *migrate.ConnInfo) { c.SSLMode = "disable" })},
+	}
+	for _, tc := range valid {
+		t.Run("valid/"+tc.name, func(t *testing.T) {
+			require.NoError(t, validateDirectSource(tc.in, true))
+		})
+	}
+
+	invalid := []struct {
+		name string
+		in   migrate.ConnInfo
+	}{
+		{"non-numeric port", with(func(c *migrate.ConnInfo) { c.Port = "abc" })},
+		{"port with space", with(func(c *migrate.ConnInfo) { c.Port = "54 32" })},
+		{"negative port", with(func(c *migrate.ConnInfo) { c.Port = "-5" })},
+		{"zero port", with(func(c *migrate.ConnInfo) { c.Port = "0" })},
+		{"port too high", with(func(c *migrate.ConnInfo) { c.Port = "65536" })},
+		{"port overflow", with(func(c *migrate.ConnInfo) { c.Port = "99999999999999999999" })},
+		{"user with newline", with(func(c *migrate.ConnInfo) { c.User = "reader\nadmin" })},
+		{"user with null", with(func(c *migrate.ConnInfo) { c.User = "reader\x00" })},
+		{"user too long", with(func(c *migrate.ConnInfo) { c.User = strings.Repeat("u", 64) })},
+		{"unknown sslmode", with(func(c *migrate.ConnInfo) { c.SSLMode = "yes" })},
+		{"sslmode wrong case", with(func(c *migrate.ConnInfo) { c.SSLMode = "Require" })},
+		{"sslmode with space", with(func(c *migrate.ConnInfo) { c.SSLMode = "require " })},
+	}
+	for _, tc := range invalid {
+		t.Run("invalid/"+tc.name, func(t *testing.T) {
+			err := validateDirectSource(tc.in, true)
+			require.Error(t, err)
+			var ce *core.Error
+			require.ErrorAs(t, err, &ce)
+			require.Equal(t, core.CodeValidation, ce.Code)
+		})
+	}
+}

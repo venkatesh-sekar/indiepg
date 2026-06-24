@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -413,6 +414,77 @@ func validateDirectSource(c migrate.ConnInfo, requireDatabase bool) error {
 		if err := core.ValidateIdentifier(c.Database, "database"); err != nil {
 			return err
 		}
+	}
+	if err := validateSourcePort(c.Port); err != nil {
+		return err
+	}
+	if err := validateSourceUser(c.User); err != nil {
+		return err
+	}
+	if err := validateSourceSSLMode(c.SSLMode); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateSourcePort rejects a non-numeric or out-of-range source port. The port
+// is a string carried verbatim into the `-p <port>` libpq argv (value position,
+// no shell — never an injection); validating it just turns an opaque connect-time
+// libpq failure into a clear up-front error. Empty is allowed (defaults to 5432).
+func validateSourcePort(port string) error {
+	if port == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return core.ValidationError("source port must be a number between 1 and 65535").
+			WithHint("enter the source Postgres port, e.g. 5432, or leave it blank")
+	}
+	return nil
+}
+
+// validateSourceUser rejects a source role name carrying a control character or
+// exceeding Postgres's 63-byte identifier limit. The user flows into the `-U
+// <user>` libpq argv (value position, no shell — never an injection); the guard
+// keeps a stray newline/NUL out of the argv and fails a too-long name fast with a
+// clear message instead of a confusing libpq error. Empty is allowed (libpq then
+// defaults to the OS user). Role names legitimately contain mixed case and
+// symbols, so only control characters — never ordinary punctuation — are rejected.
+func validateSourceUser(user string) error {
+	if user == "" {
+		return nil
+	}
+	if len(user) > 63 {
+		return core.ValidationError("source user name is too long (max 63 bytes)")
+	}
+	for _, r := range user {
+		if r < 0x20 || r == 0x7f {
+			return core.ValidationError("source user name contains a control character")
+		}
+	}
+	return nil
+}
+
+// allowedSSLModes is the exact set of libpq sslmode values. Validating against it
+// (PGSSLMODE flows into the client env in value position, no shell) turns a typo
+// like "yes" into a clear up-front error rather than an opaque libpq connect
+// failure. Empty is allowed — libpq then applies its own default (prefer).
+var allowedSSLModes = map[string]bool{
+	"disable":     true,
+	"allow":       true,
+	"prefer":      true,
+	"require":     true,
+	"verify-ca":   true,
+	"verify-full": true,
+}
+
+func validateSourceSSLMode(mode string) error {
+	if mode == "" {
+		return nil
+	}
+	if !allowedSSLModes[mode] {
+		return core.ValidationError("source sslmode must be one of disable, allow, prefer, require, verify-ca, verify-full").
+			WithHint("leave sslmode blank to use the libpq default")
 	}
 	return nil
 }

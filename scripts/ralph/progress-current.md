@@ -5,6 +5,27 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 2 (stability) · direct-migration source Port/User/SSLMode validated fail-fast
+`validateDirectSource` (internal/server/handlers_migrate.go) checked only `Host != ""` +
+`ValidateIdentifier(Database)`, leaving the source connection's `Port`/`User`/`SSLMode`
+unchecked — they flow into `-p`/`-U` libpq argv and `PGSSLMODE` env in `migrate.connArgs`
+(os/exec value-position, NO shell — never an injection), so a bogus value made libpq fail
+the connect with an OPAQUE error on a user-facing migration path. Mirroring the accepted
+PITR recovery-target fix, added three fail-fast validators (single-db, cluster, and ssh-less
+export all share this one function): `validateSourcePort` (empty-or-numeric-in-`[1,65535]`;
+the `strconv.Atoi` error arm catches the integer-overflow case); `validateSourceUser`
+(empty-allowed, ≤63 BYTES = PG NAMEDATALEN, rune-iterated to reject ONLY control chars so a
+legit mixed-case/symbol role like `App_Reader-1` still passes — no false-reject); and
+`validateSourceSSLMode` (empty-allowed → libpq default `prefer`, else exact membership in
+{disable,allow,prefer,require,verify-ca,verify-full}, case-sensitive). Each rejects with
+`core.ValidationError`, turning a confusing mid-connect failure into a clear up-front message.
+Password is deliberately left unvalidated (opaque; a wrong one yields a clear libpq auth error).
+Test-first `TestValidateDirectSource` (12 valid / 12 invalid, each invalid asserting
+`core.CodeValidation`) proven RED→GREEN. Reviewed (feature-dev:code-reviewer): no blocking
+findings — no false-reject, overflow handled, byte-vs-rune length correct. Go gates green
+(gofmt/vet/test/build); web untouched. Tree clean. Only the YAGNI-gated SQLite schema-versioning
+LOW item now remains open in band 2 (deferred until a real additive column change needs it).
+
 ## 2026-06-24 · band 2 (stability) · PITR recovery target validated up front before a restore
 North-star audit of the TWO subsystems prior audits skipped — the exec/runner layer
 (`internal/exec`, `internal/pg/adminexec.go`) and the web handler input-validation surface
