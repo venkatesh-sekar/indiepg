@@ -188,7 +188,7 @@ export function Alerts() {
                     <TableHead>Name</TableHead>
                     <TableHead>Condition</TableHead>
                     <TableHead>Severity</TableHead>
-                    <TableHead>Sustained</TableHead>
+                    <TableHead>Hold for</TableHead>
                     <TableHead>Cooldown</TableHead>
                     <TableHead>State</TableHead>
                     <TableHead className="text-right">Actions</TableHead>

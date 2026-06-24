@@ -3,6 +3,28 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 8 — Mode F (SHIP) (Alerts: rename "Sustained" header → "Hold for")
+Took the top quick-win: the rules-table column header "Sustained" is bare jargon — a user
+scanning a value like "instant"/"5m" can't tell whether it means "wait then check" or "the
+condition must hold this long," and the plain wording only lives inside the rule editor.
+First implemented the backlog's literal proposal — a shadcn `Tooltip` (with an `InfoIcon`
+trigger + `TooltipProvider`, definition mirrored into the trigger's `aria-label` for a11y +
+testability) on BOTH "Sustained" and "Cooldown". Ran the full review panel: **3 SHIP** (UX
+heuristics — recognition-over-recall; Sam — "'Sustained' next to 'instant' genuinely puzzled
+me," ship with a touch caveat that hover-only help is invisible on mobile; Priya — muted,
+ignorable, out of the way). **Restraint critic REJECTED** and is never overruled: the
+"Cooldown" tooltip is decoration (cooldown + a duration is self-explanatory), and the one
+genuine gap ("Sustained") doesn't need tooltip machinery + a hover-only affordance — just
+**rename the header**. The critic's alternative was clearly right and cheaper, and it also
+resolved Sam's touch caveat, so I addressed the blocker in-iteration instead of rejecting:
+reverted the tooltip change entirely and renamed `Sustained` → **`Hold for`**, matching the
+editor's own "Must hold for (minutes)" label (self-documenting, consistent, zero new
+surface). Left "Cooldown" unchanged. Replaced the test with a `columnheader` assertion for
+"Hold for". Gates: typecheck ✓, 138 tests ✓, build ✓ (dist regenerated + staged), go build ✓
+(outside sandbox — snap-confine blocks it in-sandbox). stable_streak reset to 0 (shipped a
+real improvement). Next top item: Pooler — reword the enable-confirmation copy to make
+explicit that apps must be reconfigured to the pooler address.
+
 ## 2026-06-25 — iter 7 — Mode F (REJECT) (Query: surface the server's executed_sql)
 Took the top quick-win: the API returns `executed_sql` (the statement the server
 actually ran, possibly auto-LIMIT-rewritten) but it was never shown. Implemented it the

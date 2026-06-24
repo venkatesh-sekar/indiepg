@@ -77,6 +77,25 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
 
 ## Rules of thumb
 
+- **Prefer a clearer label over a tooltip when the column header itself is the jargon.**
+  Iter 8: the "Sustained" header was ambiguous, so the backlog proposed a `Tooltip`
+  definition on it (and on "Cooldown"). The panel shipped 3–1, but the restraint critic
+  blocked and was right: a tooltip adds an info icon, a `TooltipProvider`, a hover-only
+  affordance (dead on touch — Sam flagged this), and a helper component — to explain ONE
+  word. The simpler, strictly-better fix was to **rename the header to plain language
+  that already exists in the flow**: `Sustained` → `Hold for`, matching the editor's
+  "Must hold for (minutes)" label. Self-documenting next to its values, consistent with
+  the edit modal, zero new surface, works everywhere. **Lesson:** when the header word
+  is the problem, fix the word — don't annotate a bad label with hover text. Reserve
+  tooltips for genuinely terse-by-necessity columns whose value can't be self-explained
+  by a better name. Also: only ONE of the two columns was actually ambiguous
+  ("Cooldown" + a duration is self-explanatory) — don't batch a decorative second
+  tooltip in just because you're touching the row of headers; fix only what's unclear.
+- When the restraint critic blocks but hands you a cheaper, clearly-right alternative,
+  *take the alternative in-iteration* rather than rejecting outright — that ships the
+  real improvement (which even the critic agreed existed) without the over-design. The
+  blocker isn't always "do nothing"; sometimes it's "do the smaller thing."
+
 - The audit strongly corroborated the seed item: backup **config** (/settings) and
   backup **operations** (/backups) being split is the single most-cited UX problem
   (4 of 11 agents). Co-location is the anchor improvement for this loop.

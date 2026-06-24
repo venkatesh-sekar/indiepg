@@ -27,9 +27,12 @@ Format per item:
   (verified in `guard.go`), which always co-occurs with the existing "Results limited
   for safety" + "Add your own LIMIT…" copy — so the block only restates an
   already-explained fact. Redundant, not new signal. See learnings.md.
-- [ ] (med/S) Alerts — "Sustained" and "Cooldown" table column headers are bare
-  jargon; a user can't tell what they do without opening the editor. → Add `Tooltip`
-  info on the two headers with one-line plain-English definitions.
+- [x] (med/S) Alerts — "Sustained" / "Cooldown" headers were bare jargon. **Shipped
+  iter 8** as a *rename*, not a tooltip: `Sustained` → `Hold for` (matches the editor's
+  own "Must hold for (minutes)" label). The proposed tooltip approach was reviewed
+  (3 SHIP) but the restraint critic blocked it and offered the simpler rename — which
+  also fixed Sam's touch caveat and added zero surface. `Cooldown` left as-is (the
+  critic deemed it self-explanatory next to a duration value). See Done.
 - [ ] (med/S) Pooler — the enable-confirmation copy ("Your apps then connect to
   …") can read as "the pooler reroutes them automatically"; users may not realize
   they must change their app's connection string, then debug phantom issues. →
@@ -77,6 +80,18 @@ Format per item:
 
 ## Done
 
+- [x] (med/S) Alerts — the `for_seconds` column header read "Sustained", bare jargon a
+  user couldn't decode without opening the editor (does "5m" mean wait-then-check or
+  must-hold-for-5m?). Renamed the header to **"Hold for"**, matching the rule editor's
+  own "Must hold for (minutes)" label — self-documenting next to its duration values,
+  consistent with the edit flow, zero new surface. Shipped iter 8. The original
+  backlog item proposed a `Tooltip` on both "Sustained" and "Cooldown"; the panel ran
+  3 SHIP (UX heuristics, Sam, Priya) but the **restraint critic blocked** the tooltip
+  approach and proposed the rename as the simpler fix (the "Cooldown" tooltip was
+  decoration; tooltip machinery + a hover-only affordance was overkill for one
+  ambiguous word, and hover fails on touch). Addressed the blocker in-iteration with
+  the rename rather than rejecting — strictly less surface than the shipped-by-3
+  version and exactly what the critic asked for. "Cooldown" left unchanged.
 - [x] (high/S) Alerts — enabled rules with no enabled notification channel fired
   silently into the void; nothing warned the user. Added a conditional warning
   `Callout` ("Your rules won't fire") between the channels card and the rules table,

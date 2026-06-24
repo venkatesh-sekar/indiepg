@@ -98,6 +98,13 @@ describe("Alerts", () => {
     expect(screen.queryByText("Your rules won't fire")).not.toBeInTheDocument();
   });
 
+  it("labels the for_seconds column 'Hold for' (self-documenting, matches the editor wording)", async () => {
+    stub({ rules: [rule({ name: "CPU high" })] });
+    render(<Alerts />);
+    await screen.findByText("CPU high");
+    expect(screen.getByRole("columnheader", { name: "Hold for" })).toBeInTheDocument();
+  });
+
   it("shows an empty state when there are no rules", async () => {
     stub({ rules: [] });
     render(<Alerts />);
