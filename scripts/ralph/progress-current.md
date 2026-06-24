@@ -5,6 +5,36 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · PgBouncer pooler — pg_authid SCRAM verifier query (enable-flow slice 5)
+Carved the next enable-flow slice off: the one input the auth_file installer
+(`EnsureUserlist`) still needed fed — the app roles' SCRAM verifiers, read from
+`pg_authid`. Added `Manager.RoleVerifiers(ctx, roleNames []string)
+([]RoleVerifier, error)` in `internal/pg/verifiers.go`:
+- `pg_authid.rolpassword` is superuser-only, so it ALWAYS goes through the
+  privileged psql path (`runPsql`, postgres OS user, peer auth) — never the
+  panel's non-superuser read pool. Mirrors `settings.go` showSetting's fallback.
+- Secret-adjacent: the function logs nothing; `runPsql` logs only argv (role
+  names, not secret), never stdout (the verifiers). The query carries no PASSWORD
+  literal so `Sensitive` stays correctly false.
+- Strict (auth_file is a boundary): every requested name is `ValidateIdentifier`-
+  gated AND `QuoteLiteral`'d into the IN-list (defense in depth — the name still
+  travels through SQL); a missing role is a NotFound naming it (can't pool a
+  role that isn't there); a role with NULL/empty rolpassword is a Validation
+  error, never silently dropped (a missing entry would lock that app out);
+  duplicate requests de-duped; deterministic sort by name.
+- SCRAM-vs-md5/plaintext is deliberately NOT checked here — `RenderUserlist` is
+  the single gate that refuses a non-SCRAM verifier (no downgrade). Verbatim
+  pass-through proven by test (an md5 verifier is returned, refused downstream).
+Tests verifiers_test.go: superuser-path (AsUser postgres, pg_authid + quoted
+literals in argv), verbatim non-SCRAM pass-through, request de-dup, missing-role
+NotFound, empty-verifier Validation, invalid-name rejected before any psql runs,
+requires-runner, empty-request. Reviewed (feature-dev:code-reviewer): no
+critical; applied the one Important finding — dropped a dead `ORDER BY rolname`
+(rows are parsed into a map and re-sorted in Go, so the SQL ordering was unused).
+Remaining for the enable flow: apt package install + service lifecycle
+(`systemctl enable --now` + SIGHUP reload/restart-fallback only when changed),
+then the UI toggle. Go gate green; web untouched.
+
 ## 2026-06-24 · band 3 (usability) · PgBouncer pooler — auth_file atomic installer (slice 4b)
 Carved the next install slice off the enable-flow item: the atomic `userlist.txt`
 installer, mirroring how the `.ini` installer (slice 3) split the atomic write out
