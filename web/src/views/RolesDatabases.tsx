@@ -6,7 +6,7 @@ import { ApiError, api } from "@/api/client";
 import { bytes } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import { Modal } from "@/components/Modal";
-import { TypedConfirmDialog } from "@/components/ConfirmDialog";
+import { ConfirmDialog, TypedConfirmDialog } from "@/components/ConfirmDialog";
 import { toast } from "sonner";
 import {
   Badge,
@@ -64,7 +64,8 @@ export function RolesDatabases() {
   const [dropTarget, setDropTarget] = useState<DropTarget>(null);
   const [dropBusy, setDropBusy] = useState(false);
   const [secrets, setSecrets] = useState<CredentialResult | null>(null);
-  const [rotateBusy, setRotateBusy] = useState<string | null>(null);
+  const [rotateTarget, setRotateTarget] = useState<string | null>(null);
+  const [rotateBusy, setRotateBusy] = useState(false);
 
   const reloadAll = () => {
     roles.reload();
@@ -101,15 +102,17 @@ export function RolesDatabases() {
     }
   };
 
-  const rotate = async (role: string) => {
-    setRotateBusy(role);
+  const doRotate = async () => {
+    if (!rotateTarget) return;
+    setRotateBusy(true);
     try {
-      const creds = await api.rotatePassword(role);
+      const creds = await api.rotatePassword(rotateTarget);
+      setRotateTarget(null);
       setSecrets(creds);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Could not rotate password.");
     } finally {
-      setRotateBusy(null);
+      setRotateBusy(false);
     }
   };
 
@@ -226,17 +229,10 @@ export function RolesDatabases() {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={rotateBusy === role.name}
-                          onClick={() => rotate(role.name)}
+                          disabled={rotateBusy}
+                          onClick={() => setRotateTarget(role.name)}
                         >
-                          {rotateBusy === role.name ? (
-                            <>
-                              <InlineSpinner data-icon="inline-start" />
-                              Rotating…
-                            </>
-                          ) : (
-                            "Rotate password"
-                          )}
+                          Rotate password
                         </Button>
                       ) : null}
                       {!role.is_superuser ? (
@@ -300,6 +296,27 @@ export function RolesDatabases() {
         busy={dropBusy}
         onConfirm={doDrop}
         onCancel={() => setDropTarget(null)}
+      />
+
+      {/* Rotate confirmation — rotating is not data loss (so no typed gate), but it
+          breaks live connections, so it gets the same "are you sure?" the page
+          promises for every action. */}
+      <ConfirmDialog
+        open={rotateTarget !== null}
+        title="Rotate this user’s password?"
+        tone="danger"
+        confirmLabel="Rotate password"
+        message={
+          <>
+            The current password for <strong>{rotateTarget}</strong> stops working
+            immediately. Any app connecting as this user will lose access until you
+            update its connection string with the new password — shown once, right
+            after.
+          </>
+        }
+        busy={rotateBusy}
+        onConfirm={doRotate}
+        onCancel={() => setRotateTarget(null)}
       />
 
       {/* One-time secrets */}

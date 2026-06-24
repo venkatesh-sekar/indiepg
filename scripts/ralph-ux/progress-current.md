@@ -3,6 +3,40 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 18 — Mode F (SHIP) (Roles: confirm before rotating a password) — stable_streak 0 → 0
+Ran a fresh discovery/convergence pass (5-agent Mode-S panel, same coverage as iters 15–17). **Four of
+five agents converged** ("no new high/med item") — but the Roles & Databases + Backups agent surfaced a
+**genuine new defect**: the per-row **"Rotate password"** button rotated immediately on a single unguarded
+click (`RolesDatabases.tsx:230` called `rotate()` directly). Rotating invalidates the old password
+server-side **instantly**, so any live app still using the old credential loses DB access until its
+connection string is updated — the **same blast radius** as the row's Delete button, which IS gated through
+a `TypedConfirmDialog` ("Any application using this user will immediately lose access"). The page header
+even promises *"Every action here is guided and confirmed,"* yet Rotate was the lone unguarded mutation,
+with zero warning anywhere about the breakage. **Verified against the code** before promoting (confirmed the
+direct onClick→rotate path and the asymmetry with the gated Delete). Promoted to Mode F as a real
+defect/asymmetry, not decoration.
+Fix (~20 lines, reuses the existing component): gated rotate behind the **plain `ConfirmDialog`** — NOT the
+typed-name gate, because rotation isn't data loss, so a proportionate "are you sure?" (tone danger) is the
+right altitude. Added a `rotateTarget` state mirroring `dropTarget`; the button onClick now
+`setRotateTarget(name)`; the dialog reads *"The current password for <name> stops working immediately. Any
+app connecting as this user will lose access until you update its connection string with the new password —
+shown once, right after."* Removed the now-redundant inline "Rotating…" button spinner (busy shows on the
+dialog Confirm). Added a test: clicking the row button does NOT call `rotatePassword`; only the dialog
+confirm does → then the existing one-time secrets modal appears.
+Review panel: **4 SHIP, zero blockers** — UX heuristics ("fixes a simultaneous Consistency + Error-Prevention
+failure on the most accident-prone action; plain confirm is the right altitude vs the typed gate reserved
+for data loss"); Sam ("I clicked Rotate half-curious and that one sentence stops me cold in exactly the right
+way — saves me from nuking my live app's DB connection"); Priya ("proportionate gate on an irreversible,
+connection-breaking op; plain confirm not type-the-name is the right call; one click, buries nothing, dumbs
+down nothing"); restraint critic ("creates the absent FIRST gate on an unguarded production-breaking action
+whose sibling of equal blast radius is already gated — categorically different from the prior
+Nth-redundant-warning rejects; genuine error-prevention, not hand-holding"). Gates: typecheck ✓, 143 tests ✓
+(142 + 1 new), build ✓ (dist regenerated + staged), go build ✓ (outside sandbox). **stable_streak stays 0**
+(shipped a real improvement). **LESSON:** convergence is provisional *again* — a high bar filters decoration,
+not looking; an *unguarded* destructive-by-effect action is the mirror image of the rejected "restating an
+existing warning" pattern, and adding the FIRST guard clears restraint easily (all four, incl. the critic,
+shipped it). Next iteration: run a fresh discovery/convergence pass.
+
 ## 2026-06-25 — iter 17 — Mode F (SHIP) (Navigation: reset scroll to top on route change) — stable_streak 2 → 0
 Ran what was meant to be the FINAL convergence check (a 5-agent Mode-S pass, identical coverage to
 iters 15/16). Four agents converged ("NO new high/med item") — but the nav/IA + first-run +

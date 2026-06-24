@@ -103,4 +103,27 @@ describe("RolesDatabases", () => {
     const confirm = within(dialog).getByRole("button", { name: /delete permanently/i });
     expect(confirm).toBeDisabled();
   });
+
+  it("confirms before rotating a password — the API only fires after the user agrees", async () => {
+    const rotateSpy = vi
+      .spyOn(api, "rotatePassword")
+      .mockResolvedValue({ result: { ok: true, message: "rotated" }, secrets: { app: "new-pw" } });
+    stub({ dbs: [], roles: [role("app", { can_login: true })] });
+    render(<RolesDatabases />);
+
+    const row = (await screen.findByText("app")).closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: /rotate password/i }));
+
+    // Clicking does NOT rotate yet — it opens a confirm that warns about the
+    // live-app consequence first.
+    expect(rotateSpy).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/stops working\s+immediately/i)).toBeInTheDocument();
+
+    // Only after confirming does the rotation actually run.
+    fireEvent.click(within(dialog).getByRole("button", { name: /rotate password/i }));
+    expect(rotateSpy).toHaveBeenCalledWith("app");
+    // The new credentials are then surfaced once.
+    expect(await screen.findByText("Save these now")).toBeInTheDocument();
+  });
 });

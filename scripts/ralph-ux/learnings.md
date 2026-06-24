@@ -129,6 +129,24 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
 
 ## Rules of thumb
 
+- **Adding the FIRST guard to an unguarded destructive-by-effect action is genuine error-prevention, not
+  the decoration the restraint critic kills — and it's the mirror image of the rejected items.** Iter 18:
+  Roles "Rotate password" rotated on a single unguarded click; rotation invalidates the old password
+  instantly, so any live app on it loses DB access until reconfigured — the SAME blast radius as the row's
+  Delete, which was already gated by a typed confirm, and the page even promises "Every action here is
+  guided and confirmed." All four reviewers (incl. the restraint critic) shipped a plain `ConfirmDialog`
+  on it. **Lesson:** the rejected items (iters 6/7/13/14) all ADDED a warning/copy that RESTATED something
+  already on screen, or piled an Nth gate onto an already-gated flow. The opposite case — there is NO
+  confirmation at all on a production-breaking, irreversible action — is the strong case for adding one.
+  Two tells that it clears restraint: (a) a *sibling action of equal blast radius* is already gated (the
+  asymmetry is itself a Consistency failure), and (b) the page makes a "guided/confirmed" promise this
+  action breaks. When both hold, add the missing first guard. **Altitude matters:** match the gate to the
+  consequence — rotation isn't data loss, so use the *plain* `ConfirmDialog` (one "are you sure?"), NOT the
+  type-the-name `TypedConfirmDialog` (reserved for irreversible data destruction like drops). A typed gate
+  here would be the modal wall Priya rejects; one confirm click is proportionate. Also: when you gate an
+  action behind a dialog, the dialog's own Confirm button carries the busy state — drop any now-redundant
+  inline button spinner so the change isn't purely additive.
+
 - **Convergence is provisional — a late discovery pass can still find a real bug; don't rubber-stamp
   the streak.** Iter 17 was the "final" check at stable_streak 2/3; four of five agents converged, but
   the nav/IA agent found a genuine defect (the `<main overflow-y-auto>` scroll container persists

@@ -10,11 +10,12 @@ Format per item:
 
 ## Open
 
-> **Status (iter 17):** the "final" convergence check did NOT converge — a fresh 5-agent Mode-S pass
-> surfaced a genuine new item (nav scroll position persisted across views). **Shipped it (4 SHIP).**
-> `stable_streak` reset to **0**. The remaining open items below are NEEDS-BACKEND (out of scope) or
-> low/watch (speculative). Next iteration: run a fresh discovery/convergence pass again — the
-> convergence clock restarts from 0.
+> **Status (iter 18):** the discovery/convergence pass did NOT converge — a fresh 5-agent Mode-S pass
+> (4 of 5 agents converged) surfaced a genuine new item (Roles: "Rotate password" was an unguarded
+> one-click destructive-by-effect action, while the sibling Delete is gated). **Shipped it (4 SHIP,
+> incl. restraint critic).** `stable_streak` stays **0**. The remaining open items below are
+> NEEDS-BACKEND (out of scope) or low/watch (speculative). Next iteration: run a fresh
+> discovery/convergence pass again — the convergence clock is still at 0.
 
 ### Quick wins (high/med payoff, S effort) — do these first
 - ~~(high/S) Roles & Databases — `dropBusy` disables every Delete button during a
@@ -117,6 +118,30 @@ Format per item:
   backend hint, which is out of scope).
 
 ## Done
+
+- [x] (high/S) Roles & Databases — the per-row **"Rotate password"** button rotated immediately on a
+  single unguarded click (`RolesDatabases.tsx:230` called `rotate()` directly). Rotating invalidates the
+  old password server-side **instantly**, so any live app still using the old credential loses DB access
+  until its connection string is updated — the **same blast radius** as the row's Delete button, which IS
+  gated by a `TypedConfirmDialog` with consequence copy. The page header even promises *"Every action here
+  is guided and confirmed,"* yet Rotate was the lone unguarded mutation, with zero warning anywhere about
+  the breakage. **Shipped iter 18.** Gated rotate behind the existing **plain `ConfirmDialog`** (NOT the
+  typed-name gate — rotation isn't data loss, so the proportionate level): added a `rotateTarget` state
+  mirroring `dropTarget`; the button's onClick now `setRotateTarget(name)`; dialog (tone danger, confirm
+  "Rotate password") reads *"The current password for <name> stops working immediately. Any app connecting
+  as this user will lose access until you update its connection string with the new password — shown once,
+  right after."* Removed the now-redundant inline "Rotating…" button spinner (busy shows on the dialog
+  Confirm). Reused the existing component, ~20 lines, +1 click; added a test asserting the API does NOT
+  fire on the row-button click, only after the dialog confirm. **4 SHIP, zero blockers** — UX heuristics
+  (fixes a simultaneous Consistency + Error-Prevention failure; plain confirm is the right altitude vs the
+  typed gate); Sam ("that one sentence stops me cold in the right way — saves me from nuking my live app");
+  Priya ("proportionate gate on an irreversible, connection-breaking op; plain confirm not type-the-name is
+  the right call; one click, buries nothing"); restraint critic ("creates the absent FIRST gate on an
+  unguarded production-breaking action whose sibling of equal blast radius is already gated — categorically
+  different from the prior Nth-redundant-warning rejects; genuine error-prevention"). Surfaced by the
+  iter-18 Roles/Backups convergence agent (the other 4 of 5 converged); verified against the code before
+  promoting. Gates: typecheck ✓, 143 tests ✓ (142 + 1 new), build ✓ (dist regenerated + staged), go build ✓
+  (outside sandbox). stable_streak stays 0.
 
 - [x] (med/S) Navigation/IA — the routed view renders inside a `<main className="… overflow-y-auto …">`
   that is its OWN scroll container. With client-side routing only the `<Outlet/>` children swap on
