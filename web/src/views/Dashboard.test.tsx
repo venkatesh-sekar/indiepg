@@ -96,6 +96,10 @@ describe("Dashboard refresh-failure surfacing", () => {
     // The Postgres "Version" row was removed: the backend never populates it, so
     // it always rendered an empty "—" that read as missing/partial data.
     expect(screen.queryByText("Version")).toBeNull();
+    // "Connections" is surfaced exactly once — the tinted saturation gauge in the
+    // Server card. The duplicate plain row in the Postgres card was dropped (same
+    // metric, two formats, no extra signal).
+    expect(screen.getAllByText("Connections")).toHaveLength(1);
     // No backup yet → the warn callout points the operator at Backups.
     expect(screen.getByText(/No successful backup yet/)).toBeInTheDocument();
   });

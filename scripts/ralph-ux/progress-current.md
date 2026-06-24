@@ -3,6 +3,31 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 10 — Mode F (SHIP) (Dashboard: drop the duplicate "Connections" row)
+Top quick-win, consistency/minimalism fix. The Dashboard rendered the connections metric
+(active / max_connections) **twice on one screen**: a plain `Kv` row in the **Postgres**
+card (`3 / 100 (3%)`, no colour) and a tinted `StatCard` saturation gauge in the **Server**
+card (`3/100`, sub `3%`, warn/danger tint as connPct crosses 75/90, sitting beside the
+CPU/Memory/Disk gauges). Same number in two slightly different formats added cognitive load
+and a "wait, do these disagree / is one more correct?" hesitation, with no extra signal.
+Removed the Postgres-card row (−4 rendered lines + an intent comment so it isn't re-added)
+and kept the single tinted Server-card gauge — strictly more informative (it warns *before*
+you hit the connection limit) and grouped with the other "% of capacity" gauges. The Postgres
+card stays coherent and distinct: Status + cache hit ratio, TPS, deadlocks, replication lag —
+all DB-internal health. Added a `getAllByText("Connections").toHaveLength(1)` invariant to the
+Dashboard test. Considered the purist objection (max_connections is a Postgres *setting*, so
+connections "belongs" in the Postgres card) but both the technical persona (Priya) and the
+heuristics reviewer read connection saturation as a resource-exhaustion symptom (same family
+as CPU/disk), not a config fact — the tinted gauge is the right single home. Review panel:
+**4 SHIP, zero blockers** (UX heuristics — kills a simultaneous Consistency + Minimalism
+violation, kept copy strictly dominates; Sam — "two identical numbers made me second-guess
+whether they meant the same thing; keep the coloured one that actually warns me"; Priya —
+"one metric, one home; the plain row was a dimmer colourless copy"; restraint critic — "genuine
+duplicate removal, the opposite of over-design; the kept gauge strictly dominates the deleted
+row"). Gates: typecheck ✓, 138 tests ✓, build ✓ (dist regenerated + staged), go build ✓
+(outside sandbox — snap-confine blocks it in-sandbox). stable_streak stays 0 (shipped a real
+improvement). Next top item: Backups + Settings co-location (the canonical seed item, high/M).
+
 ## 2026-06-25 — iter 9 — Mode F (SHIP) (Pooler: enable-confirm copy says you must repoint apps)
 Top quick-win, honest-state copy fix. The "Enable the connection pooler?" confirm dialog
 closed with "Your apps then connect to <addr> instead of Postgres directly" — which reads

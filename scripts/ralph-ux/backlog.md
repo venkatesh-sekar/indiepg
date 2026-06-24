@@ -39,9 +39,10 @@ Format per item:
   connection string to point at <addr>…". Also reconciled the adjacent bullet
   ("Route N roles through it" → "Allow N roles to connect through the pooler") which
   Sam flagged as contradicting the new paragraph. 4 SHIP. See Done.
-- [ ] (med/S) Dashboard — "Connections" is shown twice (Postgres card + Server card)
-  with slightly different formatting, adding cognitive load with no extra signal. →
-  Keep it once (Server/host card); drop the duplicate from the Postgres card.
+- [x] (med/S) Dashboard — "Connections" was shown twice (Postgres card + Server card)
+  with slightly different formatting. **Shipped iter 10**: dropped the plain Postgres-card
+  `Kv` row, kept the tinted Server-card saturation gauge (warns warn/danger as it fills,
+  grouped with CPU/Mem/Disk). 4 SHIP. See Done.
 
 ### Higher-effort, clear payoff
 - [ ] (high/M) Backups + Settings — backup **config** (S3 destination, retention,
@@ -82,6 +83,18 @@ Format per item:
 
 ## Done
 
+- [x] (med/S) Dashboard — the "Connections" metric (active/max) was rendered twice on
+  one screen: a plain `Kv` row in the **Postgres** card (`3 / 100 (3%)`, no tint) and a
+  tinted saturation gauge in the **Server** card (`3/100`, sub `3%`, warn/danger as
+  connPct crosses 75/90, beside CPU/Mem/Disk). Same number, two formats — cognitive load
+  with no extra signal, and a "do these disagree?" moment. Dropped the Postgres-card row;
+  kept the single tinted Server-card gauge (strictly more informative — it warns before
+  the limit, and sits with the other "% of capacity" gauges). Postgres card stays coherent
+  (Status + cache hit, TPS, deadlocks, replication lag — all DB-internal health). Added a
+  `getAllByText("Connections").toHaveLength(1)` invariant to the test. Shipped iter 10
+  (4 SHIP — UX heuristics, Sam, Priya, restraint critic; the critic confirmed it's genuine
+  duplicate removal, the opposite of over-design, and the kept gauge strictly dominates the
+  deleted row).
 - [x] (med/S) Pooler — the enable-confirmation dialog's closing paragraph read "Your
   apps then connect to <addr> instead of Postgres directly", which can be read as the
   pooler auto-rerouting apps. A user could enable it, see no change, and debug a

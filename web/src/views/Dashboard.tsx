@@ -86,10 +86,9 @@ export function Dashboard() {
               <Kv label="Status">
                 {pg.running ? <Badge tone="ok">Running</Badge> : <Badge tone="danger">Stopped</Badge>}
               </Kv>
-              <Kv label="Connections">
-                {count(s.connections)} / {count(s.max_connections)}{" "}
-                <span className="text-muted-foreground">({pct(connPct)})</span>
-              </Kv>
+              {/* Connections lives once, in the Server card below, as a tinted
+                  saturation gauge alongside CPU/Memory/Disk — keeping it here too
+                  was a duplicate with no extra signal. */}
               <Kv label="Cache hit ratio">{ratioPct(s.cache_hit_ratio)}</Kv>
               <Kv label="Transactions / sec">{s.tps.toFixed(1)}</Kv>
               <Kv label="Deadlocks">{count(s.deadlocks)}</Kv>
