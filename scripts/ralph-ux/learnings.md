@@ -77,6 +77,27 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
 
 ## Rules of thumb
 
+- **For an action whose effect requires manual follow-up, the confirm copy must name
+  the follow-up explicitly — passive "X then happens" framing implies automation.**
+  Iter 9: the pooler-enable confirm said "Your apps then connect to <addr> instead of
+  Postgres directly." Enabling PgBouncer does *not* reroute anything; the user must edit
+  each app's connection string. The passive "your apps then connect…" reads as the system
+  doing it for you → user enables, sees no change, debugs a phantom. Fix: lead with the
+  negation of the misconception ("Enabling won't move any app over by itself") then state
+  the concrete manual step. **Lesson:** when a feature configures a *capability* the user
+  must then *opt into* (repoint a connection string, flip an env var), say so in the
+  imperative; don't describe the end-state as if it arrives automatically.
+- **Review the whole dialog/section for internal consistency, not just the sentence you
+  changed.** Iter 9: my paragraph fix was clean and 3 reviewers shipped it outright, but
+  Sam (the non-technical persona) caught that an *adjacent, unchanged* bullet — "Route N
+  roles through it" — still implied auto-routing and now contradicted my new "you must
+  repoint" paragraph. Fixing one misleading sentence can expose/sharpen a neighboring one.
+  Reword was cheap, clearly right, and strengthened the same fix, so I took it in-iteration
+  (bullet → "Allow N roles to connect through the pooler", which is also more accurate:
+  enabling just adds the role to the userlist). **Lesson:** when you correct a mental-model
+  bug in copy, scan the surrounding copy in the same view for other phrasings that assert
+  the old (wrong) model — they'll now clash. Reconcile them together.
+
 - **Prefer a clearer label over a tooltip when the column header itself is the jargon.**
   Iter 8: the "Sustained" header was ambiguous, so the backlog proposed a `Tooltip`
   definition on it (and on "Cooldown"). The panel shipped 3–1, but the restraint critic

@@ -407,15 +407,18 @@ function DisabledView({
                 Start the PgBouncer service, listening on <code>{address}</code>.
               </li>
               <li>
-                Route {selected.length} role{selected.length === 1 ? "" : "s"}{" "}
-                through it: <strong>{selected.join(", ")}</strong>.
+                Allow {selected.length} role{selected.length === 1 ? "" : "s"} to
+                connect through the pooler:{" "}
+                <strong>{selected.join(", ")}</strong>.
               </li>
             </ul>
             <p>
-              Your apps then connect to <code>{address}</code> instead of Postgres
-              directly. This does <strong>not</strong> restart Postgres and does
-              not touch your data. You can keep connecting directly to Postgres as
-              well.
+              Enabling won&apos;t move any app over by itself. To use the pooler,
+              change an app&apos;s connection string to point at{" "}
+              <code>{address}</code> in place of the direct Postgres host. Apps you
+              don&apos;t repoint keep connecting to Postgres directly, unchanged.
+              This does <strong>not</strong> restart Postgres and does not touch
+              your data.
             </p>
             {error ? <ErrorNotice error={error} /> : null}
           </>

@@ -145,12 +145,21 @@ describe("PoolerPanel — disabled", () => {
     expect(screen.getByText("Enable the connection pooler?")).toBeInTheDocument();
     expect(screen.getByText(/Install the PgBouncer package/)).toBeInTheDocument();
     expect(screen.getByText(/Start the PgBouncer service/)).toBeInTheDocument();
-    expect(screen.getByText(/Route 1 role/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Allow 1 role to connect through the pooler/),
+    ).toBeInTheDocument();
     expect(
       screen.getByText((_, el) => el?.tagName === "STRONG" && el.textContent === "app"),
     ).toBeInTheDocument();
     // Honest about the blast radius: no Postgres restart, no data touched.
     expect(screen.getByText(/does not touch your data/i)).toBeInTheDocument();
+    // Explicit that the user must repoint apps — the pooler does not reroute them.
+    expect(
+      screen.getByText(/won't move any app over by itself/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/change an app's connection string/i),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Enable pooler" }));
 

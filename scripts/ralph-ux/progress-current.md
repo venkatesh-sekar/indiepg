@@ -3,6 +3,32 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 9 — Mode F (SHIP) (Pooler: enable-confirm copy says you must repoint apps)
+Top quick-win, honest-state copy fix. The "Enable the connection pooler?" confirm dialog
+closed with "Your apps then connect to <addr> instead of Postgres directly" — which reads
+as if enabling PgBouncer auto-reroutes apps. It doesn't: enabling only installs/starts the
+service and adds chosen roles to the userlist; the user must manually edit each app's
+connection string. A misread leaves the user enabling it, seeing no change, and debugging a
+phantom. Reworded to lead with **"Enabling won't move any app over by itself"** and spell out
+the manual step ("change an app's connection string to point at <addr> in place of the direct
+Postgres host. Apps you don't repoint keep connecting to Postgres directly, unchanged"),
+preserving the "does not restart Postgres / does not touch your data" honesty line. Pure copy
+reword in an existing dialog — no new UI/controls. Added two assertions to the enable test
+(the "won't move any app" + "change an app's connection string" copy). Review panel: **3 SHIP**
+straight up (UX heuristics — "classic Error-Prevention failure, fixed at the moment it
+matters"; Priya — "corrects the one mechanical fact I'd otherwise get wrong, respects that I
+know what a pooler is"; restraint critic — "a word swap that fixes a genuine 'why did nothing
+happen' trap, earns itself"). **Sam REJECTED** — not on my paragraph but on an adjacent
+contradiction: the bullet "Route N roles through it" implied the panel auto-routes, clashing
+with the new "you must repoint" paragraph. Cheap + clearly-right + it strengthens this very
+fix, so per the contract I addressed it in-iteration rather than rejecting: reworded the
+bullet to **"Allow N roles to connect through the pooler"** (also more accurate — enabling
+just adds the role to the userlist) and updated its test assertion. Re-ran Sam → SHIP. Panel
+now 4 SHIP, no blockers. Gates: typecheck ✓, 138 tests ✓, build ✓ (dist regenerated +
+staged), go build ✓ (outside sandbox — snap-confine blocks it in-sandbox). stable_streak
+stays 0 (shipped a real improvement). Next top item: Dashboard — "Connections" is shown
+twice (Postgres card + Server card); drop the duplicate.
+
 ## 2026-06-25 — iter 8 — Mode F (SHIP) (Alerts: rename "Sustained" header → "Hold for")
 Took the top quick-win: the rules-table column header "Sustained" is bare jargon — a user
 scanning a value like "instant"/"5m" can't tell whether it means "wait then check" or "the

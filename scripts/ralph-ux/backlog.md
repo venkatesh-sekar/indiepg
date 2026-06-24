@@ -33,10 +33,12 @@ Format per item:
   (3 SHIP) but the restraint critic blocked it and offered the simpler rename — which
   also fixed Sam's touch caveat and added zero surface. `Cooldown` left as-is (the
   critic deemed it self-explanatory next to a duration value). See Done.
-- [ ] (med/S) Pooler — the enable-confirmation copy ("Your apps then connect to
-  …") can read as "the pooler reroutes them automatically"; users may not realize
-  they must change their app's connection string, then debug phantom issues. →
-  Reword to make it explicit that apps **must** be reconfigured to the pooler address.
+- [x] (med/S) Pooler — the enable-confirmation copy ("Your apps then connect to
+  …") read as "the pooler reroutes them automatically". **Shipped iter 9**: reworded
+  to "Enabling won't move any app over by itself. To use the pooler, change an app's
+  connection string to point at <addr>…". Also reconciled the adjacent bullet
+  ("Route N roles through it" → "Allow N roles to connect through the pooler") which
+  Sam flagged as contradicting the new paragraph. 4 SHIP. See Done.
 - [ ] (med/S) Dashboard — "Connections" is shown twice (Postgres card + Server card)
   with slightly different formatting, adding cognitive load with no extra signal. →
   Keep it once (Server/host card); drop the duplicate from the Postgres card.
@@ -80,6 +82,20 @@ Format per item:
 
 ## Done
 
+- [x] (med/S) Pooler — the enable-confirmation dialog's closing paragraph read "Your
+  apps then connect to <addr> instead of Postgres directly", which can be read as the
+  pooler auto-rerouting apps. A user could enable it, see no change, and debug a
+  phantom problem. Reworded to lead with "Enabling won't move any app over by itself"
+  and spell out the manual step ("change an app's connection string to point at
+  <addr>… Apps you don't repoint keep connecting to Postgres directly, unchanged"),
+  preserving the "no restart / no data touched" honesty line. During review Sam caught
+  that the adjacent bullet "Route N roles through it" still implied auto-routing and
+  contradicted the new paragraph; addressed in-iteration by rewording it to "Allow N
+  roles to connect through the pooler" (accurate — enabling just adds the role to the
+  pooler's userlist, it doesn't move connections). Shipped iter 9 (4 SHIP — UX
+  heuristics, Sam (after the bullet fix), Priya, restraint critic; restraint + Priya
+  both noted mild verbosity but neither blocked, calling the old copy a genuine
+  "why did nothing happen" trap).
 - [x] (med/S) Alerts — the `for_seconds` column header read "Sustained", bare jargon a
   user couldn't decode without opening the editor (does "5m" mean wait-then-check or
   must-hold-for-5m?). Renamed the header to **"Hold for"**, matching the rule editor's
