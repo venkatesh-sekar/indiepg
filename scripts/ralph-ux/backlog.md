@@ -10,20 +10,35 @@ Format per item:
 
 ## Open
 
-> **Status (iter 25):** backlog actionable-empty after iter 24 (only the NEEDS-BACKEND backup-badge item +
-> low/watch nits). Ran a fresh **Mode-S discovery/convergence pass** (5 agents, same coverage as iters 15–24,
-> HIGH bar + full shipped/rejected digest). **All five views converged.** Four agents hard-converged; the
-> Roles/Backups agent floated **one borderline candidate** — gate the Restore… / Test-a-restore /
-> Deep-restore-test buttons on `hasNoBackups` — and **self-rated it medium-LOW**, saying "CONVERGED if the bar
-> is clearly high/medium." **Self-rejected on inspection** (decisive evidence, no panel): the "no backups" state
-> is already shown twice (the `BackupStatusSummary` danger Callout *"No backups yet — your data is not
-> protected"* at `Backups.tsx:488` + the Backup-history `EmptyState` at `:256`), so the proposed button titles
-> restate it a third time (rejected iter-6/7/13 pattern); `RestoreModal` is a typed-confirm flow so an empty
-> repo yields a clear server error (no data harm); the restore-test buttons are read-only. The other finds
-> (Pooler EnabledView omits routed roles; Migrate/Settings stale "configure in Settings" hint) are
-> **backend-coupled → out of scope.** **stable_streak increments 0 → 1.** Two more clean passes → write
-> COMPLETE.md and stop. Next iteration: another Mode-S convergence check (don't manufacture low-value work to
-> avoid converging — converging early is a win).
+> **Status (iter 26):** backlog actionable-empty (NEEDS-BACKEND backup-badge item + low/watch nits). Ran a fresh
+> **Mode-S discovery/convergence pass** (5 agents, same coverage as iters 15–25, HIGH bar + full shipped/rejected
+> digest). **All five views converged.** Three agents hard-converged (Dashboard+Query; Alerts+Migrate;
+> Settings+Tuning+Pooler+Login — the last correctly self-rejected the low/watch lockout-duration copy nit on
+> restraint, noting only that the backend *does* send `locked_until`, which keeps it a parked low item). Two
+> agents floated **one candidate each, both FALSE on code inspection** — self-rejected, no panel (iter-7/13
+> precedent):
+> - **Backups RestoreModal — gate "Restore now" on a non-empty datetime in PITR mode** (Roles/Backups agent,
+>   self-rated HIGH/S on a "silent restore-to-latest" framing). **FALSE PREMISE:** the datetime `Input`
+>   (`Backups.tsx:885`) has `required` and the button (`:835`) is a real `type="submit" form="restore-form"`, so
+>   HTML5 constraint validation **blocks** the submit on an empty rendered required field — it's neither silent
+>   nor submittable. The agent found `required` and rationalized past it. Stripped of the false framing it's
+>   "duplicate a native required-gate with a disabled button," a sweeping consistency preference restraint kills.
+> - **Layout sidebar — add `tooltip={item.label}` to nav buttons for the collapsed state** (nav/IA agent,
+>   self-rated High/S, "affects every mobile user"). **FALSE PREMISE:** `<Sidebar>` uses no `collapsible` prop →
+>   default `"offcanvas"` (`ui/sidebar.tsx:154`), where a collapsed sidebar slides fully off-screen (no icon
+>   rail), and mobile renders a Sheet with **full labels** (`:181`). The tooltip is gated `hidden={state !==
+>   "collapsed" || isMobile}` (`:533`) → zero visible effect anywhere in this app's mode.
+>
+> **stable_streak increments 1 → 2.** One more clean pass → write COMPLETE.md and stop. Next iteration: the final
+> Mode-S convergence check (don't manufacture low-value work to avoid converging — converging early is a win).
+>
+> ---
+> _Prior status (iter 25): a fresh 5-agent Mode-S pass. **All five views converged.** Four hard-converged; the
+> Roles/Backups agent floated one borderline candidate — gate the Restore…/Test-a-restore/Deep-restore-test
+> buttons on `hasNoBackups` — self-rated medium-LOW and self-rejected on inspection (the "no backups" state is
+> already shown twice: `BackupStatusSummary` danger Callout `Backups.tsx:488` + Backup-history `EmptyState`
+> `:256`; `RestoreModal` is typed-confirm so an empty repo yields a clear server error; restore-tests are
+> read-only). Other finds backend-coupled → out of scope. stable_streak 0 → 1._
 >
 > ---
 > _Prior status (iter 23): a fresh 5-agent Mode-S pass. **All five views converged.** Three candidates

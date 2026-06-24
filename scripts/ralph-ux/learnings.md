@@ -8,6 +8,45 @@ loop doesn't re-propose them. Newest at top.
 These surfaced in the Mode-S audit (iter 1) but were dropped before reaching the
 backlog — they violate the loop's anti-over-design / one-view-per-iteration rules.
 
+- **Backups RestoreModal: gate the "Restore now" button on a non-empty datetime when "Point in time" mode is
+  selected, to stop a "silent fallback to the latest backup."** Surfaced iter 26 by the Roles/Backups audit
+  agent, **self-rated HIGH/S** on a "silent destructive wrong-action" framing. **Self-rejected on a FALSE
+  premise** (decisive code evidence, no panel — iter-7/13 precedent). The premise — that selecting PITR with an
+  empty datetime *silently* restores the latest backup — **cannot happen**: the datetime `Input`
+  (`Backups.tsx:885`) carries `required`, and the "Restore now" button (`:835`) is a real
+  `type="submit" form="restore-form"` control, so HTML5 **constraint validation runs on submit** and an empty,
+  *rendered* required field **blocks** the submission and shows the native "please fill out this field" prompt
+  (no `formNoValidate`, no bypass via Enter-in-confirm — that submits the form too, same validation). When mode
+  is `"latest"` the datetime field isn't rendered at all (`:877` conditional), so no validation fires and
+  `target=null` → latest is the *intended* path. The agent itself **found** `required` works ("Input spreads
+  `{...props}`, so `required` passes through ✓") and then rationalized past it ("HTML5 is insufficient UX").
+  Stripped of the false "silent wrong-action / data-recovery correctness" framing, the proposal is just
+  "duplicate the native required-gate with a `disabled` button" — a generic "prefer a disabled button over
+  native `required`" stance that applies to *every* required field in the app, i.e. a sweeping consistency
+  preference at marginal payoff, which the restraint critic kills. **Lesson:** before promoting a "silent
+  wrong-action on a destructive op" finding, check whether a native HTML constraint (`required`, `min`/`max`,
+  `pattern`) on a *rendered* field already blocks the submit — if it does, it is **not silent** and **not
+  submittable**, and re-gating it with a disabled button is the iter-7/13 "restate an already-enforced
+  guarantee" redundancy, not error-prevention. A finding's HIGH rating evaporates when its load-bearing word
+  ("silent") is false.
+
+- **Layout sidebar: add `tooltip={item.label}` to each `SidebarMenuButton` so nav labels show when the sidebar
+  is collapsed.** Surfaced iter 26 by the nav/IA audit agent, **self-rated High/S**, claiming it "affects every
+  user on mobile" + desktop users who collapse the rail. **Self-rejected on a FALSE premise** (decisive code
+  evidence, no panel). The shadcn `<Sidebar>` in `Layout.tsx` (`:79`) passes **no `collapsible` prop** → the
+  default is **`"offcanvas"`** (`ui/sidebar.tsx:154`), in which a *collapsed* sidebar slides **entirely
+  off-screen** (`:221` `group-data-[collapsible=offcanvas]:w-0`, `:232` translate off-canvas) — there is **no
+  icon-rail state**, so the menu buttons are never rendered as icon-only-and-visible. On **mobile** the sidebar
+  renders as a **Sheet showing the full `<span>{label}</span>` text** (`:181 if (isMobile)`), not icons — so the
+  "every mobile user" claim is flatly wrong. The sidebar tooltip is gated `hidden={state !== "collapsed" ||
+  isMobile}` (`:533`), so `tooltip=` only ever attaches to buttons that, in this app's offcanvas mode, are
+  off-screen/non-interactive when collapsed → **zero visible effect anywhere**. **Lesson:** a shadcn capability
+  (here `SidebarMenuButton`'s `tooltip`) is only worth wiring if the *mode that activates it* is actually in
+  use. `tooltip` is meaningful **only** under `collapsible="icon"` (the icon-rail); under the default
+  `"offcanvas"` the collapsed sidebar disappears wholesale and the prop is dead, and mobile shows full labels in
+  a Sheet regardless. Verify the component's active variant/mode before proposing a prop that only matters in a
+  different one.
+
 - **Backups: disable the Restore… / Test-a-restore / Deep-restore-test buttons when there are zero backups
   (`history.data.backups.length === 0`), with a "run a backup first" title.** Surfaced iter 25 by the
   Roles/Backups audit agent, which itself rated it medium-**low** and said "CONVERGED if the bar is clearly

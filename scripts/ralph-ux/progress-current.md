@@ -3,6 +3,47 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 26 — Mode S (convergence check) — stable_streak 1 → 2
+Backlog actionable-empty (NEEDS-BACKEND backup-badge item + low/watch nits — Query write-detector, Login
+lockout-duration copy, Settings grouping). Per the contract, ran a fresh **Mode-S discovery/convergence pass**
+rather than chew the low-value items: a 5-agent parallel panel, each given its view(s) + the full
+already-shipped/already-rejected digest + a deliberately HIGH bar. Coverage identical to iters 15–25:
+(1) Dashboard+Query, (2) Roles & Databases+Backups+BackupStorageForm, (3) Alerts+Migrate,
+(4) Settings+DatabaseTuning+Pooler+Login, (5) nav/IA+first-run+cross-view consistency. **All five views
+converged.** Three agents hard-converged (Dashboard+Query; Alerts+Migrate; Settings+Tuning+Pooler+Login — the
+last correctly self-rejected the low/watch "Try again later" lockout-duration copy nit on restraint, noting
+only that the backend *does* send `locked_until`, which keeps it a parked low item, not a promotion). Two agents
+floated **one candidate each, and BOTH collapsed as FALSE PREMISES on code inspection** — self-rejected with
+decisive evidence, no panel (iter-7/13 precedent):
+- **Backups RestoreModal — gate "Restore now" on a non-empty datetime when PITR mode is selected** (Roles/Backups
+  agent, **self-rated HIGH/S** on a "silently restores latest instead of the requested point-in-time" framing).
+  **FALSE.** The datetime `Input` (`Backups.tsx:885`) has `required` and the "Restore now" button (`:835`) is a
+  real `type="submit" form="restore-form"` control → HTML5 constraint validation **blocks** submission on an
+  empty *rendered* required field and shows the native prompt; it is neither silent nor submittable (Enter in the
+  confirm field submits the form too → same validation; no `formNoValidate`). When mode is `"latest"` the field
+  isn't rendered (`:877`), so `target=null`/latest is the *intended* path. The agent itself found `required`
+  works and then rationalized "HTML5 is insufficient UX." Stripped of the false "silent destructive wrong-action"
+  framing, it reduces to "duplicate a native required-gate with a `disabled` button" — a generic
+  prefer-disabled-over-required preference applying to every required field, restraint-negative.
+- **Layout sidebar — add `tooltip={item.label}` to each `SidebarMenuButton` for the collapsed state** (nav/IA
+  agent, **self-rated High/S**, "affects every user on mobile"). **FALSE.** `<Sidebar>` passes no `collapsible`
+  prop → default `"offcanvas"` (`ui/sidebar.tsx:154`): a collapsed sidebar slides **fully off-screen** (`:221`
+  `w-0`), there is **no icon-rail state**, and on **mobile** the sidebar is a **Sheet showing full labels**
+  (`:181`) — not icons. The sidebar tooltip is gated `hidden={state !== "collapsed" || isMobile}` (`:533`), so
+  the prop would attach to off-screen/non-interactive buttons → **zero visible effect anywhere** in this app's
+  mode. The "every mobile user" claim is flatly wrong.
+No code shipped, docs-only commit, no hard gates needed. Per the contract (backlog actionable-empty AND a fresh
+discovery pass surfaced no high/med item) this is the **second `stable_streak` increment → 2/3**. One more clean
+convergence pass → write COMPLETE.md and stop the loop. **LESSONS:** (1) before promoting a "silent wrong-action
+on a destructive op," check whether a native HTML constraint (`required`/`min`/`pattern`) on a *rendered* field
+already blocks the submit — if it does, it's not silent and not submittable, and a disabled-button re-gate is
+iter-7/13 redundancy; a HIGH rating evaporates when its load-bearing word ("silent") is false. (2) A shadcn
+capability (`SidebarMenuButton`'s `tooltip`) is only worth wiring if the *mode that activates it* is in use —
+it's live under `collapsible="icon"` only; under the default `"offcanvas"` the collapsed sidebar disappears
+wholesale and the prop is dead, and mobile shows full labels in a Sheet. Verify the active variant before
+proposing a variant-specific prop. Next iteration: the final Mode-S convergence check (don't manufacture
+low-value work to avoid converging — converging early is a win).
+
 ## 2026-06-25 — iter 25 — Mode S (convergence check) — stable_streak 0 → 1
 Backlog actionable-empty after iter 24 (only the NEEDS-BACKEND backup-badge item + low/watch nits — Query
 write-detector, Login lockout-duration copy, Settings grouping). Per the contract, ran a fresh **Mode-S
