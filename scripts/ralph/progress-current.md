@@ -5,6 +5,39 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · PgBouncer pooler — pgbouncer.ini render (slice 2)
+Second PgBouncer slice, mirroring how `RecommendTuning` was built (pure render
+before any install). Added `internal/pgbouncer/config.go`:
+- `RenderConfig(ConfigParams)` renders the full pgbouncer.ini from a
+  `PoolRecommendation` (slice 1) plus host bits (pg/listen ports, auth_file,
+  pidfile, admin user), every field safe-defaulted so a zero-valued
+  `ConfigParams` (only `Pool` set) still renders a valid config.
+- **Security pins (non-configurable):** `listen_addr` and the `[databases]`
+  upstream host are both hardcoded `127.0.0.1` — the pooler is loopback-only and
+  never widened. `[databases] * = host=127.0.0.1 port=<pg>` catch-all. The
+  hardened constants (auth_type scram-sha-256, pool_mode transaction,
+  server_reset_query DISCARD ALL) come straight from pool.go — never weakened.
+- **Deterministic** (fixed line order) so an unchanged config renders
+  byte-identical and the future installer can skip a needless rewrite + reload.
+- **Injection-hardened:** every interpolated value is validated against control
+  chars, U+2028/U+2029 line separators, AND `#`/`;` (pgbouncer.ini comment
+  starters — an embedded `;` would silently truncate a value to a comment).
+  Bad/colliding ports rejected; a zero/negative pool refused (a `0`
+  server_idle_timeout disables idle reclamation → server slots leak forever).
+- `ConfigMarker` first-line ownership guard (mirrors pgBackRest) + `HasManagedMarker`
+  so the install slice never clobbers an operator/distro-written file.
+- **No install/file-write yet** — atomic write as owner `pgbouncer` perms 0640
+  lands in the next (install/enable) slice.
+- Tests (`config_test.go`): default structure + all hardened settings, custom
+  params interpolated, never-widens/weakens (no 0.0.0.0/`::`/trust/any/plain),
+  determinism, injection rejection (newline/CR/U+2028/`;`/`#`), port validation
+  + collision, zero/negative pool rejection, marker recognition incl. mid-file
+  false-positive.
+Reviewed (feature-dev:code-reviewer): applied the one critical (validate the
+`Pool` numbers) + all 3 important findings (reject `#`/`;`, add `::` to the
+never-widen test, add a zero-pool rejection test). Gates: gofmt clean, go vet,
+go test ./..., CGO_ENABLED=0 build — all green; no `web/` touched.
+
 ## 2026-06-24 · band 3 (usability) · PgBouncer pooler — pure pool-sizing math (slice 1) + drop the dead provision-flow item
 Two band-3 items remained. First, **dropped** "(a) provision flow shows computed
 best-defaults up front": provisioning is CLI-driven (`indiepg install`) and the
