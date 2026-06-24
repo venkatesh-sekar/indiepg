@@ -5,6 +5,46 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band 3 (usability) · PgBouncer pooler — pure pool-sizing math (slice 1) + drop the dead provision-flow item
+Two band-3 items remained. First, **dropped** "(a) provision flow shows computed
+best-defaults up front": provisioning is CLI-driven (`indiepg install`) and the
+panel has NO provision route (App.tsx), so the item has no surface — its intent
+is already served read-only by the iter-31 "Database tuning (host-sized)" card,
+which shows the computed defaults per profile labeled by effect.
+
+Then started the **largest remaining band-3 item — the opt-in PgBouncer pooler**
+— with its smallest atomic, fully-testable slice, mirroring exactly how
+`RecommendTuning` was built (pure math first, then apply, then UI over several
+iterations). Added `internal/pgbouncer/pool.go`:
+- `RecommendPool(pgMaxConnections, profile)` faithfully ports the `sm` CLI pool
+  math (verified against /primary01/git/server-management/.../pgbouncer.py and
+  DEFAULTS.md): available = max_conn − 5 reserved-for-admin; default_pool_size =
+  int(available × util) floored at 20 (util oltp .80 / mixed .70 / olap .60);
+  min = default/4 (floor 5); reserve = default/5 (floor 5); max_client_conn =
+  default × multiplex (20/10/5); server_idle_timeout 300 (oltp/mixed) / 600 (olap).
+- Pure & total: reuses `pg.WorkloadProfile` (unknown → Mixed, no silent mis-size);
+  max_conn < 1 clamped; panic-free on degenerate input. Touches no host/PG.
+- Fixed safe defaults are hardcoded constants — `auth_type=scram-sha-256`,
+  `pool_mode=transaction`, `server_reset_query=DISCARD ALL` (never trust/plain,
+  never weakened) — exposed via `SettingsMap()` for a future read-only preview.
+- Tests (`pool_test.go`): hand-computed table (mixed/oltp/olap + floor box),
+  invariants across small→large boxes (floors fire, sub-pools ≥5, max_client =
+  default×multiplex, pool never exceeds PG capacity once above the floor, idle
+  per profile), degenerate/negative + unknown-profile, and SettingsMap asserting
+  the hardened constants + stringified numbers.
+
+Why: an indie hacker whose app exhausts Postgres' connection slots gets "stuck"
+(apps can't connect). Transaction pooling is the safe, opt-in fix from DEFAULTS.md.
+This slice lays the trusted sizing foundation with zero runtime risk; config
+render / install-enable / UI toggle are tracked as the next sub-items.
+
+Reviewed (feature-dev:code-reviewer): no critical findings; applied both
+important ones — corrected DEFAULTS.md `round`→`int(...)` truncation to match the
+`sm` source, and widened the invariant sweep ({1,5,10,20,...}) so the floor paths
+are self-covered rather than relying on RecommendTuning's max_conn≥30 coupling.
+Gates: gofmt clean, go vet, `go test ./...`, CGO_ENABLED=0 build all green; no
+web/ touched.
+
 ## 2026-06-24 · band 3 (usability) · destructive-confirm audit + lock it with tests
 First band-3 item. Audited every confirmation site against "states exactly what
 will happen and what is irreversible": Backups (run full/incr, deep restore test,

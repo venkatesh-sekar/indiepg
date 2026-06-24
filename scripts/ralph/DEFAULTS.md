@@ -64,7 +64,7 @@ pool_mode           = transaction            # default
 Pool sizing math (coordinated with PG `max_connections`):
 
 - `available = pg_max_connections - 5` (5 reserved for admin/superuser)
-- `default_pool_size = round(available * util)`, util = oltp 0.80 / mixed 0.70 / olap 0.60 (floor 20)
+- `default_pool_size = int(available * util)` (truncate, matching `sm`), util = oltp 0.80 / mixed 0.70 / olap 0.60 (floor 20)
 - `min_pool_size = default_pool_size / 4` (floor 5)  — kept ready
 - `reserve_pool_size = default_pool_size / 5` (floor 5)  — burst overflow
 - `max_client_conn = default_pool_size * multiplex`, multiplex = oltp 20 / mixed 10 / olap 5
