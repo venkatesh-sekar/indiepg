@@ -3,6 +3,33 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 13 — Mode F (REJECT) (Migrate: inline danger warning when overwrite is armed)
+Took the top open item: the single-db overwrite "gate is split across three intent-shifts with
+no inline warning when overwrite is checked." Implemented the restraint-aware version — a
+conditional `Callout tone="danger"` rendered below the overwrite checkbox **only while it's
+checked**, stating the target gets dropped/recreated, can't be undone, and "you'll type its name
+to confirm before it runs" (mirroring how the cluster form warns inline). Added a test asserting
+the warning appears on arm and disappears on disarm; 14 Migrate tests green. Ran the full panel.
+**3 SHIP** (UX heuristics — "consequence at arm-time, not deferred to the modal"; Sam — "the
+safety net I want the moment I tick the box"; Priya — "zero added clicks, purely informational").
+**Restraint critic REJECTED** with decisive code-level reasoning, and the blocker is never
+overruled: the single-db overwrite is *already* a three-stage escalating gate — the checkbox
+label says "Replace `<target>` … **(destructive)**", the submit button flips to **"Continue…"**,
+and the modal carries its own danger Callout ("…dropped and recreated… This cannot be undone")
+plus a **type-the-name** input that is the real execute-time gate. The new Callout just moves the
+modal's text up by one click — the user reads "dropped and recreated, can't be undone" twice
+within seconds — and it even pre-narrates the confirm step. The **consistency-with-cluster
+steelman is false on inspection**: `ClusterForm`'s inline Callout is *always-on* and carries info
+its label omits ("can drop **every matching database**"), a categorically scarier standing
+warning — so copying its shape misses its reason. And the destructive action **cannot fire from
+this screen at all** (the button only opens the modal), so visibility "at arm-time" buys nothing
+executable. Reverted both files clean, recorded the lesson ("count the warnings that already fire
+on the same interaction before adding another; don't justify a copy from a sibling view by shape —
+verify it carries info the local label/modal doesn't"), marked the backlog item rejected. No code
+shipped. stable_streak stays 0 (a Mode-F reject, not an actionable-empty discovery pass). Next top
+item: DatabaseTuning — add one reassuring intro line (defaults already tuned; the typical indie app
+needs no changes); intro-only change is S.
+
 ## 2026-06-25 — iter 12 — Mode F (SHIP) (Migrate: "Start another" — targeted form reset)
 The Migrate page's "Start another" button (shown once a migration job hits a terminal state)
 returned the user to the form with every prior value still filled in — source connection,

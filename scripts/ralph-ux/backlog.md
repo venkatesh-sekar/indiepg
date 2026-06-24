@@ -68,10 +68,15 @@ Format per item:
   receive (no connection) clears its db + code. The full-reset version was REJECTED by
   the restraint critic (kills the cheap same-source repeat); revised to its proposed
   targeted fix → 4 SHIP. See Done.
-- [ ] (med/M) Migrate — the overwrite gate is split across three intent-shifts
+- ~~(med/M) Migrate — the overwrite gate is split across three intent-shifts
   (checkbox → button text flips to "Continue…" → modal asks to type the name) with no
-  inline warning when overwrite is checked. → Surface a single visible destructive
-  confirmation section when overwrite is on, instead of the silent button-label flip.
+  inline warning when overwrite is checked~~ — **rejected iter 13** on restraint. 3 of 4
+  shipped, but the restraint critic blocked (never overruled): the single-db overwrite is
+  already a three-stage escalating gate — the checkbox label says "(destructive)", the button
+  flips to "Continue…", and the modal has a danger Callout + type-the-name confirm. The
+  proposed inline Callout just restates the modal's text one click earlier (read twice in
+  seconds), and the "match the cluster form" rationale is false — cluster's warning is
+  *always-on* and conveys "drops every database," info its label omits. See learnings.md.
 - [ ] (low/M) Settings — the page used to conflate three domains; **backup config
   moved to /backups in iter 11**, so Settings is now just Database tuning + Connection
   pooler (two coherent, self-titled cards) + a pointer. Largely resolved; only re-open
@@ -204,6 +209,15 @@ Format per item:
 
 ## Rejected
 
+- ~~(med/M) Migrate — inline danger warning when the single-db overwrite checkbox is
+  armed~~ — iter 13. Clean conditional implementation; 3 SHIP (UX heuristics, Sam, Priya).
+  Restraint critic blocked and is never overruled: the overwrite already has a three-stage
+  escalating gate (checkbox label "(destructive)" → button flips to "Continue…" → modal
+  danger Callout + type-the-name confirm), the destructive action can't even fire from this
+  screen (only the modal's typed confirm executes it), and the "match the cluster form"
+  rationale is false — cluster's Callout is always-on and carries info its label omits
+  ("drops every matching database"). The inline Callout just restates the modal one click
+  early, read twice in seconds. learnings.md.
 - ~~(med/S) Query — show the server's `executed_sql` in a compact block~~ — iter 7.
   Clean conditional implementation (block shows only when the SQL was actually
   rewritten). 3 SHIP (UX heuristics, Sam, Priya) but the restraint critic blocked and is

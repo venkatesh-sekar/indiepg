@@ -75,6 +75,35 @@ backlog — they violate the loop's anti-over-design / one-view-per-iteration ru
   a rewrite path that does NOT set `limited` (then "show exactly what ran" becomes
   real). This refines the prior rule-of-thumb that listed `executed_sql` as a cheap win.
 
+- **Migrate (single-db): inline danger Callout when the overwrite checkbox is armed.**
+  Rejected iter 13 on restraint. Implemented cleanly (a conditional `Callout tone="danger"`
+  below the checkbox, shown only while `overwrite` is true, stating the target gets
+  dropped/recreated + "you'll type its name to confirm next"). **3 of 4 shipped** (UX
+  heuristics — "consequence at arm-time, not deferred to the modal"; Sam — "the safety net
+  I want the moment I tick the box"; Priya — "zero added clicks, purely informational").
+  But the **restraint critic blocked** and is never overruled, with decisive code-level
+  reasoning: the single-db overwrite already has a **three-stage escalating gate** — (1) the
+  checkbox label literally says "Replace `<target>` if it already exists **(destructive)**",
+  (2) the submit button flips to **"Continue…"** signalling a confirm step, (3) the modal's
+  own danger Callout ("…will be dropped and recreated… This cannot be undone") + a
+  **type-the-name** input that is the *actual* execute-time safety gate. The new Callout just
+  moves the modal's text up by one click, restating a label three inches away, and even
+  pre-narrates the confirm step the user is about to see — so the user reads "dropped and
+  recreated, can't be undone" **twice within seconds**. The **consistency-with-cluster
+  steelman is false on inspection**: `ClusterForm`'s inline Callout is *always-on* (not
+  conditional) and carries info its checkbox label omits ("can drop **every matching
+  database**") — a categorically scarier, standing warning — so it isn't the pattern "warn
+  inline when overwrite is checked"; copying its shape misses its reason. Also: the destructive
+  action **cannot fire from this screen at all** (the button only opens the modal; the modal's
+  type-to-confirm is the real error-prevention surface, and it's untouched), so visibility
+  "at arm-time" buys nothing executable. **Lesson:** before adding a warning, count the
+  warnings that already fire on the same interaction — a destructive control that already has
+  a label-flag + a button-label change + a modal-with-typed-confirm is *already* a graduated
+  gate; a fourth restatement is warning-on-top-of-warning, not error-prevention. And don't
+  justify a copy from a sibling view by *shape* — verify the sibling's version carries
+  information the local label/modal doesn't (the cluster warning does; this one wouldn't).
+  Refines iter 7's rule: "honest/safety surface only wins when the fact is otherwise hidden."
+
 ## Rules of thumb
 
 - **Co-locate config with the operation it configures by *moving* it (one home), not by
