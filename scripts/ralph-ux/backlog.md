@@ -11,11 +11,6 @@ Format per item:
 ## Open
 
 ### Quick wins (high/med payoff, S effort) — do these first
-- [ ] (high/S) Alerts — when no notification channel is enabled, alert rules are
-  set up but will silently never fire; nothing warns the user. → Add a warning
-  `Callout` above the rules card when rules exist (or are being added) and no channel
-  is enabled: "No channels enabled — rules won't fire. Set up Pushover or a Webhook
-  above first." (2 agents flagged: silent failure + first-run sequencing.)
 - [ ] (high/S) Roles & Databases — a single `dropBusy` boolean disables **every**
   Delete button on both tables during any one drop, so the UI looks frozen for
   unrelated rows. → Scope busy state to the target being dropped
@@ -76,6 +71,14 @@ Format per item:
 
 ## Done
 
+- [x] (high/S) Alerts — enabled rules with no enabled notification channel fired
+  silently into the void; nothing warned the user. Added a conditional warning
+  `Callout` ("Your rules won't fire") between the channels card and the rules table,
+  shown only when `hasEnabledRule && !anyChannelEnabled` and self-clearing the moment
+  a channel is enabled. Shipped iter 4 (3 SHIP — UX heuristics + Sam + Priya; restraint
+  critic conditionally rejected, preferring per-row/enable-time warnings, but conceded
+  the banner is the least-bad option — and per-row would N-duplicate the message while
+  enable-time adds a modal wall to a one-click toggle, so the banner is simplest here).
 - [x] (high/S) Dashboard — the Postgres "Version" row always rendered "—" (backend
   never populates it; the field is `omitempty` and the foundation doesn't expose a
   server version yet). A blank version next to a green "Running" badge read as

@@ -75,6 +75,29 @@ describe("Alerts", () => {
     );
   });
 
+  it("warns when an enabled rule exists but no channel is enabled (silent failure)", async () => {
+    stub({ channels: [], rules: [rule({ enabled: true })] });
+    render(<Alerts />);
+    expect(await screen.findByText("Your rules won't fire")).toBeInTheDocument();
+  });
+
+  it("does not warn once a channel is enabled", async () => {
+    stub({
+      channels: [channel({ kind: "pushover", enabled: true })],
+      rules: [rule({ enabled: true })],
+    });
+    render(<Alerts />);
+    await screen.findByText("Alert rules");
+    expect(screen.queryByText("Your rules won't fire")).not.toBeInTheDocument();
+  });
+
+  it("does not warn when no rule is enabled, even with no channel", async () => {
+    stub({ channels: [], rules: [rule({ enabled: false })] });
+    render(<Alerts />);
+    await screen.findByText("Alert rules");
+    expect(screen.queryByText("Your rules won't fire")).not.toBeInTheDocument();
+  });
+
   it("shows an empty state when there are no rules", async () => {
     stub({ rules: [] });
     render(<Alerts />);

@@ -85,6 +85,12 @@ export function Alerts() {
   const channel = (kind: ChannelKind): ChannelConfig | undefined =>
     cfg.data?.channels.find((c) => c.kind === kind);
 
+  // Silent-failure guard: an enabled rule with no enabled channel will never
+  // actually notify anyone. Warn the user so they don't trust a dead pipeline.
+  const noChannelEnabled = !cfg.data?.channels.some((c) => c.enabled);
+  const hasEnabledRule = Boolean(cfg.data?.rules.some((r) => r.enabled));
+  const rulesWontFire = hasEnabledRule && noChannelEnabled;
+
   const sendTest = async (kind: ChannelKind) => {
     setTestBusy(kind);
     try {
@@ -160,6 +166,13 @@ export function Alerts() {
               />
             </div>
           </Card>
+
+          {rulesWontFire ? (
+            <Callout tone="warn" title="Your rules won't fire">
+              No notification channel is enabled, so these alert rules can't reach you.
+              Set up and enable Pushover or a Webhook above first.
+            </Callout>
+          ) : null}
 
           {/* Rules */}
           <Card title="Alert rules">

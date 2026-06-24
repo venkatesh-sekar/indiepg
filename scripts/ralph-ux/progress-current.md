@@ -3,6 +3,27 @@
 Rolling narrative, newest at top. One short entry per iteration: date, mode, what
 changed, why.
 
+## 2026-06-25 — iter 4 — Mode F (Alerts: warn when rules can't fire — no channel)
+Top quick-win, silent-failure honest-state fix. A user could enable alert rules while
+having no enabled notification channel — the rules then fired into the void with nothing
+warning them (`toggleRule`/RuleModal default `enabled: true`, channels independent). Added
+a conditional warning `Callout` ("Your rules won't fire — No notification channel is
+enabled… Set up and enable Pushover or a Webhook above first") placed between the channels
+card and the rules table. Gated on `hasEnabledRule && !anyChannelEnabled` (computed from
+`cfg.data`), so it's invisible in the healthy state and self-clears the instant a channel
+is enabled or no rule is enabled. Reuses the existing `Callout` — no new component, no new
+control, no clicks. Added 3 tests (warns in the broken state; no warning once a channel is
+enabled; no warning when no rule is enabled) → 137 tests. Review panel: 3 SHIP (UX
+heuristics called it "the most significant usability gap on this page"; Sam + Priya both
+ship, Priya: "a guardrail, not a nag"). Restraint critic conditionally REJECTED, preferring
+a per-row inline indicator or an enable-time guard — but explicitly conceded the banner is
+"shippable as the least-bad option." Resolved to SHIP: per-row would duplicate the same
+message on every enabled row (noisier), and an enable-time guard adds a modal wall to a
+deliberate one-click toggle (friction Priya rejects); there is no per-rule channel routing,
+so the page-level banner is the correct altitude. Not a "looks nicer" overrule — the banner
+is genuinely the simplest honest fix. Gates: typecheck ✓, 137 tests ✓, build ✓, go build ✓
+(outside sandbox — snap-confine blocks it in-sandbox).
+
 ## 2026-06-25 — iter 3 — Mode F (Dashboard: remove always-blank Version row)
 Top quick-win honest-state fix. The Postgres card's "Version" row always rendered an
 em-dash "—": confirmed in `internal/server/handlers_dashboard.go` the field is
