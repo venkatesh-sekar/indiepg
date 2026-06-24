@@ -204,6 +204,7 @@ func (s *Server) ensureBackupConfigured(ctx context.Context, cfg config.Config) 
 		PGDataDir:     dataDir,
 		PGPort:        port,
 		PGSocketDir:   cfg.PGSocketDir,
+		ProcessMax:    backup.DefaultProcessMax(),
 	}
 
 	// Provision in the order pgBackRest requires (ported from server-management):

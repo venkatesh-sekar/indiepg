@@ -57,6 +57,44 @@ func TestRenderConfig_S3(t *testing.T) {
 	require.NotContains(t, out, "repo1-storage-verify-tls")
 }
 
+func TestRenderConfig_BundlesSmallFiles(t *testing.T) {
+	// repo-bundle packs the many small relation/catalog files a Postgres cluster
+	// is made of into a few large repo objects, so an S3 backup is not bottlenecked
+	// on one HTTP round-trip per tiny file. It is unconditional (helps posix too).
+	out, err := RenderConfig(baseS3Params())
+	require.NoError(t, err)
+	require.Contains(t, out, "repo-bundle=y")
+
+	p := baseS3Params()
+	p.Bucket, p.Endpoint = "", ""
+	local, err := RenderConfig(p)
+	require.NoError(t, err)
+	require.Contains(t, local, "repo-bundle=y", "bundling applies to local repos too")
+}
+
+func TestRenderConfig_ProcessMaxRenderedOnlyWhenSet(t *testing.T) {
+	// ProcessMax controls parallel upload workers; it is rendered only when set so
+	// RenderConfig stays pure (CPU detection happens at the call boundary).
+	p := baseS3Params()
+	p.ProcessMax = 4
+	out, err := RenderConfig(p)
+	require.NoError(t, err)
+	require.Contains(t, out, "process-max=4")
+
+	p.ProcessMax = 0
+	out, err = RenderConfig(p)
+	require.NoError(t, err)
+	require.NotContains(t, out, "process-max=")
+}
+
+func TestDefaultProcessMax_BoundedByCores(t *testing.T) {
+	// Auto-sized from CPU count, but clamped to [1,4] so a tiny indie box never
+	// starves Postgres and a big box does not spawn excessive S3 workers.
+	got := DefaultProcessMax()
+	require.GreaterOrEqual(t, got, 1)
+	require.LessOrEqual(t, got, 4)
+}
+
 func TestRenderConfig_LocalWhenNoBucket(t *testing.T) {
 	p := baseS3Params()
 	p.Bucket = ""

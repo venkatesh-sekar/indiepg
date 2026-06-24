@@ -2,6 +2,7 @@ package backup
 
 import (
 	"fmt"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -9,6 +10,26 @@ import (
 
 	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
+
+// maxProcessMax caps the auto-sized pgBackRest worker count. More than a handful
+// of parallel S3 uploaders yields diminishing returns and competes with Postgres
+// for CPU on the small single-box hosts the panel targets.
+const maxProcessMax = 4
+
+// DefaultProcessMax sizes pgBackRest's process-max from the host CPU count,
+// clamped to [1, maxProcessMax]. It is the host-specific boundary value the
+// server passes into the otherwise-pure RenderConfig, so a one-vCPU box stays at
+// 1 (never starving Postgres) while a larger box gets parallel S3 uploaders.
+func DefaultProcessMax() int {
+	n := runtime.NumCPU()
+	if n < 1 {
+		return 1
+	}
+	if n > maxProcessMax {
+		return maxProcessMax
+	}
+	return n
+}
 
 // configMarker is the first line of every pgBackRest config file indiepg owns.
 // It is the proof-of-ownership the provisioner checks before overwriting: a file
@@ -56,6 +77,12 @@ type ConfigParams struct {
 	// the repo-directory provisioning is exercisable without touching the real
 	// /var/lib/pgbackrest.
 	LocalRepoPath string
+
+	// ProcessMax is the number of parallel pgBackRest worker processes (the
+	// process-max option). It overlaps S3 request latency across files. Zero omits
+	// the option (pgBackRest's default of 1). RenderConfig stays pure — CPU-based
+	// sizing happens at the call boundary via DefaultProcessMax.
+	ProcessMax int
 }
 
 // localRepoPath resolves the on-disk repo path for a local (posix) repo,
@@ -137,6 +164,18 @@ func RenderConfig(p ConfigParams) (string, error) {
 	// Conservative, widely-compatible operational defaults.
 	global.set("start-fast", "y")
 	global.set("compress-type", "gz")
+	// A Postgres cluster is thousands of small files (catalogs, per-relation
+	// segments); without bundling pgBackRest writes each as its own repo object, so
+	// an S3 backup pays one HTTP round-trip per tiny file and is dominated by
+	// request count, not bytes. repo-bundle packs small files into a few large repo
+	// objects, collapsing thousands of PUTs into a handful. Supported since
+	// pgBackRest 2.32; harmless for posix repos. Applies to new backups only.
+	global.set("repo-bundle", "y")
+	// Parallel workers overlap S3 request latency across files; rendered only when
+	// the caller sized it (see DefaultProcessMax). pgBackRest defaults to 1.
+	if p.ProcessMax > 0 {
+		global.set("process-max", strconv.Itoa(p.ProcessMax))
+	}
 	global.set("log-level-console", "info")
 	global.set("log-level-file", "detail")
 
