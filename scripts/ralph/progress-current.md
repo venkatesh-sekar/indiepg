@@ -5,6 +5,26 @@ Keep ~20 entries; archive older ones if this grows large.
 
 <!-- iterations will be prepended here -->
 
+## 2026-06-24 · band E · prune unreferenced legacy design-token vars from `styles.css`
+First slice of the E "delete the design-token *vars*" item, now unblocked (all
+legacy class rules + classNames are gone). Removed only the legacy `:root` /
+`@media (prefers-color-scheme: dark)` vars proven to have **zero** `var()` and
+zero plain-string references anywhere in `src/`:
+- `--surface`, `--border-strong`, `--text-muted`, `--primary-hover`,
+  `--primary-soft`, `--danger` / `--danger-hover` / `--danger-soft`, `--shadow`,
+  and the dead `:root --radius-sm: 6px` (overridden by the `@theme inline`
+  `--radius-sm: calc(var(--radius)*0.6)` = identical 6px).
+- KEPT the still-referenced legacy vars: `--bg`/`--text`/`--surface-2`/`--mono`/
+  `--sans` (global `body`/`code`/`a` element rules) and `--border`/`--primary`/
+  `--warn*`/`--ok*`/`--info*` (consumed by `@theme inline` → shadcn `--color-*`).
+  No semantic shadcn tokens touched.
+Pure dead-CSS deletion — no view markup, no class, no rendered output changes
+(grep-proven: removed vars now have zero occurrences; every kept var still has a
+live reference). 130 web tests green; typecheck/build/go build green. Next E
+sub-slices: migrate the global `body`/`code`/`a` element rules onto semantic
+tokens (frees `--bg`/`--text`/`--surface-2`/`--mono`/`--sans`), then the
+consistency sweep + `next-themes` prune + `--info-soft` distinctness → COMPLETE.md.
+
 ## 2026-06-24 · band E · last legacy class `.view` → Tailwind + dead legacy CSS purged
 Sixth band-E cleanup slice. The prior slice's "last legacy `className` cleared"
 claim missed one straggler: the `.view` page-wrapper class, still used by all 8

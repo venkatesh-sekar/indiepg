@@ -8,19 +8,13 @@
 /* indiepg SPA — legacy hand-rolled styles, being migrated to shadcn/Tailwind. */
 
 :root {
+  /* Legacy tokens still consumed by global element rules (--bg/--text/--surface-2/
+     --mono/--sans) or by @theme inline (--border/--primary/--ok*/--warn*/--info*). */
   --bg: #f6f7f9;
-  --surface: #ffffff;
   --surface-2: #f1f3f6;
   --border: oklch(0.922 0 0);
-  --border-strong: #c9d0d8;
   --text: #1c2530;
-  --text-muted: #677488;
   --primary: oklch(0.205 0 0);
-  --primary-hover: #245bd0;
-  --primary-soft: #e7efff;
-  --danger: #d6453a;
-  --danger-hover: #bb392f;
-  --danger-soft: #fdeceb;
   --warn: #b9740a;
   --warn-soft: #fdf3e2;
   --ok: #1f9d57;
@@ -28,8 +22,6 @@
   --info: #2f6fed;
   --info-soft: #e7efff;
   --radius: 0.625rem;
-  --radius-sm: 6px;
-  --shadow: 0 1px 2px rgba(20, 30, 45, 0.06), 0 4px 16px rgba(20, 30, 45, 0.06);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --background: oklch(1 0 0);
@@ -66,25 +58,16 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #11151b;
-    --surface: #1a1f27;
     --surface-2: #222934;
     --border: #2b3340;
-    --border-strong: #3a4453;
     --text: #e6eaf0;
-    --text-muted: #95a1b3;
     --primary: #5b8cff;
-    --primary-hover: #6e99ff;
-    --primary-soft: #1e2a44;
-    --danger: #f0675c;
-    --danger-hover: #f47b71;
-    --danger-soft: #38211f;
     --warn: #e0a341;
     --warn-soft: #352c1c;
     --ok: #41c47e;
     --ok-soft: #16291f;
     --info: #5b8cff;
     --info-soft: #1e2a44;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
   }
 }
 
