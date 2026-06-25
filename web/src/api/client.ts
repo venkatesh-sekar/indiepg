@@ -305,7 +305,15 @@ export const api = {
     return request<Result>("/alerts/channels/test", { method: "POST", body: req });
   },
   saveRule(rule: AlertRule): Promise<Result> {
-    return request<Result>("/alerts/rules", { method: "PUT", body: rule });
+    // PUT accepts only the rule definition. Callers often pass a rule fetched
+    // from GET /alerts (e.g. the enable/disable toggle spreads it), which carries
+    // read-only fields (state/last_fired_at/last_eval_at); the server's strict
+    // decoder rejects those as unknown, so send only the definition fields.
+    const { id, name, metric, op, threshold, severity, for_seconds, cooldown_seconds, enabled } = rule;
+    return request<Result>("/alerts/rules", {
+      method: "PUT",
+      body: { id, name, metric, op, threshold, severity, for_seconds, cooldown_seconds, enabled },
+    });
   },
   deleteRule(id: string): Promise<Result> {
     return request<Result>(`/alerts/rules/${encodeURIComponent(id)}`, {
