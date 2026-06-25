@@ -19,17 +19,19 @@ import {
   ResultBadge,
   Spinner,
 } from "@/components/ui";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { ChevronDownIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner as InlineSpinner } from "@/components/ui/spinner";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Field,
@@ -153,47 +155,10 @@ export function Backups() {
           </>
         }
         actions={
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              onClick={() => setStorageOpen(true)}
-              title="Choose where backups are stored (local or an S3 bucket), retention, and encryption"
-            >
-              Backup storage
-            </Button>
-            <Button variant="destructive" onClick={() => setRestoreOpen(true)}>
-              Restore…
-            </Button>
-            <Button
-              variant="outline"
-              onClick={runRestoreTest}
-              disabled={testBusy}
-              title="Verify the backup repository is intact (fast, read-only)"
-            >
-              {testBusy ? (
-                <>
-                  <InlineSpinner data-icon="inline-start" />
-                  Testing…
-                </>
-              ) : (
-                "Test a restore"
-              )}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setDeepOpen(true)}
-              disabled={deepBusy}
-              title="Restore the latest backup into a throwaway copy and boot it (slower, needs disk headroom)"
-            >
-              {deepBusy ? (
-                <>
-                  <InlineSpinner data-icon="inline-start" />
-                  Testing…
-                </>
-              ) : (
-                "Deep restore test"
-              )}
-            </Button>
+          // One primary action stays a button; the rest (a second backup mode,
+          // verification, restore, storage config) collapse into a single menu so
+          // the header isn't a wall of six equal-weight buttons.
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               onClick={() => setRunType("incr")}
               disabled={hasRunningBackup}
@@ -205,14 +170,47 @@ export function Backups() {
             >
               Back up now
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => setRunType("full")}
-              disabled={hasRunningBackup}
-              title={hasRunningBackup ? "A backup is already running" : "Run a full backup"}
-            >
-              Full backup
-            </Button>
+            <DropdownMenu>
+              {/* Style the trigger's own <button> via buttonVariants rather than
+                  `asChild` + <Button>: this is React 18, and our Button isn't a
+                  forwardRef component, so Radix can't get a ref through `asChild`
+                  to anchor/toggle the menu — the trigger would be unclickable. */}
+              <DropdownMenuTrigger className={buttonVariants({ variant: "outline" })}>
+                More
+                <ChevronDownIcon data-icon="inline-end" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuItem
+                  onSelect={() => setRunType("full")}
+                  disabled={hasRunningBackup}
+                >
+                  Full backup
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Verify backups</DropdownMenuLabel>
+                <DropdownMenuItem onSelect={runRestoreTest} disabled={testBusy}>
+                  {testBusy ? "Testing…" : "Test a restore"}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => setDeepOpen(true)}
+                  disabled={deepBusy}
+                >
+                  {deepBusy ? "Testing…" : "Deep restore test"}
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => setStorageOpen(true)}>
+                  Backup storage…
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => setRestoreOpen(true)}
+                >
+                  Restore…
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         }
       />
@@ -311,31 +309,28 @@ export function Backups() {
       ) : null}
 
       {/* Backup-storage config, co-located with the operations it configures. The
-          form keeps showing its inline save/connection-test result, so the panel
+          form keeps showing its inline save/connection-test result, so the dialog
           stays open after saving rather than dismissing that feedback. */}
-      <Sheet open={storageOpen} onOpenChange={setStorageOpen}>
-        <SheetContent
-          side="right"
-          className="w-full gap-0 overflow-y-auto sm:max-w-xl"
-        >
-          <SheetHeader>
-            <SheetTitle>Backup storage</SheetTitle>
-            <SheetDescription>
-              Choose where backups are stored, how long they&apos;re kept, and
-              whether they&apos;re encrypted.
-            </SheetDescription>
-          </SheetHeader>
-          <div className="flex flex-col gap-5 p-4 pt-0">
-            {config.loading ? (
-              <Spinner label="Loading backup storage…" />
-            ) : config.error ? (
-              <ErrorNotice error={config.error} />
-            ) : config.data ? (
-              <BackupStorageForm initial={config.data} onSaved={config.reload} />
-            ) : null}
-          </div>
-        </SheetContent>
-      </Sheet>
+      <Modal
+        open={storageOpen}
+        title="Backup storage"
+        onClose={() => setStorageOpen(false)}
+        width="md"
+      >
+        <div className="flex flex-col gap-5">
+          <p className="text-sm text-muted-foreground">
+            Choose where backups are stored, how long they&apos;re kept, and
+            whether they&apos;re encrypted.
+          </p>
+          {config.loading ? (
+            <Spinner label="Loading backup storage…" />
+          ) : config.error ? (
+            <ErrorNotice error={config.error} />
+          ) : config.data ? (
+            <BackupStorageForm initial={config.data} onSaved={config.reload} />
+          ) : null}
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -76,8 +76,12 @@ export function Modal({
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
-        {/* Only the body scrolls — the header and pinned close button stay put. */}
-        <div className="max-h-[65vh] overflow-y-auto">{children}</div>
+        {/* Only the body scrolls — the header and pinned close button stay put.
+            Pull the scroll area out to the dialog's inner edges (-mx-4) so the
+            scrollbar sits flush, then re-pad (px-4) to restore a 16px gutter on
+            both sides. Without the gutter, `overflow-y-auto` also clips overflow-x,
+            shaving the 1px ring off any card/section flush against the edge. */}
+        <div className="-mx-4 max-h-[65vh] overflow-y-auto px-4">{children}</div>
         {footer ? <DialogFooter>{footer}</DialogFooter> : null}
       </DialogContent>
     </Dialog>

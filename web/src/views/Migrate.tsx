@@ -76,7 +76,7 @@ export function Migrate() {
       </Callout>
 
       <Tabs value={mode} onValueChange={(v) => setMode(v as MigrationMode)}>
-        <TabsList className="h-auto w-full">
+        <TabsList variant="line" className="h-auto w-full">
           <ModeTab id="single-db" label="One database" hint="Direct pull · recommended" />
           <ModeTab id="cluster" label="Whole cluster" hint="All DBs + roles" />
           <ModeTab id="ssh-less" label="Cross-panel session" hint="Two panels via S3" />

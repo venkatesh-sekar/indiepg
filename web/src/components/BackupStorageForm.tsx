@@ -105,7 +105,7 @@ export function BackupStorageForm({
   const hasTarget = endpoint.trim() !== "" || bucket.trim() !== "";
 
   return (
-    <form onSubmit={submit}>
+    <form onSubmit={submit} className="flex flex-col gap-5">
       <Card
         title="Backup storage (S3-compatible)"
         actions={
@@ -116,6 +116,9 @@ export function BackupStorageForm({
           )
         }
       >
+        {/* CardContent has no vertical rhythm of its own, so space these stacked
+            callouts and field grids explicitly. */}
+        <div className="flex flex-col gap-5">
         {!hasTarget ? (
           <Callout tone="warn" title="Backups are currently stored on this server">
             With no bucket set, the panel writes backups to{" "}
@@ -276,6 +279,7 @@ export function BackupStorageForm({
             </FieldDescription>
           </FieldContent>
         </Field>
+        </div>
       </Card>
 
       <Card title="Retention &amp; encryption">
