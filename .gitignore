@@ -36,6 +36,8 @@ vendor/
 scripts/ralph/run-logs/
 scripts/ralph/HALT.md
 scripts/ralph/COMPLETE.md
+scripts/ralph-ux/run-logs/
+scripts/ralph-ux/HALT.md
 
 # local npm cache used by the UI loop (keeps installs off the read-only ~/.npm)
 web/.npm-cache/
