@@ -12,7 +12,7 @@ function rule(over: Partial<AlertRule> = {}): AlertRule {
   return {
     id: "r1",
     name: "Disk almost full",
-    metric: "disk_percent",
+    metric: "host.disk_percent",
     op: ">",
     threshold: 90,
     severity: "warning",
@@ -84,7 +84,7 @@ describe("Alerts", () => {
   });
 
   it("renders a rule row with its condition, severity and an enable toggle", async () => {
-    stub({ rules: [rule({ name: "CPU high", metric: "cpu_percent", op: ">", threshold: 80 })] });
+    stub({ rules: [rule({ name: "CPU high", metric: "host.cpu_percent", op: ">", threshold: 80 })] });
     render(<Alerts />);
 
     const row = (await screen.findByText("CPU high")).closest("tr")!;

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/venkatesh-sekar/indiepg/internal/alert"
 	"github.com/venkatesh-sekar/indiepg/internal/core"
@@ -175,8 +176,26 @@ func (s *Server) handleSaveAlertRule(w http.ResponseWriter, r *http.Request) {
 		Enabled:   req.Enabled,
 	}
 
+	// PUT /alerts/rules is save-or-create: a new rule from the UI arrives with no
+	// id (it has none to send yet), an edit carries the existing one. Mint a stable
+	// id for the new case so the upsert inserts rather than failing validation. The
+	// id is an opaque store key (the UI keys on name), so a UUID is fine; the
+	// built-in DefaultRules keep their human-readable slugs untouched.
+	if rule.ID == "" {
+		rule.ID = uuid.NewString()
+	}
+
 	if err := rule.Validate(); err != nil {
 		writeError(w, err)
+		return
+	}
+
+	// Reject a metric the engine cannot resolve: such a rule is skipped every eval
+	// cycle and silently never fires. Fail loudly here rather than persist a dead
+	// rule. (Validate stays metric-agnostic so reading a legacy stored rule never
+	// breaks the whole alerts list.)
+	if !alert.MetricKnown(rule.Metric) {
+		writeError(w, core.ValidationError("unknown metric %q", rule.Metric))
 		return
 	}
 

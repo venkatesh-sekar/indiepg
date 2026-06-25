@@ -72,6 +72,35 @@ func metricValue(snap telemetry.Snapshot, metric string) (float64, bool) {
 	}
 }
 
+// knownMetrics is the set of metric keys metricValue can resolve. It is the
+// single source of truth for which metrics a rule may target, used to reject a
+// rule whose metric the engine would silently skip (see MetricKnown). Keep in
+// sync with the metricValue switch above.
+var knownMetrics = map[string]struct{}{
+	MetricCPUPercent:         {},
+	MetricMemPercent:         {},
+	MetricDiskPercent:        {},
+	MetricLoad1:              {},
+	MetricPGUp:               {},
+	MetricConnections:        {},
+	MetricMaxConnections:     {},
+	MetricConnectionsPercent: {},
+	MetricCacheHitRatio:      {},
+	MetricTPS:                {},
+	MetricDeadlocks:          {},
+	MetricReplicationLagSecs: {},
+	MetricLastBackupAgeSecs:  {},
+	MetricLastBackupFailed:   {},
+}
+
+// MetricKnown reports whether metric is a recognized metric key the engine can
+// evaluate. A rule targeting an unknown metric is skipped every eval cycle and
+// silently never fires, so callers accepting user input should reject one early.
+func MetricKnown(metric string) bool {
+	_, ok := knownMetrics[metric]
+	return ok
+}
+
 // percent returns used/total*100, or (0,false) when total is non-positive so a
 // rule never fires on a divide-by-zero.
 func percent(used, total int64) (float64, bool) {

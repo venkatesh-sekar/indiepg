@@ -110,7 +110,7 @@ func TestAlertsRuleRoundTrip(t *testing.T) {
 	rule := map[string]any{
 		"id":               "test-cpu",
 		"name":             "High CPU",
-		"metric":           "host.cpu.percent",
+		"metric":           "host.cpu_percent",
 		"op":               ">",
 		"threshold":        90,
 		"severity":         "warning",
@@ -135,6 +135,75 @@ func TestAlertsRuleRoundTrip(t *testing.T) {
 	require.Len(t, env.Data.Rules, 1)
 	require.Equal(t, "test-cpu", env.Data.Rules[0]["id"])
 	require.EqualValues(t, 60, env.Data.Rules[0]["for_seconds"])
+}
+
+// TestAlertsRuleCreateWithoutID reproduces the "+ Add rule" path: the SPA sends a
+// new rule with an empty id (it has none yet to send). The save must succeed and
+// the server must assign a non-empty id, which the rule then carries on read-back.
+// Regression guard: previously the empty id failed Rule.Validate with "alert rule
+// id is required", so a brand-new rule could never be created from the UI.
+func TestAlertsRuleCreateWithoutID(t *testing.T) {
+	srv, _ := newTestServer(t)
+	token := login(t, srv, testPassword)
+
+	rule := map[string]any{
+		"id":               "",
+		"name":             "Disk almost full",
+		"metric":           "host.disk_percent",
+		"op":               ">",
+		"threshold":        90,
+		"severity":         "warning",
+		"for_seconds":      0,
+		"cooldown_seconds": 600,
+		"enabled":          true,
+	}
+	rec := authedRequest(t, srv, http.MethodPut, "/api/alerts/rules", token, rule)
+	require.Equal(t, http.StatusOK, rec.Code, "create rule body: %s", rec.Body.String())
+
+	rec = authedRequest(t, srv, http.MethodGet, "/api/alerts", token, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var env struct {
+		Data struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env))
+	require.Len(t, env.Data.Rules, 1)
+	require.NotEmpty(t, env.Data.Rules[0]["id"], "server must assign an id to a new rule")
+	require.Equal(t, "Disk almost full", env.Data.Rules[0]["name"])
+}
+
+// TestAlertsRuleRejectsUnknownMetric guards against the silent-no-fire class of
+// bug: a rule whose metric the engine cannot resolve is skipped every eval cycle
+// and never fires. The save boundary must reject it loudly instead of persisting
+// a dead rule. "cpu_percent" is the bare key the SPA used to send (the engine key
+// is "host.cpu_percent").
+func TestAlertsRuleRejectsUnknownMetric(t *testing.T) {
+	srv, _ := newTestServer(t)
+	token := login(t, srv, testPassword)
+
+	rule := map[string]any{
+		"name":             "CPU high",
+		"metric":           "cpu_percent",
+		"op":               ">",
+		"threshold":        90,
+		"severity":         "warning",
+		"for_seconds":      0,
+		"cooldown_seconds": 600,
+		"enabled":          true,
+	}
+	rec := authedRequest(t, srv, http.MethodPut, "/api/alerts/rules", token, rule)
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+	var ae apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeValidation, ae.Code)
+	require.Contains(t, strings.ToLower(ae.Message), "metric")
+
+	// The canonical key the corrected SPA sends is accepted.
+	rule["metric"] = "host.cpu_percent"
+	rec = authedRequest(t, srv, http.MethodPut, "/api/alerts/rules", token, rule)
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 }
 
 // TestBackupsHistoryEmpty verifies the history endpoint returns empty (non-null)

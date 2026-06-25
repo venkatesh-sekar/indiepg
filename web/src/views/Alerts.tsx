@@ -60,16 +60,23 @@ import type {
   Severity,
 } from "@/api/types";
 
+// Keys MUST match the engine's metric keys exactly (internal/alert/metrics.go).
+// A rule whose metric the engine doesn't recognize is silently skipped and never
+// fires, so a mismatch here is a dead alert — the save API now rejects unknown
+// metrics to catch any drift loudly.
 const METRIC_LABELS: Record<string, string> = {
-  cpu_percent: "CPU usage (%)",
-  mem_percent: "Memory usage (%)",
-  disk_percent: "Disk usage (%)",
-  connections: "Active connections",
-  cache_hit_ratio: "Cache hit ratio",
-  replication_lag_seconds: "Replication lag (seconds)",
-  deadlocks: "Deadlocks",
-  last_backup_age_seconds: "Time since last backup (seconds)",
-  pg_up: "Postgres up (1 = up)",
+  "host.cpu_percent": "CPU usage (%)",
+  "host.mem_percent": "Memory usage (%)",
+  "host.disk_percent": "Disk usage (%)",
+  "host.load1": "Load average (1m)",
+  "pg.up": "Postgres up (1 = up)",
+  "pg.connections": "Active connections",
+  "pg.connections_percent": "Connections (% of max)",
+  "pg.cache_hit_ratio": "Cache hit ratio",
+  "pg.replication_lag_seconds": "Replication lag (seconds)",
+  "pg.deadlocks": "Deadlocks",
+  "backup.last_age_seconds": "Time since last backup (seconds)",
+  "backup.last_failed": "Most recent backup failed (1 = failed)",
 };
 
 const METRIC_OPTIONS = Object.keys(METRIC_LABELS);
