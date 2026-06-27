@@ -138,7 +138,7 @@ func (s *Store) UpdateMigration(ctx context.Context, m MigrationRecord) error {
 	if m.RowCountsTgt == "" {
 		m.RowCountsTgt = "{}"
 	}
-	_, err := s.db.ExecContext(ctx, `
+	res, err := s.db.ExecContext(ctx, `
 		UPDATE migrations SET
 			mode = ?, role = ?, status = ?, phase = ?, source_summary = ?,
 			target_database = ?, overwrite = ?, code = ?, progress_done = ?,
@@ -152,6 +152,13 @@ func (s *Store) UpdateMigration(ctx context.Context, m MigrationRecord) error {
 		m.ID)
 	if err != nil {
 		return core.InternalError("update migration").Wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return core.InternalError("update migration rows affected").Wrap(err)
+	}
+	if n == 0 {
+		return core.NotFoundError("migration %d not found", m.ID)
 	}
 	return nil
 }

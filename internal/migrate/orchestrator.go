@@ -90,6 +90,9 @@ type Orchestrator struct {
 	os      ObjectStore
 	log     *core.Logger
 	workDir string
+	// preserveWorkDir is set when a restore fails after an overwrite drop, so
+	// the dump file is preserved for manual recovery instead of cleaned up.
+	preserveWorkDir bool
 }
 
 // NewOrchestrator builds an Orchestrator.
@@ -151,6 +154,15 @@ func (o *Orchestrator) directSingle(ctx context.Context, job Job, rec Recorder) 
 	}
 	_ = rec.Progress(ctx, 0, 1, info.SizeBytes)
 
+	// Freeze source row counts immediately after dump, before the restore
+	// (which can take a long time). Querying the source after the restore
+	// would race with any ongoing write activity on the source and produce
+	// false verification failures.
+	srcCounts, err := o.engine.RowCounts(ctx, job.Source, job.Source.Database)
+	if err != nil {
+		return o.fail(ctx, rec, err)
+	}
+
 	// --- restoring -------------------------------------------------------
 	o.stage(ctx, rec, StatusImporting, PhaseRestoring)
 	if err := o.prepareTarget(ctx, job); err != nil {
@@ -160,17 +172,26 @@ func (o *Orchestrator) directSingle(ctx context.Context, job Job, rec Recorder) 
 		Clean:   job.Overwrite,
 		NoOwner: true,
 	}); err != nil {
+		if job.Overwrite {
+			o.log.Error("restore failed after dropping original database; preserving dump for manual recovery",
+				"database", job.TargetDatabase, "dump", dumpPath)
+			o.preserveWorkDir = true
+			return o.fail(ctx, rec, core.ExecError("restore of %q failed after the original was dropped; dump preserved at %s for manual recovery", job.TargetDatabase, dumpPath).Wrap(err))
+		}
 		return o.fail(ctx, rec, err)
 	}
 	_ = rec.Progress(ctx, 1, 1, info.SizeBytes)
 
 	// --- verifying -------------------------------------------------------
 	o.stage(ctx, rec, StatusImporting, PhaseVerifying)
-	src, tgt, err := o.verify(ctx, job.Source, job.Source.Database, job.Target, job.TargetDatabase)
+	tgtCounts, err := o.engine.RowCounts(ctx, job.Target, job.TargetDatabase)
 	if err != nil {
 		return o.fail(ctx, rec, err)
 	}
-	if err := o.succeed(ctx, rec, src, tgt); err != nil {
+	if diffs := CompareRowCounts(srcCounts, tgtCounts); len(diffs) > 0 {
+		return o.fail(ctx, rec, rowMismatchError(diffs))
+	}
+	if err := o.succeed(ctx, rec, srcCounts, tgtCounts); err != nil {
 		return o.fail(ctx, rec, err)
 	}
 	return nil
@@ -222,6 +243,9 @@ func (o *Orchestrator) directCluster(ctx context.Context, job Job, rec Recorder)
 	var bytesTotal int64
 	mergedSrc := map[string]int64{}
 	mergedTgt := map[string]int64{}
+	// frozenSrcCounts holds per-database source row counts frozen at dump time
+	// so the verification compares against the snapshot, not the live source.
+	frozenSrcCounts := map[string]map[string]int64{}
 	for i, db := range dbs {
 		// Safety: refuse to write over a non-empty target database unless the
 		// operator opted into overwrite (the handler already required the typed
@@ -246,6 +270,15 @@ func (o *Orchestrator) directCluster(ctx context.Context, job Job, rec Recorder)
 		bytesTotal += info.SizeBytes
 		_ = rec.Progress(ctx, int64(i), total, bytesTotal)
 
+		// Freeze source row counts immediately after dump, before the
+		// (potentially long) restore, so verification is not invalidated by
+		// write activity on the source.
+		srcCounts, err := o.engine.RowCounts(ctx, job.Source, db.Name)
+		if err != nil {
+			return o.fail(ctx, rec, err)
+		}
+		frozenSrcCounts[db.Name] = srcCounts
+
 		o.stage(ctx, rec, StatusImporting, PhaseRestoring)
 		if job.Overwrite {
 			if err := o.engine.DropDatabase(ctx, job.Target, db.Name); err != nil {
@@ -257,6 +290,15 @@ func (o *Orchestrator) directCluster(ctx context.Context, job Job, rec Recorder)
 			Create:  true,
 			NoOwner: true,
 		}); err != nil {
+			// When overwrite was requested, the original database is already
+			// dropped. Preserve the dump file so the operator can recover
+			// manually; skip workDir cleanup so the file survives.
+			if job.Overwrite {
+				o.log.Error("restore failed after dropping original database; preserving dump for manual recovery",
+					"database", db.Name, "dump", dumpPath)
+				o.preserveWorkDir = true
+				return o.fail(ctx, rec, core.ExecError("restore of %q failed after the original was dropped; dump preserved at %s for manual recovery", db.Name, dumpPath).Wrap(err))
+			}
 			return o.fail(ctx, rec, err)
 		}
 
@@ -269,12 +311,16 @@ func (o *Orchestrator) directCluster(ctx context.Context, job Job, rec Recorder)
 	// --- verifying -------------------------------------------------------
 	o.stage(ctx, rec, StatusImporting, PhaseVerifying)
 	for _, db := range dbs {
-		src, tgt, err := o.verify(ctx, job.Source, db.Name, job.Target, db.Name)
+		srcCounts := frozenSrcCounts[db.Name]
+		tgtCounts, err := o.engine.RowCounts(ctx, job.Target, db.Name)
 		if err != nil {
 			return o.fail(ctx, rec, err)
 		}
-		mergeCounts(mergedSrc, db.Name, src)
-		mergeCounts(mergedTgt, db.Name, tgt)
+		if diffs := CompareRowCounts(srcCounts, tgtCounts); len(diffs) > 0 {
+			return o.fail(ctx, rec, rowMismatchError(diffs))
+		}
+		mergeCounts(mergedSrc, db.Name, srcCounts)
+		mergeCounts(mergedTgt, db.Name, tgtCounts)
 	}
 	if err := o.succeed(ctx, rec, mergedSrc, mergedTgt); err != nil {
 		return o.fail(ctx, rec, err)
@@ -613,9 +659,11 @@ func (o *Orchestrator) succeed(ctx context.Context, rec Recorder, src, tgt map[s
 }
 
 // cleanup removes the per-job temp directory best-effort. An empty workDir is a
-// no-op (tests that stub the engine never write a file).
+// no-op (tests that stub the engine never write a file). When preserveWorkDir
+// is set (a restore failed after the original DB was dropped), the directory is
+// kept so the operator can recover from the dump.
 func (o *Orchestrator) cleanup() {
-	if o.workDir == "" {
+	if o.workDir == "" || o.preserveWorkDir {
 		return
 	}
 	if err := os.RemoveAll(o.workDir); err != nil {

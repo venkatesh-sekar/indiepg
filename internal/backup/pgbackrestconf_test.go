@@ -154,14 +154,16 @@ func TestRenderConfig_ZeroRetentionOmitsRetention(t *testing.T) {
 func TestRenderConfig_RejectsInjection(t *testing.T) {
 	inject := "evil\nrepo1-s3-key-secret=attacker"
 	fields := map[string]func(*ConfigParams){
-		"secret":   func(p *ConfigParams) { p.SecretKey = inject },
-		"access":   func(p *ConfigParams) { p.AccessKey = inject },
-		"bucket":   func(p *ConfigParams) { p.Bucket = inject },
-		"endpoint": func(p *ConfigParams) { p.Endpoint = inject },
-		"region":   func(p *ConfigParams) { p.Region = inject },
-		"prefix":   func(p *ConfigParams) { p.Prefix = inject },
-		"cipher":   func(p *ConfigParams) { p.CipherPass = inject },
-		"datadir":  func(p *ConfigParams) { p.PGDataDir = inject },
+		"secret":      func(p *ConfigParams) { p.SecretKey = inject },
+		"access":      func(p *ConfigParams) { p.AccessKey = inject },
+		"bucket":      func(p *ConfigParams) { p.Bucket = inject },
+		"endpoint":    func(p *ConfigParams) { p.Endpoint = inject },
+		"region":      func(p *ConfigParams) { p.Region = inject },
+		"prefix":      func(p *ConfigParams) { p.Prefix = inject },
+		"cipher":      func(p *ConfigParams) { p.CipherPass = inject },
+		"datadir":     func(p *ConfigParams) { p.PGDataDir = inject },
+		"pgport":      func(p *ConfigParams) { p.PGPort = inject },
+		"pgsocketdir": func(p *ConfigParams) { p.PGSocketDir = inject },
 	}
 	for name, mutate := range fields {
 		t.Run(name, func(t *testing.T) {

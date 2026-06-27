@@ -192,6 +192,17 @@ func TestUpdateMigrationEmptyRowCountsDefaultToJSON(t *testing.T) {
 	require.Equal(t, "{}", reloaded.RowCountsTgt)
 }
 
+func TestUpdateMigrationNotFound(t *testing.T) {
+	s := newTestStore(t)
+	err := s.UpdateMigration(context.Background(), MigrationRecord{
+		ID:     99999,
+		Mode:   "single-db",
+		Status: "completed",
+	})
+	require.Error(t, err)
+	require.Equal(t, core.CodeNotFound, core.CodeOf(err))
+}
+
 func TestSweepRunningMigrations(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

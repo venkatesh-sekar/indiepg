@@ -468,14 +468,24 @@ func (e *engine) RestoreGlobals(ctx context.Context, conn ConnInfo, path string)
 		Stdin:     string(sql),
 		Sensitive: sensitive,
 	})
+	stderr := e.scrubText(conn, res.Stderr)
 	if err != nil {
-		stderr := e.scrubText(conn, res.Stderr)
 		if restoreStderrFatal(stderr) {
 			return core.ExecError("restoring globals into %s failed", conn.Redacted()).
 				WithDetail("stderr", stderr).Wrap(err)
 		}
 		e.log.Warn("globals replay completed with warnings", "stderr", stderr)
 		return nil
+	}
+	// psql without ON_ERROR_STOP exits 0 even when SQL statements fail, so
+	// inspect stderr on the success path to catch fatal errors that did not
+	// affect the exit code (e.g. failed GRANTs, ALTER ROLE, tablespace errors).
+	if restoreStderrFatal(stderr) {
+		return core.ExecError("restoring globals into %s failed (psql exited 0 but stderr contains errors)", conn.Redacted()).
+			WithDetail("stderr", stderr)
+	}
+	if stderr != "" {
+		e.log.Warn("globals replay completed with warnings", "stderr", stderr)
 	}
 	return nil
 }

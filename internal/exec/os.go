@@ -71,11 +71,20 @@ func (r *OSRunner) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	err := cmd.Run()
 	dur := time.Since(start)
 
+	// cmd.ProcessState is nil when the binary cannot be started (not found,
+	// permission denied). Guard against a nil-pointer panic that would kill
+	// the entire panel process — especially dangerous in the async StartBackup
+	// goroutine which has no recover().
+	exitCode := -1
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+
 	res := RunResult{
 		Command:  nonSensitiveCommand(spec, argv),
 		Stdout:   stdout.String(),
 		Stderr:   stderr.String(),
-		ExitCode: cmd.ProcessState.ExitCode(),
+		ExitCode: exitCode,
 		Duration: dur,
 	}
 

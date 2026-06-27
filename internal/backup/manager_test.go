@@ -684,6 +684,29 @@ func TestManagerRestore_SafetyBackupFailureHardStops(t *testing.T) {
 	}
 }
 
+func TestManagerRestore_SafetySucceedsButRestoreFails(t *testing.T) {
+	ctx := context.Background()
+	runner := exec.NewFakeRunner()
+	runner.On("backup", exec.FakeResponse{Stdout: "ok"})
+	runner.On("info", exec.FakeResponse{Stdout: sampleInfoJSON})
+	runner.On("restore", exec.FakeResponse{ExitCode: 1, Err: core.ExecError("pgbackrest restore failed")})
+
+	st := newTestStore(t)
+	owner := identity.NewOwner(testIdentity(), newFakeObjectStore(), core.Discard())
+	m := New(Options{Runner: runner, Store: st, Config: testConfig(), Owner: owner, Logger: core.Discard()})
+
+	_, err := m.Restore(ctx, nil, false, "main")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "restore failed")
+
+	// The safety backup must still be recorded as a success in history.
+	recs, err := st.ListBackups(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	require.Equal(t, "success", recs[0].Result)
+	require.Equal(t, "full", recs[0].BackupType)
+}
+
 func TestManagerRestore_ForeignOwnerHardStop(t *testing.T) {
 	ctx := context.Background()
 	runner := exec.NewFakeRunner()

@@ -80,6 +80,13 @@ func TestOSRunnerTimeout(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestOSRunnerMissingBinaryDoesNotPanic(t *testing.T) {
+	r := NewOSRunner(core.Discard(), false)
+	res, err := r.Run(context.Background(), RunSpec{Name: "/nonexistent-binary-that-does-not-exist"})
+	require.Error(t, err)
+	require.Equal(t, -1, res.ExitCode)
+}
+
 func TestFakeRunnerMatch(t *testing.T) {
 	f := NewFakeRunner().
 		On("systemctl is-active", FakeResponse{Stdout: "active\n"}).

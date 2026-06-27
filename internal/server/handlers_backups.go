@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -160,6 +161,10 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 // pre-restore safety backup and requires typed-name confirmation before
 // overwriting the live cluster; the request supplies that confirmation and an
 // optional point-in-time-recovery target.
+//
+// The restore runs on a context detached from the HTTP request so a client
+// disconnect (browser tab close, network drop, proxy timeout) cannot cancel
+// pgBackRest mid-write and leave the data directory in an inconsistent state.
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -175,7 +180,8 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.backups.Restore(ctx, target, req.Delta, req.Confirm)
+	restoreCtx := context.WithoutCancel(ctx)
+	res, err := s.backups.Restore(restoreCtx, target, req.Delta, req.Confirm)
 	if err != nil {
 		s.audit(ctx, "restore", "stanza", "failure", "restore failed", core.CodeOf(err))
 		writeError(w, err)

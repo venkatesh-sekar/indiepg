@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -275,6 +276,27 @@ func (m *Manager) StartBackup(ctx context.Context, t Type) (int64, error) {
 	release = false
 	go func() {
 		defer m.backupMu.Unlock()
+		defer func() {
+			if r := recover(); r != nil {
+				m.log.Error("panic in async backup goroutine", "id", id, "panic", r)
+				m.recordOutcome(time.Now().UTC(), true)
+				upCtx, upCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer upCancel()
+				rec := store.BackupRecord{
+					ID:         id,
+					BackupType: string(t),
+					StartedAt:  started,
+					Result:     "fail",
+					Error:      fmt.Sprintf("internal panic: %v", r),
+					RepoPath:   m.repoPrefix(),
+				}
+				stopped := time.Now().UTC()
+				rec.StoppedAt = &stopped
+				if uerr := m.updateBackup(upCtx, rec); uerr != nil {
+					m.log.Error("failed to update backup history after panic", "id", id, "error", uerr)
+				}
+			}
+		}()
 		rec, _ := m.executeBackup(context.Background(), stanza, t, started)
 		rec.ID = id
 		upCtx, upCancel := context.WithTimeout(context.Background(), 10*time.Second)
