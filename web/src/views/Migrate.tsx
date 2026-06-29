@@ -1689,7 +1689,8 @@ function DropoffCommand({ commands }: { commands: DropoffCommands }) {
         {variant === "docker" ? (
           <>
             Replace <code>CONTAINER</code> with the Postgres container name and{" "}
-            <code>DBNAME</code> with the database to copy.
+            <code>DBNAME</code> with the database to copy. If the container&apos;s Postgres
+            superuser isn&apos;t <code>postgres</code>, append <code>--user NAME</code>.
           </>
         ) : (
           <>

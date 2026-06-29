@@ -336,6 +336,12 @@ func (s *Server) handleStartDropoff(w http.ResponseWriter, r *http.Request) {
 	rec.ByteSize = dumpSize
 	rec.Error = ""
 	if err := s.store.UpdateDropoff(ctx, *rec); err != nil {
+		// The migrations row was already inserted (status 'importing') but the worker
+		// is only spawned below, AFTER this link succeeds. Mark that row failed before
+		// returning so a failed link does not leave a phantom in-flight job lingering
+		// in History until the next restart's SweepRunningMigrations reclaims it; then
+		// finalize the dropoff session itself.
+		s.failMigrationRow(ctx, id, err)
 		s.finishDropoff(ctx, code, err)
 		s.audit(ctx, "migrate_dropoff_start", code, "failure", "could not link migration", core.CodeOf(err))
 		writeError(w, err)
@@ -492,6 +498,31 @@ func dropoffMigrationRecord(code, targetDB string, overwrite bool) store.Migrati
 		TargetDatabase: targetDB,
 		Overwrite:      overwrite,
 		Code:           code,
+	}
+}
+
+// failMigrationRow marks an already-inserted migrations row failed. It is used on
+// the drop-off start error path that aborts AFTER InsertMigration but BEFORE the
+// import worker is spawned (a failed UpdateDropoff link), so the row is never left
+// a phantom 'importing' job with no worker behind it until a restart sweep reclaims
+// it. Best-effort: any store error only logs (the request is already failing, and a
+// restart sweep is the backstop). The cause is the same store error surfaced to the
+// caller and carries no source secrets.
+func (s *Server) failMigrationRow(ctx context.Context, id int64, cause error) {
+	mrec, err := s.store.GetMigration(ctx, id)
+	if err != nil {
+		s.log.Warn("could not load migration to mark failed after drop-off link failure", "id", id, "err", err)
+		return
+	}
+	mrec.Status = string(migrate.StatusFailed)
+	mrec.Phase = ""
+	if cause != nil {
+		mrec.Error = cause.Error()
+	}
+	now := nowUTC()
+	mrec.FinishedAt = &now
+	if uerr := s.store.UpdateMigration(ctx, *mrec); uerr != nil {
+		s.log.Warn("could not mark migration failed after drop-off link failure", "id", id, "err", uerr)
 	}
 }
 

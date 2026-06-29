@@ -612,3 +612,30 @@ func TestFinishDropoffCompletesFromImporting(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, string(migrate.DropCompleted), got.Status)
 }
+
+// TestFailMigrationRowMarksImportingRowFailed verifies the drop-off start error
+// path that aborts AFTER InsertMigration but BEFORE the worker is spawned (a failed
+// UpdateDropoff link) does not leave a phantom 'importing' migration row: it must be
+// flipped to 'failed' with the cause and a finished timestamp, so the History view
+// shows no orphaned in-flight job lingering until a restart sweep reclaims it.
+func TestFailMigrationRowMarksImportingRowFailed(t *testing.T) {
+	srv, _, _ := withDrops(t)
+	ctx := context.Background()
+
+	// dropoffMigrationRecord inserts in status 'importing' / phase 'validating' —
+	// exactly the orphaned state the start handler would leave behind.
+	id, err := srv.store.InsertMigration(ctx, dropoffMigrationRecord("LINK01", "appdb", false))
+	require.NoError(t, err)
+	pre, err := srv.store.GetMigration(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.StatusImporting), pre.Status)
+
+	srv.failMigrationRow(ctx, id, core.InternalError("could not link migration"))
+
+	mrec, err := srv.store.GetMigration(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.StatusFailed), mrec.Status)
+	require.Empty(t, mrec.Phase)
+	require.Contains(t, mrec.Error, "could not link migration")
+	require.NotNil(t, mrec.FinishedAt)
+}

@@ -178,10 +178,17 @@ fi
 if [ -z "$CONTAINER" ] && [ -z "${PGPASSWORD:-}" ]; then
 	if [ -e /dev/tty ]; then
 		printf '%s: Postgres password for %s@%s (blank if none): ' "$REPO_PUSH" "$USER_NAME" "$HOST" >/dev/tty
+		# Restore echo even if interrupted. stty -echo mutes the terminal for the
+		# masked read; a Ctrl-C / SIGTERM delivered while the read is waiting would
+		# otherwise leave the operator's terminal permanently echo-disabled (until a
+		# manual `stty echo` / `reset`). This dedicated trap re-enables echo and then
+		# aborts (130 = SIGINT) before the temp-file EXIT trap below is even armed.
+		trap 'stty echo </dev/tty 2>/dev/null || true; exit 130' INT TERM
 		stty -echo </dev/tty 2>/dev/null || true
 		# shellcheck disable=SC2162
 		read PGPASSWORD </dev/tty || true
 		stty echo </dev/tty 2>/dev/null || true
+		trap - INT TERM
 		printf '\n' >/dev/tty
 		export PGPASSWORD
 	else
@@ -266,26 +273,46 @@ fi
 
 # --- 3. source metadata (Postgres emits the JSON for correct escaping) -----
 # Exact per-table counts of every user BASE TABLE (the SAME set the panel counts
-# for verification), plus pg_version and total_rows. query_to_xml runs count(*)
-# per table; xpath extracts it. Postgres builds the JSON object so identifiers and
-# the version string are escaped correctly.
-META_SQL="WITH counts AS (
-  SELECT table_schema AS schema, table_name AS name,
-    (xpath('/row/c/text()',
-       query_to_xml(format('SELECT count(*) AS c FROM %I.%I', table_schema, table_name),
-                    false, true, '')))[1]::text::bigint AS rows
-  FROM information_schema.tables
-  WHERE table_type = 'BASE TABLE'
-    AND table_schema NOT IN ('pg_catalog','information_schema')
-)
-SELECT json_build_object(
-  'schema_version', 1,
-  'source_db', current_database(),
-  'pg_version', current_setting('server_version'),
-  'tables', coalesce((SELECT json_agg(json_build_object('schema', schema, 'name', name, 'rows', rows)
-                                       ORDER BY schema, name) FROM counts), '[]'::json),
-  'total_rows', coalesce((SELECT sum(rows) FROM counts), 0)
-)::text;"
+# for verification), plus pg_version and total_rows. A pg_temp PL/pgSQL function
+# loops those tables and runs count(*) per table via dynamic SQL, assembling the
+# JSON object server-side so identifiers and the version string are escaped
+# correctly. This deliberately avoids query_to_xml, which only works on a Postgres
+# built with libxml2 — absent on minimal/custom builds, where it would error ONLY
+# AFTER the costly multi-GB dump had already been staged. count(*) and json_*()
+# need no build-time options, so the common docker/native paths AND a no-libxml2
+# build all work. psql -c returns only the LAST statement's result, so the CREATE
+# FUNCTION is silent and we read back just the JSON. pg_temp is the session-local
+# temp schema (auto-dropped at disconnect; creating there needs only the TEMP
+# privilege PUBLIC holds by default). The $indiepg$ dollar-quote tags are
+# backslash-escaped so this double-quoted shell string does not expand them.
+META_SQL="CREATE FUNCTION pg_temp.indiepg_meta() RETURNS text AS \$indiepg\$
+DECLARE
+  r record;
+  n bigint;
+  tbls json[] := '{}';
+  total bigint := 0;
+BEGIN
+  FOR r IN
+    SELECT table_schema AS schema, table_name AS name
+    FROM information_schema.tables
+    WHERE table_type = 'BASE TABLE'
+      AND table_schema NOT IN ('pg_catalog','information_schema')
+    ORDER BY table_schema, table_name
+  LOOP
+    EXECUTE format('SELECT count(*) FROM %I.%I', r.schema, r.name) INTO n;
+    tbls := tbls || json_build_object('schema', r.schema, 'name', r.name, 'rows', n);
+    total := total + n;
+  END LOOP;
+  RETURN json_build_object(
+    'schema_version', 1,
+    'source_db', current_database(),
+    'pg_version', current_setting('server_version'),
+    'tables', coalesce(array_to_json(tbls), '[]'::json),
+    'total_rows', total
+  )::text;
+END;
+\$indiepg\$ LANGUAGE plpgsql;
+SELECT pg_temp.indiepg_meta();"
 
 say "collecting source row counts..."
 SOURCE_META="$(run_psql "$META_SQL")" || die "could not read source row counts from the database"
