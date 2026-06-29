@@ -129,6 +129,25 @@ func (s *Server) handleCreateDropoff(w http.ResponseWriter, r *http.Request) {
 	ttl := migrate.DropDefaultTTL
 	expiresAt := nowUTC().Add(ttl)
 
+	// Probe S3 reachability with a cheap authenticated HEAD BEFORE handing out a
+	// command. PresignPut is a purely local SigV4 signing op and NewS3ObjectStore
+	// only checks that endpoint/bucket are non-empty, so without this a mint would
+	// happily return a paste-able command even with wrong access/secret keys or an
+	// unreachable bucket — and the failure would only surface on the hard-to-reach
+	// source as migrate-push.sh's misleading "the link may have expired". StatObject
+	// maps a missing object to (0,false,nil); any other error (bad creds → 403,
+	// missing bucket, unreachable endpoint) means the upload would fail too, so fail
+	// the mint NOW, while the operator is still in the panel, with a clear cause. The
+	// probed key does not exist yet, so a healthy bucket returns "not found" (no
+	// error).
+	if _, _, perr := s.drops.StatObject(ctx, dumpKey); perr != nil {
+		s.audit(ctx, "migrate_dropoff_create", req.TargetDatabase, "failure", "S3 reachability probe failed", core.CodeOf(perr))
+		writeError(w, core.InternalError("S3 object storage is not reachable with the configured credentials").
+			WithHint("check the S3 endpoint, bucket, and access/secret keys in Settings, then try again").
+			Wrap(perr))
+		return
+	}
+
 	dumpURL, err := s.drops.PresignPut(ctx, dumpKey, ttl)
 	if err != nil {
 		s.audit(ctx, "migrate_dropoff_create", req.TargetDatabase, "failure", "presign dump url failed", core.CodeOf(err))

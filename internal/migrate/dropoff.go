@@ -288,7 +288,8 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 
 	// --- restoring -------------------------------------------------------
 	o.stage(ctx, rec, StatusImporting, PhaseRestoring)
-	if err := o.prepareTarget(ctx, job); err != nil {
+	createdTarget, err := o.prepareTarget(ctx, job)
+	if err != nil {
 		return o.fail(ctx, rec, err)
 	}
 	if err := o.engine.Restore(ctx, job.Target, dumpPath, job.TargetDatabase, RestoreOpts{
@@ -296,23 +297,40 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 		NoOwner: true,
 	}); err != nil {
 		if job.Overwrite {
+			// The authoritative dump is in S3, so the local download is redundant for
+			// retry — let cleanup() remove it rather than stranding up to MaxDropBytes
+			// on disk until the next restart's sweep (each failed-overwrite retry would
+			// otherwise leak another dump-sized file). preserveWorkDir is deliberately
+			// NOT set here (unlike directSingle, whose local dump is the only copy).
 			o.log.Error("drop-off restore failed after dropping original database; dump kept in S3 for retry",
 				"database", job.TargetDatabase, "code", spec.Code)
-			o.preserveWorkDir = true
 			return o.fail(ctx, rec, core.ExecError("restore of %q failed after the original was dropped; the dump is kept in S3 for retry", job.TargetDatabase).Wrap(err))
 		}
-		// Non-overwrite path: validateTargetOverwrite guaranteed the target was
-		// EMPTY (or absent) before this attempt, so any tables now present can only
-		// be this failed restore's partial output. Drop it so a "Retry import" from
-		// the kept-in-S3 dump starts clean — otherwise the leftover tables read as
-		// non-empty and validateTargetOverwrite would refuse every retry forever
-		// (the dump can't be re-pushed from the hard-to-reach source). The dump is
-		// kept in S3; only the poisoned local target is reset.
-		if derr := o.engine.DropDatabase(ctx, job.Target, job.TargetDatabase); derr != nil {
-			o.log.Warn("could not drop partially-restored drop-off target after a failed restore; a retry may need a manual drop",
-				"database", job.TargetDatabase, "code", spec.Code, "error", derr)
+		// Non-overwrite path. Drop the target ONLY when THIS import created it: a
+		// database we created holds nothing but this failed restore's partial output,
+		// so dropping it lets a "Retry import" from the kept-in-S3 dump start clean —
+		// otherwise the leftover tables read as non-empty and validateTargetOverwrite
+		// would refuse every retry forever (the dump can't be re-pushed from the
+		// hard-to-reach source).
+		//
+		// A target that PRE-EXISTED is never dropped. It passed validateTargetOverwrite
+		// by holding no user BASE TABLEs, but that gate does NOT prove it is otherwise
+		// empty: the operator may have created the database with extensions, custom
+		// schemas, functions, sequences, views, or a non-default owner/encoding (e.g.
+		// `CREATE DATABASE appdb; CREATE EXTENSION postgis;`). They explicitly declined
+		// a destructive overwrite, so wiping their database on a transient restore
+		// failure would violate the page's "never overwrites without typed
+		// confirmation" invariant. Leave it untouched (matching directSingle) and tell
+		// them how to retry. The dump stays in S3 either way.
+		if createdTarget {
+			if derr := o.engine.DropDatabase(ctx, job.Target, job.TargetDatabase); derr != nil {
+				o.log.Warn("could not drop partially-restored drop-off target after a failed restore; a retry may need a manual drop",
+					"database", job.TargetDatabase, "code", spec.Code, "error", derr)
+			}
+			return o.fail(ctx, rec, err)
 		}
-		return o.fail(ctx, rec, err)
+		return o.fail(ctx, rec, core.ExecError(
+			"restore of %q failed; the database existed before this import so it was left untouched — clear it (or enable Replace and re-type its name) before retrying from the kept-in-S3 dump", job.TargetDatabase).Wrap(err))
 	}
 	_ = rec.Progress(ctx, 1, 1, st.Size())
 

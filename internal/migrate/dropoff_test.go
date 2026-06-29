@@ -194,25 +194,53 @@ func TestImportFromDrop_happyPath(t *testing.T) {
 	require.Contains(t, tr.deletes, DropMetaKey("ABCDEF"))
 }
 
-// TestImportFromDrop_nonOverwriteRestoreFailureDropsTarget pins the retry-from-S3
-// salvage fix: a NON-overwrite restore that fails after creating/using a fresh
-// target leaves partial tables behind; those poison the next retry (they read as
-// non-empty and the overwrite gate would refuse forever, but the dump can't be
-// re-pushed from the unreachable source). The failed restore must therefore DROP
-// the poisoned target so a retry from the kept-in-S3 dump starts clean.
-func TestImportFromDrop_nonOverwriteRestoreFailureDropsTarget(t *testing.T) {
+// TestImportFromDrop_nonOverwriteRestoreFailureDropsCreatedTarget pins the
+// retry-from-S3 salvage path: a NON-overwrite restore that fails into a database
+// THIS import created (the target was absent) leaves partial tables behind; those
+// poison the next retry (they read as non-empty and the overwrite gate would
+// refuse forever, but the dump can't be re-pushed from the unreachable source).
+// Because we created the database, dropping it is safe and lets a retry from the
+// kept-in-S3 dump start clean.
+func TestImportFromDrop_nonOverwriteRestoreFailureDropsCreatedTarget(t *testing.T) {
 	tr := newFakeDrop()
 	stageDrop(t, tr, "ABCDEF", []byte("PGDMP"), map[string]int64{})
 
+	// exists:false => prepareTarget creates the DB, so this import owns it.
+	eng := &fakeEngine{exists: false, restoreErr: core.ExecError("pg_restore boom")}
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, nil, nil)
+	err := o.ImportFromDrop(context.Background(), tr, dropSpec("ABCDEF"), rec)
+	require.Error(t, err)
+	require.Equal(t, []string{"appdb"}, eng.created, "we created the fresh target")
+	// The target we created is dropped so a retry starts from a clean slate.
+	require.Equal(t, []string{"appdb"}, eng.dropped)
+	// The dump is KEPT in S3 for that retry — only the local target was reset.
+	require.Empty(t, tr.deletes)
+}
+
+// TestImportFromDrop_nonOverwriteRestoreFailurePreservesExistingTarget pins the
+// safety invariant: a NON-overwrite restore that fails into a PRE-EXISTING
+// database must NEVER drop it. The empty-base-tables gate it passed does not prove
+// the database is otherwise empty (it may carry extensions, schemas, functions,
+// sequences, or a non-default owner the operator created), and the operator
+// explicitly declined a destructive overwrite. The failed restore leaves the
+// database untouched (matching directSingle) and surfaces a clear retry hint; the
+// dump stays in S3.
+func TestImportFromDrop_nonOverwriteRestoreFailurePreservesExistingTarget(t *testing.T) {
+	tr := newFakeDrop()
+	stageDrop(t, tr, "ABCDEF", []byte("PGDMP"), map[string]int64{})
+
+	// exists:true => the DB pre-existed; prepareTarget creates nothing, so the
+	// failed restore must not drop it.
 	eng := &fakeEngine{exists: true, restoreErr: core.ExecError("pg_restore boom")}
 	rec := &fakeRecorder{}
 	o := newOrch(t, eng, nil, nil)
 	err := o.ImportFromDrop(context.Background(), tr, dropSpec("ABCDEF"), rec)
 	require.Error(t, err)
-	// The partially-restored target is dropped so a retry starts from a clean slate.
-	require.Equal(t, []string{"appdb"}, eng.dropped)
-	// The dump is KEPT in S3 for that retry — only the local target was reset.
-	require.Empty(t, tr.deletes)
+	require.Empty(t, eng.dropped, "a pre-existing target the operator declined to overwrite is never dropped")
+	require.Empty(t, eng.created, "the pre-existing target is not (re)created")
+	require.Contains(t, err.Error(), "existed before this import")
+	require.Empty(t, tr.deletes, "the dump is kept in S3 for retry")
 }
 
 func TestImportFromDrop_createsTargetWhenAbsent(t *testing.T) {

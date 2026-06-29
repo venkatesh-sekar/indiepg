@@ -164,6 +164,65 @@ func TestCreateDropoffMintsCommandAndRecord(t *testing.T) {
 	require.NotContains(t, drec.DumpKey, "X-Amz", "URLs must never be persisted")
 }
 
+// errStatDrop wraps a fake transport but fails every StatObject, modelling S3 with
+// wrong credentials or an unreachable bucket. PresignPut is a purely local signing
+// op that would still "succeed", so the mint-time HEAD probe is the only thing that
+// catches the misconfiguration before a command is handed out.
+type errStatDrop struct {
+	*fakeServerDrop
+	err error
+}
+
+func (e *errStatDrop) StatObject(ctx context.Context, key string) (int64, bool, error) {
+	return 0, false, e.err
+}
+
+// TestCreateDropoffFailsFastOnUnreachableS3 pins the mint-time reachability probe:
+// a HEAD that errors (bad creds / unreachable bucket) must fail the mint with a
+// clear "not reachable with the configured credentials" message instead of handing
+// out a command that would only fail later on the hard-to-reach source as a
+// misleading "link may have expired".
+func TestCreateDropoffFailsFastOnUnreachableS3(t *testing.T) {
+	srv, fake, token := withDrops(t)
+	srv.drops = &errStatDrop{fakeServerDrop: fake, err: core.InternalError("backup: stat S3 object: AccessDenied")}
+
+	rec := authedRequest(t, srv, http.MethodPost, "/api/migrate/drops", token, map[string]any{
+		"target_database": "appdb",
+	})
+	require.Equal(t, http.StatusInternalServerError, rec.Code, "body: %s", rec.Body.String())
+	var ae apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeInternal, ae.Code)
+	require.Contains(t, strings.ToLower(ae.Message), "not reachable")
+}
+
+// TestDropCancelRegistryGenerationGuard pins the owner-guard fix: a retry under the
+// same session code registers a NEW worker (new migration id); the previous
+// worker's late-running deferred unregister must NOT delete the new worker's entry,
+// so a cancel still interrupts the live restore rather than only marking the row.
+func TestDropCancelRegistryGenerationGuard(t *testing.T) {
+	srv, _, _ := withDrops(t)
+
+	worker1Cancelled := false
+	worker2Cancelled := false
+	srv.registerDropCancel("CODE01", 1, func() { worker1Cancelled = true })
+	// Retry: a new worker (id 2) registers under the same code.
+	srv.registerDropCancel("CODE01", 2, func() { worker2Cancelled = true })
+	// Worker 1's deferred unregister runs LATE — it must be a no-op (not its entry).
+	srv.unregisterDropCancel("CODE01", 1)
+
+	// A cancel now must still reach worker 2 (the live one).
+	srv.cancelDropWorker("CODE01")
+	require.False(t, worker1Cancelled, "the stale worker's cancel must not fire")
+	require.True(t, worker2Cancelled, "the live retry worker must remain interruptible")
+
+	// Worker 2's own unregister cleans the entry; a later cancel is a no-op.
+	srv.unregisterDropCancel("CODE01", 2)
+	worker2Cancelled = false
+	srv.cancelDropWorker("CODE01")
+	require.False(t, worker2Cancelled, "after the owner unregisters, no entry remains")
+}
+
 // TestCreateDropoffOverwriteRequiresTypedConfirm verifies the destructive
 // overwrite gate at mint time.
 func TestCreateDropoffOverwriteRequiresTypedConfirm(t *testing.T) {

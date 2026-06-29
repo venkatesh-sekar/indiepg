@@ -165,7 +165,7 @@ func (o *Orchestrator) directSingle(ctx context.Context, job Job, rec Recorder) 
 
 	// --- restoring -------------------------------------------------------
 	o.stage(ctx, rec, StatusImporting, PhaseRestoring)
-	if err := o.prepareTarget(ctx, job); err != nil {
+	if _, err := o.prepareTarget(ctx, job); err != nil {
 		return o.fail(ctx, rec, err)
 	}
 	if err := o.engine.Restore(ctx, job.Target, dumpPath, job.TargetDatabase, RestoreOpts{
@@ -583,21 +583,33 @@ func (o *Orchestrator) validateTargetOverwrite(ctx context.Context, job Job) err
 // prepareTarget makes the target database ready to receive a restore. When
 // overwriting it drops and recreates the database for a clean slate; otherwise
 // it creates the database if it does not yet exist.
-func (o *Orchestrator) prepareTarget(ctx context.Context, job Job) error {
+//
+// It returns created=true when THIS call brought the database into existence (an
+// overwrite recreate, or a non-overwrite create of an absent target). Callers use
+// that to decide whether dropping the database on a later restore failure is safe:
+// a database the import created holds nothing but its own (partial) output, whereas
+// a pre-existing one may carry objects the operator created and must not be wiped.
+func (o *Orchestrator) prepareTarget(ctx context.Context, job Job) (created bool, err error) {
 	if job.Overwrite {
 		if err := o.engine.DropDatabase(ctx, job.Target, job.TargetDatabase); err != nil {
-			return err
+			return false, err
 		}
-		return o.engine.CreateDatabase(ctx, job.Target, job.TargetDatabase, "")
+		if err := o.engine.CreateDatabase(ctx, job.Target, job.TargetDatabase, ""); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	exists, err := o.engine.DatabaseExists(ctx, job.Target, job.TargetDatabase)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !exists {
-		return o.engine.CreateDatabase(ctx, job.Target, job.TargetDatabase, "")
+		if err := o.engine.CreateDatabase(ctx, job.Target, job.TargetDatabase, ""); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 
 // verify pulls row counts from both sides and fails on any mismatch. It returns

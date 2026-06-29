@@ -125,6 +125,31 @@ func TestListExpiredDropoffs(t *testing.T) {
 		"past-TTL waiting/uploaded/failed/completed are swept; never importing/expired")
 }
 
+// TestListExpiredDropoffs_subSecondBoundary pins the fixed-width expires_at
+// comparison. The headline failure of a variable-width RFC3339Nano comparison is a
+// stored whole-second timestamp ("...:00:00Z", zero nanoseconds) vs a query `now`
+// in the same second but with a fraction ("...:00:00.5Z"): lexicographically the
+// stored value sorts AFTER the query because '.' (0x2E) < 'Z' (0x5A), so the
+// just-expired row is wrongly skipped. With the fixed-width layout string order
+// matches time order and the row is swept.
+func TestListExpiredDropoffs_subSecondBoundary(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	exp := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC) // exact whole second
+	_, err := s.InsertDropoff(ctx, sampleDropoff("BNDARY", exp))
+	require.NoError(t, err)
+
+	now := exp.Add(500 * time.Millisecond) // 0.5s past expiry, same whole second
+	expired, err := s.ListExpiredDropoffs(ctx, now, 100)
+	require.NoError(t, err)
+	codes := make([]string, len(expired))
+	for i, e := range expired {
+		codes[i] = e.Code
+	}
+	require.Contains(t, codes, "BNDARY", "a row expired within the current whole second must be swept")
+}
+
 func TestClaimDropoffForImport(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

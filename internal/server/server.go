@@ -90,9 +90,11 @@ type Server struct {
 	// (the worker runs on its own bounded context, detached from the request) rather
 	// than only marking the row cancelled and letting the restore finish anyway.
 	// Guarded by dropCancelMu; entries are added by runDropImportWorker and removed
-	// when it returns.
+	// when it returns. Each entry carries the owning worker's migration id so a
+	// retry's worker cannot have its registration clobbered by the previous worker's
+	// deferred unregister (the id is the owner guard for that race).
 	dropCancelMu sync.Mutex
-	dropCancels  map[string]context.CancelFunc
+	dropCancels  map[string]dropCancelEntry
 
 	// upgrades persists the version-upgrade feature's durable state (the in-
 	// flight operation + the pending-finalization record), backed by the config
@@ -406,7 +408,7 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 		migrateEngine: migrate.NewEngine(runner, log),
 		migrate:       migrateServiceFor(cfg, runner, log),
 		drops:         dropTransportFor(cfg, log),
-		dropCancels:   make(map[string]context.CancelFunc),
+		dropCancels:   make(map[string]dropCancelEntry),
 
 		// Version-upgrade durable state, backed by the panel's local store (config
 		// key/value table). The *store.Store satisfies pg.StateStore directly.

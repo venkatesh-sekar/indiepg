@@ -293,7 +293,7 @@ upload() {
 	# `&& return 0` keeps set -e from aborting on the expected non-zero on failure.
 	_err="$(curl -fsS -H 'Expect:' --upload-file "$2" "$1" 2>&1 >/dev/null)" && return 0
 	printf '%s' "$_err" | sed 's#https\{0,1\}://[^ ]*#<presigned-url>#g' | head -n1 >&2
-	die "failed to upload the $3 — the link may have expired; generate a new drop-off link in the panel"
+	die "failed to upload the $3 — the link may have expired, or the panel's S3 credentials/bucket are misconfigured or unreachable; check the error above, then generate a new drop-off link in the panel"
 }
 
 say "uploading dump (${SIZE} bytes)..."

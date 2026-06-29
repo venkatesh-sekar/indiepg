@@ -24,9 +24,12 @@ func (s *Server) runDropImportWorker(id int64, code string) {
 	defer cancel()
 	// Publish this worker's cancel so handleCancelDropoff can INTERRUPT an in-flight
 	// restore (the worker is detached from the request context), not merely mark the
-	// row cancelled and let pg_restore run to completion. Removed on return.
-	s.registerDropCancel(code, cancel)
-	defer s.unregisterDropCancel(code)
+	// row cancelled and let pg_restore run to completion. Keyed by code but guarded
+	// by this worker's unique migration id, so the deferred unregister only removes
+	// OUR entry — a retry (which spawns a new worker under the same code) is never
+	// torn down by the previous worker's late-running defer. Removed on return.
+	s.registerDropCancel(code, id, cancel)
+	defer s.unregisterDropCancel(code, id)
 	rec := newStoreRecorder(s.store, id)
 
 	if s.drops == nil {
@@ -79,18 +82,35 @@ func (s *Server) runDropImportWorker(id int64, code string) {
 	s.finishDropoff(ctx, code, ierr)
 }
 
+// dropCancelEntry is one in-flight import worker's cancel func tagged with the
+// migration id that owns it. The id is the owner guard that makes register/
+// unregister race-safe: a retry under the same session code spawns a NEW worker
+// with a new id, and the previous worker's deferred unregister must not delete the
+// new worker's entry.
+type dropCancelEntry struct {
+	id     int64
+	cancel context.CancelFunc
+}
+
 // registerDropCancel publishes an in-flight import worker's cancel func (keyed by
-// session code) so handleCancelDropoff can interrupt it. unregisterDropCancel
-// removes it when the worker returns.
-func (s *Server) registerDropCancel(code string, cancel context.CancelFunc) {
+// session code, tagged with its migration id) so handleCancelDropoff can interrupt
+// it. unregisterDropCancel removes it when the worker returns.
+func (s *Server) registerDropCancel(code string, id int64, cancel context.CancelFunc) {
 	s.dropCancelMu.Lock()
-	s.dropCancels[code] = cancel
+	s.dropCancels[code] = dropCancelEntry{id: id, cancel: cancel}
 	s.dropCancelMu.Unlock()
 }
 
-func (s *Server) unregisterDropCancel(code string) {
+// unregisterDropCancel removes a worker's entry ONLY if it is still that worker's
+// own (same migration id). Without the id guard, a slow worker1 whose deferred
+// unregister runs after a retried worker2 has already registered under the same
+// code would delete worker2's entry, leaving worker2's restore non-interruptible
+// by handleCancelDropoff.
+func (s *Server) unregisterDropCancel(code string, id int64) {
 	s.dropCancelMu.Lock()
-	delete(s.dropCancels, code)
+	if e, ok := s.dropCancels[code]; ok && e.id == id {
+		delete(s.dropCancels, code)
+	}
 	s.dropCancelMu.Unlock()
 }
 
@@ -99,10 +119,10 @@ func (s *Server) unregisterDropCancel(code string) {
 // is a no-op when no worker is registered (already finished, or never started).
 func (s *Server) cancelDropWorker(code string) {
 	s.dropCancelMu.Lock()
-	cancel := s.dropCancels[code]
+	e := s.dropCancels[code]
 	s.dropCancelMu.Unlock()
-	if cancel != nil {
-		cancel()
+	if e.cancel != nil {
+		e.cancel()
 	}
 }
 

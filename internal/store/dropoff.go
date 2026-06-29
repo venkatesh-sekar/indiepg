@@ -13,6 +13,17 @@ import (
 const dropoffColumns = `id, code, migration_id, dump_key, meta_key, target_database,
 	overwrite, status, error, byte_size, expires_at, created_at, updated_at`
 
+// dropoffExpiresLayout is a FIXED-WIDTH UTC timestamp layout for the expires_at
+// column. The expiry sweep filters `expires_at <= ?` as a SQLite TEXT comparison,
+// which is only correct if the stored and queried strings sort lexicographically
+// in time order. time.RFC3339Nano is variable-width — it drops trailing fractional
+// zeros, so `...:00:00Z` and `...:00:00.5Z` sort by their differing 7th character
+// where '.' (0x2E) < 'Z' (0x5A), inverting order across the whole-second boundary
+// and letting a just-expired row be skipped. Pinning nine fractional digits makes
+// string order match time order. Values written with this layout remain
+// RFC3339Nano-parseable, so scanDropoff/parseTime read them back unchanged.
+const dropoffExpiresLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 // nullInt64 renders an optional id as a nullable SQL argument.
 func nullInt64(p *int64) any {
 	if p == nil {
@@ -39,7 +50,7 @@ func (s *Store) InsertDropoff(ctx context.Context, d DropoffRecord) (int64, erro
 			 status, error, byte_size, expires_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.Code, nullInt64(d.MigrationID), d.DumpKey, d.MetaKey, d.TargetDatabase, boolToInt(d.Overwrite),
-		d.Status, d.Error, d.ByteSize, d.ExpiresAt.UTC().Format(time.RFC3339Nano), created, updated)
+		d.Status, d.Error, d.ByteSize, d.ExpiresAt.UTC().Format(dropoffExpiresLayout), created, updated)
 	if err != nil {
 		return 0, core.InternalError("insert dropoff session").Wrap(err)
 	}
@@ -196,7 +207,7 @@ func (s *Store) ListExpiredDropoffs(ctx context.Context, now time.Time, limit in
 		FROM dropoff_sessions
 		WHERE status NOT IN ('expired','importing') AND expires_at <= ?
 		ORDER BY id LIMIT ?`,
-		now.UTC().Format(time.RFC3339Nano), limit)
+		now.UTC().Format(dropoffExpiresLayout), limit)
 	if err != nil {
 		return nil, core.InternalError("list expired dropoffs").Wrap(err)
 	}
