@@ -80,13 +80,19 @@ func DropMetaKey(code string) string {
 // superset of the 3-method ObjectStore (kept intact for the ssh-less fakes):
 // minting the presigned PUT (PresignPut), checking readiness/size authoritatively
 // (StatObject), streaming the dump to disk (DownloadToFile), reading the small
-// meta.json (GetObject), and cleaning up after import (DeleteObject).
-// *backup.S3ObjectStore satisfies it.
+// meta.json with a hard ceiling (GetObjectLimited), and cleaning up after import
+// (DeleteObject). *backup.S3ObjectStore satisfies it.
+//
+// The meta read is GetObjectLimited, not an unbounded GetObject: the meta-key
+// presigned PUT is a PUT-only bearer token valid for the full TTL and can be
+// re-uploaded, so a holder of that URL could swap in a multi-GB meta.json. The
+// StatObject pre-check is a TOCTOU (a DB round-trip happens before the read), so
+// the read itself must be bounded to keep the single binary from OOMing.
 type DropTransport interface {
 	PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error)
 	StatObject(ctx context.Context, key string) (size int64, exists bool, err error)
 	DownloadToFile(ctx context.Context, key, dest string) error
-	GetObject(ctx context.Context, key string) ([]byte, error)
+	GetObjectLimited(ctx context.Context, key string, max int64) ([]byte, error)
 	DeleteObject(ctx context.Context, key string) error
 }
 
@@ -129,6 +135,16 @@ func parseDropMeta(data []byte) (DropMeta, error) {
 	var m DropMeta
 	if err := json.Unmarshal(data, &m); err != nil {
 		return DropMeta{}, core.ValidationError("malformed drop-off metadata").Wrap(err)
+	}
+	// Gate compatibility on the schema version so a future push script that bumps
+	// the manifest format gets a clear "update indiepg" error instead of being
+	// silently mis-parsed. Version 0 means the field was absent (a pre-v1 or
+	// non-conforming producer).
+	if m.SchemaVersion <= 0 || m.SchemaVersion > DropMetaSchemaVersion {
+		return DropMeta{}, core.ValidationError(
+			"drop-off metadata schema version %d is not supported (this panel understands up to %d)",
+			m.SchemaVersion, DropMetaSchemaVersion).
+			WithHint("re-copy the push command from the panel, or update indiepg on the panel")
 	}
 	if m.SHA256 == "" {
 		return DropMeta{}, core.ValidationError("drop-off metadata is missing a checksum").
@@ -213,8 +229,11 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 		return o.fail(ctx, rec, err)
 	}
 
-	// Read + parse meta.json (small; bounded above).
-	metaRaw, err := tr.GetObject(ctx, spec.MetaKey)
+	// Read + parse meta.json. The read is HARD-bounded (not merely pre-checked via
+	// StatObject above, which is a TOCTOU): a holder of the meta-key presigned PUT
+	// could swap in a huge object between the stat and this read, so the bounded
+	// read — not the stat — is the authoritative memory guard.
+	metaRaw, err := tr.GetObjectLimited(ctx, spec.MetaKey, MaxDropMetaBytes)
 	if err != nil {
 		return o.fail(ctx, rec, core.InternalError("cannot read drop-off metadata for %s", spec.Code).Wrap(err))
 	}

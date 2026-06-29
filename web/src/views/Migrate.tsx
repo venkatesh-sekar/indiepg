@@ -586,13 +586,25 @@ function isTerminal(status: MigrationStatus): boolean {
   return status === "completed" || status === "failed" || status === "expired";
 }
 
-export function DirectJobProgress({ id, onReset }: { id: number; onReset: () => void }) {
+export function DirectJobProgress({
+  id,
+  onReset,
+  onRetry,
+}: {
+  id: number;
+  onReset: () => void;
+  // Optional: when provided and the job failed, render a "Retry import" action
+  // alongside "Start another". Drop-off uses this to re-run the import from the
+  // dump it keeps in S3 on failure, without re-pushing from the source.
+  onRetry?: () => void;
+}) {
   const { data: job, error } = usePolling<MigrationRecord>(
     (signal) => api.getMigration(id, signal),
     2000,
   );
 
   const terminal = job ? isTerminal(job.status) : false;
+  const failed = job?.status === "failed";
   const verification = useVerification(job?.row_counts_src, job?.row_counts_tgt);
 
   return (
@@ -600,9 +612,16 @@ export function DirectJobProgress({ id, onReset }: { id: number; onReset: () => 
       title="Migration in progress"
       actions={
         terminal ? (
-          <Button type="button" variant="outline" size="sm" onClick={onReset}>
-            Start another
-          </Button>
+          <div className="flex items-center gap-2">
+            {onRetry && failed ? (
+              <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+                Retry import
+              </Button>
+            ) : null}
+            <Button type="button" variant="outline" size="sm" onClick={onReset}>
+              Start another
+            </Button>
+          </div>
         ) : null
       }
     >
@@ -1221,11 +1240,34 @@ export function DropoffProgress({
   const [cancelBusy, setCancelBusy] = useState(false);
 
   const status: DropoffStatus = drop?.status ?? "waiting_for_upload";
+
+  // Retry re-runs the import from the dump the panel KEEPS in S3 on failure, so a
+  // transient restore/transport error doesn't force a full re-push from the
+  // source the operator can barely reach. startDropoff records a fresh migration
+  // row and re-points the live poller at it.
+  const retryImport = async () => {
+    try {
+      const res = await api.startDropoff(created.code);
+      toast.success("Retrying the import.");
+      setStartedId(res.id);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Could not retry the import.");
+    }
+  };
+
   // Once an import job exists, the existing per-job poller owns the live
   // progress + verification view — identical to every other migration mode.
   const migrationId = startedId ?? drop?.migration_id ?? null;
   if (migrationId != null) {
-    return <DirectJobProgress id={migrationId} onReset={onReset} />;
+    // Offer "Retry import" only while the dump is still in S3 (the session hasn't
+    // expired); once expired the sweep has deleted it and a re-push is required.
+    return (
+      <DirectJobProgress
+        id={migrationId}
+        onReset={onReset}
+        onRetry={status === "expired" ? undefined : retryImport}
+      />
+    );
   }
 
   const expiresAt = drop?.expires_at ?? created.expires_at;
@@ -1440,15 +1482,14 @@ function DropoffCommand({ created }: { created: CreateDropoffResult }) {
       <p className="text-sm text-muted-foreground">
         {variant === "docker" ? (
           <>
-            Replace <code>&lt;container&gt;</code> with the Postgres container name and{" "}
-            <code>&lt;source-database&gt;</code> with the database to copy.
+            Replace <code>CONTAINER</code> with the Postgres container name and{" "}
+            <code>DBNAME</code> with the database to copy.
           </>
         ) : (
           <>
-            Replace <code>&lt;source-host&gt;</code>, <code>&lt;postgres-user&gt;</code> and{" "}
-            <code>&lt;source-database&gt;</code>. Set the password first, e.g.{" "}
-            <code>export PGPASSWORD=…</code> — it&apos;s read from the environment or a prompt, never
-            a flag.
+            Replace <code>SOURCE_HOST</code>, <code>POSTGRES_USER</code> and <code>DBNAME</code>. Set
+            the password first, e.g. <code>export PGPASSWORD=…</code> — it&apos;s read from the
+            environment or a terminal prompt, never a flag.
           </>
         )}
       </p>

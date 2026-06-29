@@ -75,7 +75,7 @@ func (f *fakeDropTransport) DownloadToFile(ctx context.Context, key, dest string
 	return os.WriteFile(dest, data, 0o600)
 }
 
-func (f *fakeDropTransport) GetObject(ctx context.Context, key string) ([]byte, error) {
+func (f *fakeDropTransport) GetObjectLimited(ctx context.Context, key string, max int64) ([]byte, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -84,6 +84,9 @@ func (f *fakeDropTransport) GetObject(ctx context.Context, key string) ([]byte, 
 	data, ok := f.objects[key]
 	if !ok {
 		return nil, core.NotFoundError("object %s not found", key)
+	}
+	if int64(len(data)) > max {
+		return nil, core.ValidationError("object %s exceeds the %d-byte read limit", key, max)
 	}
 	return append([]byte(nil), data...), nil
 }
@@ -318,7 +321,7 @@ func TestImportFromDrop_byteSizeMismatch(t *testing.T) {
 	dump := []byte("PGDMP-size")
 	tr.put(DropDumpKey("ABCDEF"), dump)
 	// meta claims a different byte_size than the actual object.
-	meta := DropMeta{SHA256: sha256Hex(dump), ByteSize: int64(len(dump)) + 100}
+	meta := DropMeta{SchemaVersion: DropMetaSchemaVersion, SHA256: sha256Hex(dump), ByteSize: int64(len(dump)) + 100}
 	raw, _ := json.Marshal(meta)
 	tr.put(DropMetaKey("ABCDEF"), raw)
 
@@ -342,6 +345,48 @@ func TestImportFromDrop_malformedMeta(t *testing.T) {
 	require.Equal(t, core.CodeValidation, core.CodeOf(err))
 }
 
+// TestImportFromDrop_unsupportedSchemaVersion pins that the schema_version field
+// actually gates compatibility: a manifest from a future push script (or a
+// pre-v1 producer with no version) is rejected with a clear error instead of
+// being silently mis-parsed and restored.
+func TestImportFromDrop_unsupportedSchemaVersion(t *testing.T) {
+	tr := newFakeDrop()
+	dump := []byte("PGDMP-ver")
+	tr.put(DropDumpKey("ABCDEF"), dump)
+	meta := DropMeta{SchemaVersion: DropMetaSchemaVersion + 1, SHA256: sha256Hex(dump), ByteSize: int64(len(dump))}
+	raw, err := json.Marshal(meta)
+	require.NoError(t, err)
+	tr.put(DropMetaKey("ABCDEF"), raw)
+
+	eng := &fakeEngine{exists: true}
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, nil, nil)
+	err = o.ImportFromDrop(context.Background(), tr, dropSpec("ABCDEF"), rec)
+	require.Error(t, err)
+	require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	require.Contains(t, err.Error(), "schema version")
+	require.Empty(t, eng.restores, "must not restore an unsupported manifest")
+	require.Empty(t, tr.deletes)
+}
+
+// TestImportFromDrop_metaReadBounded covers the meta-read TOCTOU: a holder of the
+// meta-key presigned PUT swaps in an oversized manifest AFTER the StatObject
+// pre-check, so the bounded GetObjectLimited read — not the stat — must catch it
+// before the panel buffers it into memory.
+func TestImportFromDrop_metaReadBounded(t *testing.T) {
+	base := newFakeDrop()
+	base.put(DropDumpKey("ABCDEF"), []byte("PGDMP"))
+	base.put(DropMetaKey("ABCDEF"), make([]byte, MaxDropMetaBytes+1)) // oversized manifest
+	tr := &metaTOCTOUDrop{fakeDropTransport: base}
+
+	rec := &fakeRecorder{}
+	o := newOrch(t, &fakeEngine{exists: true}, nil, nil)
+	err := o.ImportFromDrop(context.Background(), tr, dropSpec("ABCDEF"), rec)
+	require.Error(t, err)
+	require.NotContains(t, rec.phases(), PhaseRestoring, "must reject the oversized manifest before restoring")
+	require.Empty(t, tr.deletes)
+}
+
 // oversizeDrop overrides StatObject to report an over-cap size while still holding
 // real (small) bytes, modelling a presigned PUT that uploaded more than meta
 // claims — the panel must trust its own StatObject, not the source.
@@ -361,5 +406,21 @@ func (o *oversizeDrop) StatObject(ctx context.Context, key string) (int64, bool,
 	return 1, true, nil
 }
 
+// metaTOCTOUDrop reports a small meta size from StatObject while holding an
+// oversized meta object, modelling a presigned-PUT holder who swaps in a huge
+// manifest after the panel's StatObject pre-check. The dump key falls through to
+// the real (small) size, so only the meta read is forced over the limit.
+type metaTOCTOUDrop struct {
+	*fakeDropTransport
+}
+
+func (m *metaTOCTOUDrop) StatObject(ctx context.Context, key string) (int64, bool, error) {
+	if key == DropMetaKey("ABCDEF") {
+		return 16, true, nil // lie: report a plausibly-small manifest
+	}
+	return m.fakeDropTransport.StatObject(ctx, key)
+}
+
 var _ DropTransport = (*fakeDropTransport)(nil)
 var _ DropTransport = (*oversizeDrop)(nil)
+var _ DropTransport = (*metaTOCTOUDrop)(nil)

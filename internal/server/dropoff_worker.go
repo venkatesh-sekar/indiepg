@@ -42,6 +42,10 @@ func (s *Server) runDropImportWorker(id int64, code string) {
 	drec, err := s.store.GetDropoffByCode(ctx, code)
 	if err != nil {
 		_ = rec.Fail(ctx, err)
+		// Match the other early-exit branches: move the dropoff record to a terminal
+		// state too, so a failed reload doesn't leave the session wedged 'importing'
+		// (with a failed underlying migration) until a restart/expiry sweep.
+		s.finishDropoff(ctx, code, err)
 		return
 	}
 
@@ -96,10 +100,12 @@ func (s *Server) finishDropoff(ctx context.Context, code string, jobErr error) {
 	}
 }
 
-// sweepExpiredDropoffs deletes the S3 objects of expired, non-terminal drop-off
-// sessions (a full database at rest must not linger past its TTL) and marks them
-// expired. Best-effort: per-session errors only log. Called on startup and on a
-// periodic schedule.
+// sweepExpiredDropoffs deletes the S3 objects of past-TTL drop-off sessions (a
+// full database at rest must not linger past its TTL) and moves them to a terminal
+// 'expired' state. ListExpiredDropoffs already excludes actively-'importing'
+// sessions (never reclaim a live import's dump) and includes 'failed' ones (whose
+// kept-for-retry dump must still be reclaimed once the TTL passes). Best-effort:
+// per-session errors only log. Called on startup and on a periodic schedule.
 func (s *Server) sweepExpiredDropoffs(ctx context.Context) error {
 	expired, err := s.store.ListExpiredDropoffs(ctx, time.Now().UTC(), 100)
 	if err != nil {
@@ -114,6 +120,9 @@ func (s *Server) sweepExpiredDropoffs(ctx context.Context) error {
 				s.log.Warn("could not delete expired drop-off metadata", "code", rec.Code, "err", derr)
 			}
 		}
+		// Move to the terminal 'expired' state so the row drains out of the sweep's
+		// set (it won't be reclaimed again every cycle) while preserving any failure
+		// Error, so the UI can still explain why a previously-failed drop-off ended.
 		rec.Status = string(migrate.DropExpired)
 		if uerr := s.store.UpdateDropoff(ctx, rec); uerr != nil {
 			s.log.Warn("could not mark drop-off expired", "code", rec.Code, "err", uerr)

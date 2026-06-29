@@ -94,20 +94,82 @@ func TestListExpiredDropoffs(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
-	// One expired+waiting, one live, one expired+completed (terminal, excluded).
-	_, err := s.InsertDropoff(ctx, sampleDropoff("EXPIRE", now.Add(-time.Hour)))
-	require.NoError(t, err)
-	_, err = s.InsertDropoff(ctx, sampleDropoff("LIVEAA", now.Add(time.Hour)))
-	require.NoError(t, err)
-	done := sampleDropoff("DONEAA", now.Add(-time.Hour))
-	done.Status = "completed"
-	_, err = s.InsertDropoff(ctx, done)
-	require.NoError(t, err)
+	// Insert one of every status, expired vs live, to pin the sweep set exactly:
+	//   - waiting + expired  -> swept (objects reclaimed, then marked expired)
+	//   - failed  + expired  -> swept (its kept-for-retry dump must not linger)
+	//   - waiting + live     -> NOT swept (still inside its TTL)
+	//   - importing+ expired -> NOT swept (a live import owns its dump)
+	//   - completed+ expired -> NOT swept (objects already deleted on success)
+	//   - expired  + expired -> NOT swept (already terminal; drained)
+	insert := func(code, status string, exp time.Time) {
+		d := sampleDropoff(code, exp)
+		d.Status = status
+		_, err := s.InsertDropoff(ctx, d)
+		require.NoError(t, err)
+	}
+	insert("WAITEX", "waiting_for_upload", now.Add(-time.Hour))
+	insert("FAILEX", "failed", now.Add(-time.Hour))
+	insert("WAITLV", "waiting_for_upload", now.Add(time.Hour))
+	insert("IMPREX", "importing", now.Add(-time.Hour))
+	insert("DONEEX", "completed", now.Add(-time.Hour))
+	insert("EXPDEX", "expired", now.Add(-time.Hour))
 
 	expired, err := s.ListExpiredDropoffs(ctx, now, 100)
 	require.NoError(t, err)
-	require.Len(t, expired, 1)
-	require.Equal(t, "EXPIRE", expired[0].Code)
+	codes := make([]string, len(expired))
+	for i, e := range expired {
+		codes[i] = e.Code
+	}
+	require.ElementsMatch(t, []string{"WAITEX", "FAILEX"}, codes,
+		"only past-TTL waiting/uploaded/failed (never importing/completed/expired) are swept")
+}
+
+func TestClaimDropoffForImport(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	exp := time.Now().Add(time.Hour)
+
+	mk := func(code, status string) {
+		d := sampleDropoff(code, exp)
+		d.Status = status
+		_, err := s.InsertDropoff(ctx, d)
+		require.NoError(t, err)
+	}
+
+	// 'uploaded' is startable, and the claim is single-winner: a second claim on
+	// the now-'importing' row loses.
+	mk("UPLOAD", "uploaded")
+	won, err := s.ClaimDropoffForImport(ctx, "UPLOAD")
+	require.NoError(t, err)
+	require.True(t, won)
+	got, err := s.GetDropoffByCode(ctx, "UPLOAD")
+	require.NoError(t, err)
+	require.Equal(t, "importing", got.Status)
+	won, err = s.ClaimDropoffForImport(ctx, "UPLOAD")
+	require.NoError(t, err)
+	require.False(t, won, "a second concurrent start must lose")
+
+	// 'failed' is startable (retry from the kept dump).
+	mk("FAILED", "failed")
+	won, err = s.ClaimDropoffForImport(ctx, "FAILED")
+	require.NoError(t, err)
+	require.True(t, won)
+
+	// 'completed' and 'expired' are terminal — never startable.
+	mk("DONEXX", "completed")
+	won, err = s.ClaimDropoffForImport(ctx, "DONEXX")
+	require.NoError(t, err)
+	require.False(t, won)
+
+	mk("EXPIRX", "expired")
+	won, err = s.ClaimDropoffForImport(ctx, "EXPIRX")
+	require.NoError(t, err)
+	require.False(t, won)
+
+	// Unknown code is a benign miss, not an error.
+	won, err = s.ClaimDropoffForImport(ctx, "NOPENO")
+	require.NoError(t, err)
+	require.False(t, won)
 }
 
 func TestSweepRunningDropoffs(t *testing.T) {

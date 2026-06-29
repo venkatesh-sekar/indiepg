@@ -81,9 +81,9 @@ const CREATED: CreateDropoffResult = {
   // Far-future expiry so the countdown reads a positive "Expires in …".
   expires_at: "2999-01-01T00:00:00Z",
   command_docker:
-    "curl -fsSL https://example/migrate-push.sh | sh -s -- --dump-url 'https://s3/dump?sig=AAA' --meta-url 'https://s3/meta?sig=BBB' --db <source-database> --docker <container>",
+    "curl -fsSL https://example/migrate-push.sh | sh -s -- --dump-url 'https://s3/dump?sig=AAA' --meta-url 'https://s3/meta?sig=BBB' --db DBNAME --docker CONTAINER",
   command_native:
-    "curl -fsSL https://example/migrate-push.sh | sh -s -- --dump-url 'https://s3/dump?sig=AAA' --meta-url 'https://s3/meta?sig=BBB' --db <source-database> --host <source-host> --port 5432 --user <postgres-user>",
+    "curl -fsSL https://example/migrate-push.sh | sh -s -- --dump-url 'https://s3/dump?sig=AAA' --meta-url 'https://s3/meta?sig=BBB' --db DBNAME --host SOURCE_HOST --port 5432 --user POSTGRES_USER",
 };
 
 const DROP: DropoffSession = {
@@ -364,6 +364,22 @@ describe("Migrate — drop-off link mode", () => {
     // the drop-off command does not.
     expect(screen.getByText(/migration in progress/i)).toBeInTheDocument();
     expect(screen.queryByText(CREATED.command_docker)).not.toBeInTheDocument();
+  });
+
+  it("a failed import offers Retry import (reusing the kept dump) and re-starts it", async () => {
+    const startSpy = vi
+      .spyOn(api, "startDropoff")
+      .mockResolvedValue({ id: 99, status: "importing" });
+    // The session has a migration id (so it handed off) and is failed-but-not-expired,
+    // so its dump is still in S3 for a retry.
+    pollState.current = state({
+      data: { ...DROP, status: "failed", migration_id: 7, error: "pg_restore exited 1" },
+    });
+    render(<DropoffProgress created={CREATED} onReset={() => {}} />);
+
+    const retry = screen.getByRole("button", { name: /retry import/i });
+    fireEvent.click(retry);
+    expect(startSpy).toHaveBeenCalledWith("ABC123");
   });
 
   it("surfaces the S3-required mint error as a helpful, mode-named callout", async () => {

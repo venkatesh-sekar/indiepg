@@ -105,6 +105,32 @@ func (s *S3ObjectStore) GetObject(ctx context.Context, key string) ([]byte, erro
 	return data, nil
 }
 
+// GetObjectLimited returns the object bytes but refuses to buffer more than max
+// bytes into memory: it reads at most max+1 via an io.LimitReader and rejects the
+// object as too large when that ceiling is reached. It is the safe read for an
+// object whose size is attacker-influenceable — notably a drop-off meta.json,
+// whose presigned PUT URL can be re-uploaded with arbitrary content within its
+// TTL — so the single binary cannot be OOM'd by a swapped-in giant manifest. A
+// missing key maps to CodeNotFound per the GetObject contract.
+func (s *S3ObjectStore) GetObjectLimited(ctx context.Context, key string, max int64) ([]byte, error) {
+	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, s.classifyGet(err, key)
+	}
+	defer func() { _ = obj.Close() }()
+	// minio's GetObject is lazy: the request is issued on first read, so a missing
+	// key surfaces here. Read one byte past the ceiling so an over-limit object is
+	// detectable without buffering it.
+	data, err := io.ReadAll(io.LimitReader(obj, max+1))
+	if err != nil {
+		return nil, s.classifyGet(err, key)
+	}
+	if int64(len(data)) > max {
+		return nil, core.ValidationError("backup: S3 object %q exceeds the %d-byte read limit", key, max)
+	}
+	return data, nil
+}
+
 // PutObject writes (or overwrites) the object.
 func (s *S3ObjectStore) PutObject(ctx context.Context, key string, data []byte) error {
 	_, err := s.client.PutObject(ctx, s.bucket, key, bytes.NewReader(data), int64(len(data)),

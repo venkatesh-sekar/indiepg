@@ -7,16 +7,17 @@
 # panel minted. The panel then imports it with SHA-256 + row-count verification.
 # No panel install and no AWS keys are needed on this box.
 #
-# Usage (copy the exact line from the panel; it has the two URLs filled in):
+# Usage (copy the exact line from the panel; it has the two URLs filled in, then
+# replace the UPPERCASE placeholders):
 #   curl -fsSL https://raw.githubusercontent.com/venkatesh-sekar/indiepg/main/scripts/migrate-push.sh \
-#     | sh -s -- --dump-url '<dump-url>' --meta-url '<meta-url>' --db <database> --docker <container>
+#     | sh -s -- --dump-url '<dump-url>' --meta-url '<meta-url>' --db DBNAME --docker CONTAINER
 #
 #   native alternative (no Docker):
-#   ... --db <database> --host <host> [--port 5432] [--user postgres]
+#   ... --db DBNAME --host SOURCE_HOST [--port 5432] [--user POSTGRES_USER]
 #
 # Password (native mode only): set PGPASSWORD in the environment, or you will be
-# prompted. It is NEVER passed as a command-line flag (which would leak it in the
-# process listing).
+# prompted on the terminal. It is NEVER passed as a command-line flag (which would
+# leak it in the process listing).
 #
 # Flags:
 #   --dump-url URL    presigned PUT URL for the dump object        (required)
@@ -25,7 +26,7 @@
 #   --docker NAME     run pg_dump/psql inside this docker container
 #   --host HOST       connect to a native Postgres at HOST  (XOR --docker)
 #   --port PORT       source port (native; default 5432)
-#   --user USER       source user (native; default postgres)
+#   --user USER       source user (default postgres)
 #   --help            show this help and exit
 
 set -eu
@@ -43,15 +44,16 @@ Dumps ONE PostgreSQL database from a source the panel cannot reach and uploads i
 to S3 through two short-lived presigned PUT URLs the panel minted. No panel and no
 AWS credentials are needed on this box.
 
-Usage (copy the exact line from the panel; it has the two URLs filled in):
+Usage (copy the exact line from the panel; it has the two URLs filled in, then
+replace the UPPERCASE placeholders):
   curl -fsSL .../scripts/migrate-push.sh | sh -s -- \
-    --dump-url '<dump-url>' --meta-url '<meta-url>' --db <database> --docker <container>
+    --dump-url '<dump-url>' --meta-url '<meta-url>' --db DBNAME --docker CONTAINER
 
   native alternative (no Docker):
-    ... --db <database> --host <host> [--port 5432] [--user postgres]
+    ... --db DBNAME --host SOURCE_HOST [--port 5432] [--user POSTGRES_USER]
 
 Password (native mode only): set PGPASSWORD in the environment, or you will be
-prompted. It is NEVER passed as a command-line flag.
+prompted on the terminal. It is NEVER passed as a command-line flag.
 
 Flags:
   --dump-url URL    presigned PUT URL for the dump object        (required)
@@ -60,7 +62,7 @@ Flags:
   --docker NAME     run pg_dump/psql inside this docker container
   --host HOST       connect to a native Postgres at HOST  (XOR --docker)
   --port PORT       source port (native; default 5432)
-  --user USER       source user (native; default postgres)
+  --user USER       source user (default postgres)
   --help            show this help and exit
 EOF
 }
@@ -91,16 +93,28 @@ done
 # --- validate args --------------------------------------------------------
 [ -n "$DUMP_URL" ] || die "--dump-url is required (copy the full command from the panel)"
 [ -n "$META_URL" ] || die "--meta-url is required (copy the full command from the panel)"
-[ -n "$DB" ]       || die "--db <source-database> is required"
+[ -n "$DB" ]       || die "--db DBNAME is required"
+# Catch an unsubstituted placeholder (the panel emits literal DBNAME/CONTAINER/...
+# tokens, chosen to be shell-safe so a verbatim paste reaches here instead of
+# triggering shell redirection on <…>).
 case "$DB" in
-	*'<'*|*'>'*) die "--db still has the <source-database> placeholder; put your real database name there" ;;
+	DBNAME|*'<'*|*'>'*) die "--db is still the DBNAME placeholder — replace it with your real database name" ;;
 esac
+if [ "$CONTAINER" = "CONTAINER" ]; then
+	die "--docker is still the CONTAINER placeholder — replace it with your Postgres container name"
+fi
+if [ "$HOST" = "SOURCE_HOST" ]; then
+	die "--host is still the SOURCE_HOST placeholder — replace it with your Postgres host"
+fi
+if [ "$USER_NAME" = "POSTGRES_USER" ]; then
+	die "--user is still the POSTGRES_USER placeholder — replace it with your Postgres user (often 'postgres')"
+fi
 
 if [ -n "$CONTAINER" ] && [ -n "$HOST" ]; then
 	die "choose ONE of --docker or --host, not both"
 fi
 if [ -z "$CONTAINER" ] && [ -z "$HOST" ]; then
-	die "specify the source: --docker <container>  OR  --host <host> [--port] [--user]"
+	die "specify the source: --docker CONTAINER  OR  --host SOURCE_HOST [--port] [--user]"
 fi
 
 # --- preflight ------------------------------------------------------------
@@ -123,24 +137,37 @@ fi
 # --- password (native mode only) -----------------------------------------
 # Read from PGPASSWORD or an interactive prompt ONLY. Never a flag — a --password
 # argument would be visible to every user via `ps`.
-if [ -z "$CONTAINER" ] && [ -z "${PGPASSWORD:-}" ] && [ -t 0 ]; then
-	printf '%s: Postgres password for %s@%s (blank if none): ' "$REPO_PUSH" "$USER_NAME" "$HOST" >&2
-	stty -echo 2>/dev/null || true
-	# shellcheck disable=SC2162
-	read PGPASSWORD || true
-	stty echo 2>/dev/null || true
-	printf '\n' >&2
-	export PGPASSWORD
+#
+# The prompt reads from the controlling terminal (/dev/tty), NOT stdin: in the
+# documented `curl ... | sh -s -- ...` invocation, fd 0 is the pipe carrying the
+# script, so a `[ -t 0 ]`/`read` would never fire (and would eat the script). Going
+# through /dev/tty makes the masked prompt actually work under curl|sh.
+if [ -z "$CONTAINER" ] && [ -z "${PGPASSWORD:-}" ]; then
+	if [ -e /dev/tty ]; then
+		printf '%s: Postgres password for %s@%s (blank if none): ' "$REPO_PUSH" "$USER_NAME" "$HOST" >/dev/tty
+		stty -echo </dev/tty 2>/dev/null || true
+		# shellcheck disable=SC2162
+		read PGPASSWORD </dev/tty || true
+		stty echo </dev/tty 2>/dev/null || true
+		printf '\n' >/dev/tty
+		export PGPASSWORD
+	else
+		say "no PGPASSWORD set and no terminal to prompt on; relying on the source's local auth (export PGPASSWORD if the connection fails)"
+	fi
 fi
 
 # --- source command wrappers ----------------------------------------------
-# run_pg_dump writes a custom-format (-Fc) dump of $DB to stdout.
+# run_pg_dump writes a custom-format (-Fc) dump of $DB to stdout. -U is passed in
+# docker mode too: `docker exec` on the standard postgres image runs as root, and
+# without -U libpq would default the role to the OS user 'root' (which is not a
+# Postgres role) and fail with `role "root" does not exist`. USER_NAME defaults to
+# 'postgres'.
 run_pg_dump() {
 	if [ -n "$CONTAINER" ]; then
 		if [ -n "${PGPASSWORD:-}" ]; then
-			docker exec -i -e PGPASSWORD "$CONTAINER" pg_dump -Fc -d "$DB"
+			docker exec -i -e PGPASSWORD "$CONTAINER" pg_dump -Fc -U "$USER_NAME" -d "$DB"
 		else
-			docker exec -i "$CONTAINER" pg_dump -Fc -d "$DB"
+			docker exec -i "$CONTAINER" pg_dump -Fc -U "$USER_NAME" -d "$DB"
 		fi
 	else
 		pg_dump -Fc -h "$HOST" -p "$PORT" -U "$USER_NAME" -d "$DB"
@@ -153,9 +180,9 @@ run_psql() {
 	_sql="$1"
 	if [ -n "$CONTAINER" ]; then
 		if [ -n "${PGPASSWORD:-}" ]; then
-			docker exec -i -e PGPASSWORD "$CONTAINER" psql -tAqX -v ON_ERROR_STOP=1 -d "$DB" -c "$_sql"
+			docker exec -i -e PGPASSWORD "$CONTAINER" psql -tAqX -v ON_ERROR_STOP=1 -U "$USER_NAME" -d "$DB" -c "$_sql"
 		else
-			docker exec -i "$CONTAINER" psql -tAqX -v ON_ERROR_STOP=1 -d "$DB" -c "$_sql"
+			docker exec -i "$CONTAINER" psql -tAqX -v ON_ERROR_STOP=1 -U "$USER_NAME" -d "$DB" -c "$_sql"
 		fi
 	else
 		psql -tAqX -v ON_ERROR_STOP=1 -h "$HOST" -p "$PORT" -U "$USER_NAME" -d "$DB" -c "$_sql"

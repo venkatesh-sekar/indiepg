@@ -96,9 +96,47 @@ func (s *Store) UpdateDropoff(ctx context.Context, d DropoffRecord) error {
 	return nil
 }
 
-// ListExpiredDropoffs returns non-terminal drop-off sessions whose expiry has
-// passed, oldest first, so the periodic sweep can delete their S3 objects and
-// mark them expired. limit <= 0 defaults to 100.
+// ClaimDropoffForImport atomically transitions a startable drop-off session to
+// 'importing', returning true ONLY for the single winning caller. It is the
+// concurrency guard for POST /migrate/drops/{code}/start: two near-simultaneous
+// starts (a double-click, two tabs, a retried request, direct API use) both pass
+// the handler's status/stat checks, but only one wins this conditional UPDATE —
+// the loser gets false and is rejected, so a single destructive target is never
+// dropped+restored by two workers at once.
+//
+// A session is startable from 'uploaded' (the normal path) or 'failed' (a retry
+// from the dump kept on failure). 'waiting_for_upload' is also accepted because
+// the handler only reaches this call after confirming meta.json is present (the
+// readiness flip may simply not have been persisted yet). 'importing',
+// 'completed' and 'expired' never transition, so a started/finished/expired
+// session is left untouched and the caller is told it already moved on.
+func (s *Store) ClaimDropoffForImport(ctx context.Context, code string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE dropoff_sessions SET status = 'importing', error = '', updated_at = ?
+		WHERE code = ? AND status IN ('waiting_for_upload','uploaded','failed')`,
+		nowRFC3339(), code)
+	if err != nil {
+		return false, core.InternalError("claim dropoff for import").Wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, core.InternalError("claim dropoff rows affected").Wrap(err)
+	}
+	return n == 1, nil
+}
+
+// ListExpiredDropoffs returns drop-off sessions whose expiry has passed and whose
+// S3 objects may still be at rest, oldest first, so the periodic sweep can delete
+// the dump+metadata and (for non-failed rows) mark them expired. limit <= 0
+// defaults to 100.
+//
+// The status filter deliberately EXCLUDES 'importing': an import that legitimately
+// Started shortly before the (short) TTL can still be streaming/restoring past it
+// under the worker's longer context, and reclaiming its dump out from under it
+// would fail the job spuriously. Interrupted imports are handled separately by
+// SweepRunningDropoffs on startup. It INCLUDES 'failed': a failed/abandoned
+// session keeps its (up to multi-GiB) dump in S3 for retry, which must still be
+// reclaimed once the TTL passes, or a full database lingers at rest indefinitely.
 func (s *Store) ListExpiredDropoffs(ctx context.Context, now time.Time, limit int) ([]DropoffRecord, error) {
 	if limit <= 0 {
 		limit = 100
@@ -106,7 +144,7 @@ func (s *Store) ListExpiredDropoffs(ctx context.Context, now time.Time, limit in
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+dropoffColumns+`
 		FROM dropoff_sessions
-		WHERE status NOT IN ('completed','failed','expired') AND expires_at <= ?
+		WHERE status NOT IN ('completed','expired','importing') AND expires_at <= ?
 		ORDER BY id LIMIT ?`,
 		now.UTC().Format(time.RFC3339Nano), limit)
 	if err != nil {

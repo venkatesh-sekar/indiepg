@@ -204,9 +204,29 @@ func (s *Server) handleStartDropoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Atomically claim the start. Two concurrent POSTs (a double-click, two tabs,
+	// a retried request, direct API use) both pass the status/stat checks above,
+	// but only ONE wins this conditional flip to 'importing' — without it both
+	// would InsertMigration and spawn a worker, racing two pg_restores into the
+	// same (destructive) target. The loser is told the session already moved on.
+	won, err := s.store.ClaimDropoffForImport(ctx, code)
+	if err != nil {
+		s.audit(ctx, "migrate_dropoff_start", code, "failure", "could not claim drop-off", core.CodeOf(err))
+		writeError(w, err)
+		return
+	}
+	if !won {
+		writeError(w, core.ConflictError("drop-off %s is already importing or finished", code).
+			WithHint("refresh to see its current status"))
+		return
+	}
+
 	mrec := dropoffMigrationRecord(code, rec.TargetDatabase, rec.Overwrite)
 	id, err := s.store.InsertMigration(ctx, mrec)
 	if err != nil {
+		// Roll back the claim so the session isn't wedged 'importing' with no
+		// worker behind it: finishDropoff marks it failed (retryable) with the error.
+		s.finishDropoff(ctx, code, err)
 		s.audit(ctx, "migrate_dropoff_start", code, "failure", "could not record migration", core.CodeOf(err))
 		writeError(w, err)
 		return
@@ -217,6 +237,7 @@ func (s *Server) handleStartDropoff(w http.ResponseWriter, r *http.Request) {
 	rec.ByteSize = dumpSize
 	rec.Error = ""
 	if err := s.store.UpdateDropoff(ctx, *rec); err != nil {
+		s.finishDropoff(ctx, code, err)
 		s.audit(ctx, "migrate_dropoff_start", code, "failure", "could not link migration", core.CodeOf(err))
 		writeError(w, err)
 		return
@@ -287,10 +308,14 @@ func (s *Server) refreshDropoff(ctx context.Context, rec *store.DropoffRecord) *
 		return rec // terminal or actively importing: nothing to flip
 	}
 	if rec.ExpiresAt.Before(nowUTC()) {
+		// Report expired WITHOUT persisting it. The expiry sweep is the single
+		// authority that persists 'expired' AND deletes the dump+metadata in the
+		// same step, so a persisted 'expired' always implies the full database at
+		// rest was reclaimed. Marking it 'expired' here (the read path can't delete
+		// reliably) would orphan the dump forever, since the sweep skips rows that
+		// are already 'expired'. Leaving the row non-terminal keeps it in the
+		// sweep's set; the response still shows 'expired' to the operator.
 		rec.Status = string(migrate.DropExpired)
-		if uerr := s.store.UpdateDropoff(ctx, *rec); uerr != nil {
-			s.log.Warn("could not mark expired drop-off on read", "code", rec.Code, "err", uerr)
-		}
 		return rec
 	}
 	if rec.Status != string(migrate.DropWaiting) {
@@ -349,10 +374,14 @@ func dropoffStoreRecord(code, dumpKey, metaKey, targetDB string, overwrite bool,
 // it shares the same progress/poll path as every other migration mode.
 func dropoffMigrationRecord(code, targetDB string, overwrite bool) store.MigrationRecord {
 	return store.MigrationRecord{
-		Mode:           string(migrate.ModeDropOff),
-		Role:           "target",
-		Status:         string(migrate.StatusImporting),
-		Phase:          string(migrate.PhaseValidating),
+		Mode:   string(migrate.ModeDropOff),
+		Role:   "target",
+		Status: string(migrate.StatusImporting),
+		Phase:  string(migrate.PhaseValidating),
+		// The source is a box the panel cannot reach, so there is no host/user to
+		// redact — label the row by its drop-off code so the shared History view's
+		// "Source" column is self-describing instead of blank.
+		SourceSummary:  "drop-off " + code,
 		TargetDatabase: targetDB,
 		Overwrite:      overwrite,
 		Code:           code,
@@ -361,17 +390,24 @@ func dropoffMigrationRecord(code, targetDB string, overwrite bool) store.Migrati
 
 // dropoffCommandDocker / dropoffCommandNative render the paste-able push command,
 // mirroring scripts/install.sh's curl|sh one-liner. The presigned URLs are
-// single-key, PUT-only, short-lived bearer tokens; the <source-database> and
-// container/host fields are placeholders the operator fills in. The password is
-// NEVER a flag — migrate-push.sh reads it from PGPASSWORD or a prompt.
+// single-key, PUT-only, short-lived bearer tokens; the DBNAME / CONTAINER /
+// SOURCE_HOST / POSTGRES_USER tokens are placeholders the operator fills in.
+//
+// The placeholders deliberately use plain UPPERCASE words rather than
+// <angle-bracket> tokens: the common newbie mistake is pasting the line before
+// substituting, and unquoted <…> would make the shell attempt input redirection
+// ("No such file or directory") before sh ever reads the args. A literal DBNAME
+// instead reaches migrate-push.sh, which catches it with a friendly placeholder
+// guard. The password is NEVER a flag — migrate-push.sh reads it from PGPASSWORD
+// or a /dev/tty prompt.
 func dropoffCommandDocker(dumpURL, metaURL string) string {
 	return fmt.Sprintf(
-		"curl -fsSL %s | sh -s -- --dump-url '%s' --meta-url '%s' --db <source-database> --docker <container>",
+		"curl -fsSL %s | sh -s -- --dump-url '%s' --meta-url '%s' --db DBNAME --docker CONTAINER",
 		migratePushScriptURL, dumpURL, metaURL)
 }
 
 func dropoffCommandNative(dumpURL, metaURL string) string {
 	return fmt.Sprintf(
-		"curl -fsSL %s | sh -s -- --dump-url '%s' --meta-url '%s' --db <source-database> --host <source-host> --port 5432 --user <postgres-user>",
+		"curl -fsSL %s | sh -s -- --dump-url '%s' --meta-url '%s' --db DBNAME --host SOURCE_HOST --port 5432 --user POSTGRES_USER",
 		migratePushScriptURL, dumpURL, metaURL)
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/venkatesh-sekar/indiepg/internal/core"
 	"github.com/venkatesh-sekar/indiepg/internal/migrate"
+	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
 
 // fakeServerDrop is an in-memory migrate.DropTransport injected into a test server
@@ -58,12 +59,15 @@ func (f *fakeServerDrop) DownloadToFile(ctx context.Context, key, dest string) e
 	return os.WriteFile(dest, data, 0o600)
 }
 
-func (f *fakeServerDrop) GetObject(ctx context.Context, key string) ([]byte, error) {
+func (f *fakeServerDrop) GetObjectLimited(ctx context.Context, key string, max int64) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	data, ok := f.objects[key]
 	if !ok {
 		return nil, core.NotFoundError("object %s not found", key)
+	}
+	if int64(len(data)) > max {
+		return nil, core.ValidationError("object %s exceeds the %d-byte read limit", key, max)
 	}
 	return append([]byte(nil), data...), nil
 }
@@ -136,8 +140,12 @@ func TestCreateDropoffMintsCommandAndRecord(t *testing.T) {
 	require.Contains(t, env.Data.CommandDocker, "migrate-push.sh")
 	require.Contains(t, env.Data.CommandDocker, "--dump-url")
 	require.Contains(t, env.Data.CommandDocker, "X-Amz-Signature")
-	require.Contains(t, env.Data.CommandDocker, "--docker <container>")
-	require.Contains(t, env.Data.CommandNative, "--host <source-host>")
+	require.Contains(t, env.Data.CommandDocker, "--docker CONTAINER")
+	require.Contains(t, env.Data.CommandNative, "--host SOURCE_HOST")
+	// Placeholders must NOT be shell metacharacters: a verbatim paste must not
+	// trigger shell redirection before migrate-push.sh's own placeholder guard.
+	require.NotContains(t, env.Data.CommandDocker, "<")
+	require.NotContains(t, env.Data.CommandNative, "<")
 	require.False(t, env.Data.ExpiresAt.IsZero())
 
 	// The store record holds only the KEYS — never the presigned URLs.
@@ -270,11 +278,14 @@ func TestStartDropoffWhenUploadedRecordsMigration(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &started))
 	require.NotZero(t, started.Data.ID)
 
-	// The migration row was created in drop-off mode and linked to the session.
+	// The migration row was created in drop-off mode and linked to the session,
+	// with a self-describing source summary so the shared History "Source" column
+	// is not blank for drop-off jobs.
 	mrec, err := srv.store.GetMigration(context.Background(), started.Data.ID)
 	require.NoError(t, err)
 	require.Equal(t, string(migrate.ModeDropOff), mrec.Mode)
 	require.Equal(t, code, mrec.Code)
+	require.Equal(t, "drop-off "+code, mrec.SourceSummary)
 
 	drec, err := srv.store.GetDropoffByCode(context.Background(), code)
 	require.NoError(t, err)
@@ -309,4 +320,77 @@ func TestCancelDropoffDeletesObjects(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, string(migrate.DropFailed), drec.Status)
 	require.Equal(t, "cancelled", drec.Error)
+}
+
+// TestGetDropoffExpiredInMemoryNotPersisted verifies the expiry-on-read fix: a
+// GET on a past-TTL session reports 'expired' to the operator but does NOT persist
+// it, so the sweep (the single authority that ALSO deletes the dump at rest) still
+// owns the terminal transition — otherwise a read would orphan the dump forever.
+func TestGetDropoffExpiredInMemoryNotPersisted(t *testing.T) {
+	srv, _, token := withDrops(t)
+	ctx := context.Background()
+	d := store.DropoffRecord{
+		Code: "EXPRD1", DumpKey: migrate.DropDumpKey("EXPRD1"), MetaKey: migrate.DropMetaKey("EXPRD1"),
+		TargetDatabase: "appdb", Status: string(migrate.DropWaiting),
+		ExpiresAt: time.Now().Add(-time.Minute).UTC(),
+	}
+	_, err := srv.store.InsertDropoff(ctx, d)
+	require.NoError(t, err)
+
+	rec := authedRequest(t, srv, http.MethodGet, "/api/migrate/drops/EXPRD1", token, nil)
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	var st struct {
+		Data dropoffStatusResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &st))
+	require.Equal(t, string(migrate.DropExpired), st.Data.Status, "GET reports expired in-memory")
+
+	got, err := srv.store.GetDropoffByCode(ctx, "EXPRD1")
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.DropWaiting), got.Status, "expiry is NOT persisted on read; the sweep owns it")
+}
+
+// TestSweepExpiredDropoffsReclaimsFailedAndSkipsImporting verifies the sweep
+// reclaims a failed/abandoned session's dump at rest (and moves it to terminal
+// 'expired' while preserving its failure reason) yet leaves an actively-importing
+// session's objects and status untouched.
+func TestSweepExpiredDropoffsReclaimsFailedAndSkipsImporting(t *testing.T) {
+	srv, fake, _ := withDrops(t)
+	ctx := context.Background()
+	past := time.Now().Add(-time.Hour).UTC()
+
+	failed := store.DropoffRecord{
+		Code: "FAILED1", DumpKey: migrate.DropDumpKey("FAILED1"), MetaKey: migrate.DropMetaKey("FAILED1"),
+		TargetDatabase: "appdb", Status: string(migrate.DropFailed),
+		Error: "verification failed: row mismatch", ExpiresAt: past,
+	}
+	_, err := srv.store.InsertDropoff(ctx, failed)
+	require.NoError(t, err)
+	fake.put(migrate.DropDumpKey("FAILED1"), []byte("PGDMP-failed-but-at-rest"))
+	fake.put(migrate.DropMetaKey("FAILED1"), []byte(`{"sha256":"x"}`))
+
+	importing := store.DropoffRecord{
+		Code: "IMPORT1", DumpKey: migrate.DropDumpKey("IMPORT1"), MetaKey: migrate.DropMetaKey("IMPORT1"),
+		TargetDatabase: "appdb", Status: string(migrate.DropImporting), ExpiresAt: past,
+	}
+	_, err = srv.store.InsertDropoff(ctx, importing)
+	require.NoError(t, err)
+	fake.put(migrate.DropDumpKey("IMPORT1"), []byte("PGDMP-live-import"))
+	fake.put(migrate.DropMetaKey("IMPORT1"), []byte(`{"sha256":"y"}`))
+
+	require.NoError(t, srv.sweepExpiredDropoffs(ctx))
+
+	// Failed-and-past-TTL: dump reclaimed, moved to terminal expired, reason kept.
+	require.Contains(t, fake.deletes, migrate.DropDumpKey("FAILED1"))
+	require.Contains(t, fake.deletes, migrate.DropMetaKey("FAILED1"))
+	got, err := srv.store.GetDropoffByCode(ctx, "FAILED1")
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.DropExpired), got.Status)
+	require.Contains(t, got.Error, "row mismatch")
+
+	// Importing-and-past-TTL: never reclaimed mid-run.
+	require.NotContains(t, fake.deletes, migrate.DropDumpKey("IMPORT1"))
+	imp, err := srv.store.GetDropoffByCode(ctx, "IMPORT1")
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.DropImporting), imp.Status)
 }
