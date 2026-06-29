@@ -16,10 +16,13 @@ import type {
   ConfigResponse,
   TuningStatus,
   CreateDatabaseRequest,
+  CreateDropoffRequest,
+  CreateDropoffResult,
   CreateReadonlyUserRequest,
   CreateRoleRequest,
   CreateSessionRequest,
   CredentialResult,
+  DropoffSession,
   DashboardData,
   DatabaseInfo,
   DropRequest,
@@ -403,6 +406,29 @@ export const api = {
     return request<void>(`/migrate/sessions/${encodeURIComponent(code)}`, {
       method: "DELETE",
     });
+  },
+  // Drop-off link (requires S3): mint two presigned S3 PUT URLs + a paste-able
+  // push command for a source the panel can't reach. The mint response carries
+  // the URL-bearing commands ONCE — never persisted or re-served by getDropoff.
+  createDropoff(req: CreateDropoffRequest): Promise<CreateDropoffResult> {
+    return request<CreateDropoffResult>("/migrate/drops", { method: "POST", body: req });
+  },
+  // Safe status poll: no URLs, no command. The badge flips waiting → uploaded
+  // once the source's meta.json lands; once migration_id is set, switch to
+  // getMigration(migration_id) for the live import/verify progress.
+  getDropoff(code: string, signal?: AbortSignal): Promise<DropoffSession> {
+    return request<DropoffSession>(`/migrate/drops/${encodeURIComponent(code)}`, { signal });
+  },
+  // Begins the import once the upload is present (409 if not uploaded yet).
+  // Returns the migration job id to poll via getMigration().
+  startDropoff(code: string): Promise<MigrationStarted> {
+    return request<MigrationStarted>(`/migrate/drops/${encodeURIComponent(code)}/start`, {
+      method: "POST",
+    });
+  },
+  // Deletes the dump + meta objects (idempotent) and marks the session cancelled.
+  cancelDropoff(code: string): Promise<void> {
+    return request<void>(`/migrate/drops/${encodeURIComponent(code)}`, { method: "DELETE" });
   },
 
   // pg version & upgrades --------------------------------------------------

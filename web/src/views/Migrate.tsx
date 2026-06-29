@@ -10,9 +10,9 @@
 // direct jobs by id (GET /migrate/{id}); the session by code. Destructive
 // overwrites require typing the database name (or OVERWRITE for a cluster).
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ApiError, api } from "@/api/client";
-import { bytes, count, dateTime, ago } from "@/lib/format";
+import { bytes, count, dateTime, duration, ago } from "@/lib/format";
 import { usePolling } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { Modal } from "@/components/Modal";
@@ -51,6 +51,9 @@ import {
 } from "@/components/ui/table";
 import {
   CLUSTER_OVERWRITE_CONFIRM,
+  type CreateDropoffResult,
+  type DropoffSession,
+  type DropoffStatus,
   type MigrationMode,
   type MigrationPhase,
   type MigrationRecord,
@@ -80,6 +83,7 @@ export function Migrate() {
           <ModeTab id="single-db" label="One database" hint="Direct pull · recommended" />
           <ModeTab id="cluster" label="Whole cluster" hint="All DBs + roles" />
           <ModeTab id="ssh-less" label="Cross-panel session" hint="Two panels via S3" />
+          <ModeTab id="drop-off" label="Receive a drop" hint="No inbound · via S3" />
         </TabsList>
 
         <TabsContent value="single-db">
@@ -90,6 +94,9 @@ export function Migrate() {
         </TabsContent>
         <TabsContent value="ssh-less">
           <SessionPanel />
+        </TabsContent>
+        <TabsContent value="drop-off">
+          <DropoffPanel />
         </TabsContent>
       </Tabs>
 
@@ -1020,6 +1027,512 @@ function SessionSend() {
 }
 
 // ---------------------------------------------------------------------------
+// Mode 4: Drop-off link — push from a source the panel can't reach
+//
+// The panel mints two presigned S3 PUT URLs + a `curl … | sh` push command. The
+// operator pastes it on a source behind NAT/firewall (no inbound, no panel); the
+// source uploads one database's dump + a meta.json manifest; then the operator
+// clicks Start here and the panel streams it from S3, verifies the SHA-256 and
+// row counts, restores into the chosen target, and cleans up. Requires S3.
+// ---------------------------------------------------------------------------
+
+export function DropoffPanel() {
+  const [created, setCreated] = useState<CreateDropoffResult | null>(null);
+
+  if (created) {
+    // "Start another" clears the minted link so a stale (and soon-expired) command
+    // can't be re-used, returning to a blank form.
+    return <DropoffProgress created={created} onReset={() => setCreated(null)} />;
+  }
+
+  return (
+    <Card title="Receive a drop from a server you can't reach">
+      <p className="text-muted-foreground">
+        Pulls <strong>one database</strong> off a source this panel can&apos;t connect to — behind a
+        NAT or firewall, with no inbound access and no panel installed. The source only needs to
+        reach the public internet. This panel mints two upload links; you paste a one-line command
+        on the source; it pushes the dump to your S3 bucket; then you click Start here to import and
+        verify.
+      </p>
+      <Callout tone="info">
+        This mode requires S3 configured on this panel — it&apos;s the bucket the source uploads to.
+        If you <em>can</em> reach the source directly, the “One database” direct pull is simpler and
+        needs no S3.
+      </Callout>
+      <DropoffForm onCreated={setCreated} />
+    </Card>
+  );
+}
+
+function DropoffForm({ onCreated }: { onCreated: (r: CreateDropoffResult) => void }) {
+  const [target, setTarget] = useState("");
+  const [overwrite, setOverwrite] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  const targetName = target.trim();
+  const ready = targetName !== "";
+  const overwriteMatches = confirm.trim() === targetName;
+
+  const create = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.createDropoff({
+        target_database: targetName,
+        overwrite,
+        confirm: overwrite ? confirm.trim() : "",
+      });
+      toast.success("Drop-off link created.");
+      setConfirmOpen(false);
+      setConfirm("");
+      onCreated(res);
+    } catch (err) {
+      setError(asApiError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (overwrite) setConfirmOpen(true);
+    else void create();
+  };
+
+  return (
+    <form className="mt-3 flex max-w-xl flex-col gap-5" onSubmit={submit}>
+      {error ? <S3OrError error={error} title="Drop-off link needs S3" /> : null}
+      <Field>
+        <FieldLabel htmlFor="drop-target">Name on this server</FieldLabel>
+        <Input
+          id="drop-target"
+          value={target}
+          placeholder="myapp"
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => setTarget(e.target.value)}
+        />
+        <FieldDescription>The name the imported database will have on this server.</FieldDescription>
+      </Field>
+      <Field orientation="horizontal">
+        <Checkbox
+          id="drop-overwrite"
+          checked={overwrite}
+          onCheckedChange={(c) => setOverwrite(c === true)}
+        />
+        <FieldLabel htmlFor="drop-overwrite" className="font-normal">
+          Replace <code>{targetName || "the target"}</code> if it already exists (destructive)
+        </FieldLabel>
+      </Field>
+      <Button type="submit" className="self-start" disabled={!ready || busy}>
+        {busy ? (
+          <>
+            <InlineSpinner data-icon="inline-start" />
+            Creating…
+          </>
+        ) : overwrite ? (
+          "Continue…"
+        ) : (
+          "Create drop-off link"
+        )}
+      </Button>
+
+      <Modal
+        open={confirmOpen}
+        title="Confirm overwrite"
+        tone="danger"
+        width="sm"
+        onClose={busy ? () => undefined : () => setConfirmOpen(false)}
+        footer={
+          <>
+            <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)} disabled={busy}>
+              Back
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={create}
+              disabled={busy || !overwriteMatches}
+            >
+              {busy ? (
+                <>
+                  <InlineSpinner data-icon="inline-start" />
+                  Creating…
+                </>
+              ) : (
+                "Overwrite & create link"
+              )}
+            </Button>
+          </>
+        }
+      >
+        <Callout tone="danger" title="This will drop the existing database">
+          When you click Start after the upload, <strong>{targetName}</strong> on this server will be
+          dropped and recreated from the source. This cannot be undone.
+        </Callout>
+        <Field className="mt-4" data-invalid={confirm.length > 0 && !overwriteMatches}>
+          <FieldLabel htmlFor="drop-confirm">
+            Type <code>{targetName}</code> to confirm
+          </FieldLabel>
+          <Input
+            id="drop-confirm"
+            value={confirm}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={targetName}
+            aria-invalid={confirm.length > 0 && !overwriteMatches}
+            aria-describedby={confirm.length > 0 && !overwriteMatches ? "drop-confirm-err" : undefined}
+            onChange={(e) => setConfirm(e.target.value)}
+          />
+          {confirm.length > 0 && !overwriteMatches ? (
+            <FieldError id="drop-confirm-err">
+              Must match <code>{targetName}</code> exactly.
+            </FieldError>
+          ) : null}
+        </Field>
+      </Modal>
+    </form>
+  );
+}
+
+// Statuses where the drop-off itself is finished but no import job exists to hand
+// off to (cancelled/expired before Start) — the panel shows a terminal callout.
+function isDropTerminal(status: DropoffStatus): boolean {
+  return status === "failed" || status === "expired";
+}
+
+export function DropoffProgress({
+  created,
+  onReset,
+}: {
+  created: CreateDropoffResult;
+  onReset: () => void;
+}) {
+  const { data: drop, error } = usePolling<DropoffSession>(
+    (signal) => api.getDropoff(created.code, signal),
+    2500,
+  );
+  const [startedId, setStartedId] = useState<number | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
+
+  const status: DropoffStatus = drop?.status ?? "waiting_for_upload";
+  // Once an import job exists, the existing per-job poller owns the live
+  // progress + verification view — identical to every other migration mode.
+  const migrationId = startedId ?? drop?.migration_id ?? null;
+  if (migrationId != null) {
+    return <DirectJobProgress id={migrationId} onReset={onReset} />;
+  }
+
+  const expiresAt = drop?.expires_at ?? created.expires_at;
+  const terminal = isDropTerminal(status);
+
+  const start = async () => {
+    setStarting(true);
+    try {
+      const res = await api.startDropoff(created.code);
+      toast.success("Import started.");
+      setStartedId(res.id);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Could not start the import.");
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const cancel = async () => {
+    setCancelBusy(true);
+    try {
+      await api.cancelDropoff(created.code);
+      toast.info("Drop-off cancelled.");
+      onReset();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Could not cancel.");
+    } finally {
+      setCancelBusy(false);
+      setCancelOpen(false);
+    }
+  };
+
+  return (
+    <Card
+      title="Drop-off link ready"
+      actions={
+        terminal ? (
+          <Button type="button" variant="outline" size="sm" onClick={onReset}>
+            Start another
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setCancelOpen(true)}
+          >
+            Cancel
+          </Button>
+        )
+      }
+    >
+      {error && !drop ? <S3OrError error={error} title="Drop-off link needs S3" /> : null}
+      {/* Poll failed while a live link is on screen — surface the stall so a
+          frozen "waiting" badge can't look like it's still checking. */}
+      {error && drop && !terminal ? <StaleBanner error={error} /> : null}
+
+      <DropoffStatusRow status={status} expiresAt={expiresAt} byteSize={drop?.byte_size ?? 0} />
+
+      {status === "expired" ? (
+        <Callout tone="warn" title="This drop-off link expired">
+          The upload links are no longer valid. Start a new drop-off to try again.
+        </Callout>
+      ) : status === "failed" ? (
+        <Callout tone="danger" title="Drop-off failed">
+          {drop?.error || "The drop-off could not complete."}
+        </Callout>
+      ) : (
+        <>
+          <p className="mt-1 text-sm text-muted-foreground">
+            On the <strong>source</strong> server — the one this panel can&apos;t reach — paste this
+            into a shell. It needs <code>curl</code> and either Docker or <code>pg_dump</code>.
+          </p>
+          <DropoffCommand created={created} />
+          <DropoffSteps target={created.target_database} />
+          <Callout tone="warn" title="Treat these links like a password">
+            The command embeds two upload links anyone could use to write to your bucket until they
+            expire. Don&apos;t share them. The source database password is read from{" "}
+            <code>PGPASSWORD</code> or a prompt on the source — never passed as a flag (so it
+            won&apos;t leak in <code>ps</code>) and never sent to this panel.
+          </Callout>
+        </>
+      )}
+
+      {!terminal ? (
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Button
+            type="button"
+            onClick={start}
+            disabled={status !== "uploaded" || starting}
+          >
+            {starting ? (
+              <>
+                <InlineSpinner data-icon="inline-start" />
+                Starting…
+              </>
+            ) : (
+              "Start import"
+            )}
+          </Button>
+          {status !== "uploaded" ? (
+            <span className="text-sm text-muted-foreground">
+              Enabled once the source finishes uploading.
+            </span>
+          ) : (
+            <span className="text-sm text-muted-foreground">
+              Imports into <code>{created.target_database}</code>
+              {created.overwrite ? " (replacing the existing database)" : ""}, then verifies row
+              counts.
+            </span>
+          )}
+        </div>
+      ) : null}
+
+      <Modal
+        open={cancelOpen}
+        title="Cancel this drop-off?"
+        tone="danger"
+        width="sm"
+        onClose={() => setCancelOpen(false)}
+        footer={
+          <>
+            <Button type="button" variant="outline" onClick={() => setCancelOpen(false)} disabled={cancelBusy}>
+              Keep going
+            </Button>
+            <Button type="button" variant="destructive" onClick={cancel} disabled={cancelBusy}>
+              {cancelBusy ? (
+                <>
+                  <InlineSpinner data-icon="inline-start" />
+                  Cancelling…
+                </>
+              ) : (
+                "Cancel drop-off"
+              )}
+            </Button>
+          </>
+        }
+      >
+        <p>
+          The upload links are invalidated and any uploaded dump is deleted from your bucket. Nothing
+          on this server changes.
+        </p>
+      </Modal>
+    </Card>
+  );
+}
+
+/** Live state badge + uploaded size + an expiry countdown for a drop-off link. */
+function DropoffStatusRow({
+  status,
+  expiresAt,
+  byteSize,
+}: {
+  status: DropoffStatus;
+  expiresAt: string;
+  byteSize: number;
+}) {
+  const msLeft = useCountdown(expiresAt);
+  const expired = status === "expired" || msLeft <= 0;
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-3 rounded-md bg-muted p-4">
+      <DropStatusBadge status={status} />
+      {byteSize > 0 ? (
+        <span className="text-sm text-muted-foreground">{bytes(byteSize)} uploaded</span>
+      ) : null}
+      <span className="ml-auto text-sm text-muted-foreground" aria-live="polite">
+        {expired ? (
+          "Link expired"
+        ) : (
+          <>
+            Expires in <span className="font-mono">{duration(Math.floor(msLeft / 1000))}</span>
+          </>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function DropStatusBadge({ status }: { status: DropoffStatus }) {
+  switch (status) {
+    case "uploaded":
+      return <Badge tone="ok">✓ Uploaded — ready to import</Badge>;
+    case "importing":
+      return <Badge tone="info">Importing…</Badge>;
+    case "completed":
+      return <Badge tone="ok">Completed</Badge>;
+    case "failed":
+      return <Badge tone="danger">Failed</Badge>;
+    case "expired":
+      return <Badge tone="warn">Expired</Badge>;
+    default:
+      return <Badge tone="info">Waiting for upload…</Badge>;
+  }
+}
+
+/** The docker/native command toggle + copy block. The presigned URLs live in
+ *  these commands and are sensitive, but must be copy-pasteable, so they're shown
+ *  in full with a Copy button (the callout above frames them as a password). */
+function DropoffCommand({ created }: { created: CreateDropoffResult }) {
+  const [variant, setVariant] = useState<"docker" | "native">("docker");
+  const command = variant === "docker" ? created.command_docker : created.command_native;
+  return (
+    <div className="mt-3 flex flex-col gap-2">
+      <Tabs value={variant} onValueChange={(v) => setVariant(v as "docker" | "native")}>
+        <TabsList>
+          <TabsTrigger value="docker">Docker container</TabsTrigger>
+          <TabsTrigger value="native">Native (host / port)</TabsTrigger>
+        </TabsList>
+      </Tabs>
+      <CommandBlock command={command} />
+      <p className="text-sm text-muted-foreground">
+        {variant === "docker" ? (
+          <>
+            Replace <code>&lt;container&gt;</code> with the Postgres container name and{" "}
+            <code>&lt;source-database&gt;</code> with the database to copy.
+          </>
+        ) : (
+          <>
+            Replace <code>&lt;source-host&gt;</code>, <code>&lt;postgres-user&gt;</code> and{" "}
+            <code>&lt;source-database&gt;</code>. Set the password first, e.g.{" "}
+            <code>export PGPASSWORD=…</code> — it&apos;s read from the environment or a prompt, never
+            a flag.
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
+/** A single-command copy block, matching the Extensions "exactly what ran" view. */
+function CommandBlock({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error("Couldn't copy to the clipboard.");
+    }
+  };
+  return (
+    <div className="relative">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="absolute right-2 top-2 h-7"
+        onClick={copy}
+      >
+        {copied ? "Copied" : "Copy"}
+      </Button>
+      <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-md border bg-muted/40 p-3 pr-20 text-[13px] leading-relaxed text-foreground">
+        {command}
+      </pre>
+    </div>
+  );
+}
+
+/** Numbered "what to do next" guidance shown until the upload lands. */
+function DropoffSteps({ target }: { target: string }) {
+  const steps = [
+    "On the source server, paste the command above. It runs pg_dump, uploads the dump to your S3 bucket, then uploads a small checksum + row-count manifest.",
+    "Watch the badge above flip to “Uploaded” when the push finishes — this page checks every few seconds.",
+  ];
+  return (
+    <ol className="mt-4 flex flex-col gap-2">
+      {steps.map((text, i) => (
+        <li key={i} className="flex items-start gap-3 text-sm">
+          <span
+            aria-hidden="true"
+            className="inline-grid size-6 shrink-0 place-items-center rounded-full border-2 border-input text-xs font-bold text-muted-foreground"
+          >
+            {i + 1}
+          </span>
+          <span>{text}</span>
+        </li>
+      ))}
+      <li className="flex items-start gap-3 text-sm">
+        <span
+          aria-hidden="true"
+          className="inline-grid size-6 shrink-0 place-items-center rounded-full border-2 border-input text-xs font-bold text-muted-foreground"
+        >
+          3
+        </span>
+        <span>
+          Click <strong>Start import</strong>. This panel streams the dump from S3, verifies its
+          SHA-256 checksum, restores into <code>{target}</code>, and compares row counts table by
+          table — only reporting success when every table matches.
+        </span>
+      </li>
+    </ol>
+  );
+}
+
+/** Milliseconds remaining until `iso`, ticking once a second (never negative). */
+function useCountdown(iso: string): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  return Math.max(0, new Date(iso).getTime() - now);
+}
+
+// ---------------------------------------------------------------------------
 // History
 // ---------------------------------------------------------------------------
 
@@ -1075,6 +1588,7 @@ const MODE_LABELS: Record<MigrationMode, string> = {
   "single-db": "One database",
   cluster: "Whole cluster",
   "ssh-less": "Cross-panel",
+  "drop-off": "Drop-off link",
 };
 
 function StatusBadge({ status, phase }: { status: MigrationStatus; phase: MigrationPhase }) {
@@ -1151,12 +1665,19 @@ function VerificationView({ v }: { v: Verification }) {
 }
 
 /** Renders the honest "requires S3" error as a helpful callout (with a pointer
- *  to Settings / direct pull), and any other error as the standard notice. */
-function S3OrError({ error }: { error: ApiError }) {
+ *  to Settings / direct pull), and any other error as the standard notice. The
+ *  title is overridable so each S3-dependent mode can name itself. */
+function S3OrError({
+  error,
+  title = "Cross-panel migration needs S3",
+}: {
+  error: ApiError;
+  title?: string;
+}) {
   const aboutS3 = /S3/i.test(error.message) || /S3/i.test(error.hint ?? "");
   if (aboutS3) {
     return (
-      <Callout tone="warn" title="Cross-panel migration needs S3">
+      <Callout tone="warn" title={title}>
         {error.hint || "Configure an S3 backup target in Settings, or use the Direct pull modes which need no S3."}
       </Callout>
     );
