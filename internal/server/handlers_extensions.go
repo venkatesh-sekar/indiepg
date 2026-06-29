@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -113,10 +114,16 @@ func (s *Server) handleInstallExtension(w http.ResponseWriter, r *http.Request) 
 
 	res, err := s.pg.InstallExtension(ctx, req.Database, req.Name, req.Confirm, req.Freeform)
 	if err != nil {
-		// A safety gate (missing/mismatched typed confirmation) is an expected
-		// interaction step the SPA turns into a confirm dialog, not a real
-		// failure — don't pollute the audit trail with a phantom failure entry.
-		if core.CodeOf(err) != core.CodeSafety {
+		// Two different failures reach here as CodeSafety, and only one is benign.
+		// The Tier 3 typed-confirmation gate (a *core.SafetyError from
+		// RequireConfirmation, returned BEFORE any side effect) is an expected
+		// interaction step the SPA turns into a confirm dialog — don't pollute the
+		// audit trail with a phantom failure entry. But restartWithRollback ALSO
+		// returns CodeSafety AFTER it has changed config, restarted, and rolled
+		// back: that is a real operational event (a plain *core.Error, not a
+		// SafetyError) and MUST be audited. Skip only the confirmation gate.
+		var confirmGate *core.SafetyError
+		if !errors.As(err, &confirmGate) {
 			s.audit(ctx, "extension_install", req.Name, "failure", "install extension failed", core.CodeOf(err))
 		}
 		writeError(w, err)

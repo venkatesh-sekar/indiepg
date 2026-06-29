@@ -565,11 +565,18 @@ function AddExtensionDialog({
               : "This extension needs to be loaded at startup, so the panel will install its package if needed, add it to shared_preload_libraries, restart Postgres, then create it:"}
           </p>
           <CommandList commands={predicted} />
-          <p className="mt-2 text-[13px] text-muted-foreground">
-            The current <code>shared_preload_libraries</code> value is read and{" "}
-            <code>{ext.name}</code> appended to it (existing entries are preserved) —
-            the precise commands that actually ran are shown afterward.
-          </p>
+          {needsRestart ? (
+            <p className="mt-2 text-[13px] text-muted-foreground">
+              The current <code>shared_preload_libraries</code> value is read and{" "}
+              <code>{ext.name}</code> appended to it (existing entries are preserved) —
+              the precise commands that actually ran are shown afterward.
+            </p>
+          ) : (
+            <p className="mt-2 text-[13px] text-muted-foreground">
+              The exact package name is resolved from the running PostgreSQL version —
+              the precise commands that actually ran are shown afterward.
+            </p>
+          )}
           <p className="mt-2 text-[13px] text-muted-foreground">
             Prefer to run these yourself?{" "}
             <button
@@ -664,8 +671,15 @@ function predictedSteps(ext: AvailableExtension): string[] {
     return [
       "apt-get update",
       `apt-get install -y ${pkg}`,
-      `-- read the current shared_preload_libraries, then append '${ext.name}' (keeping existing entries):`,
-      `ALTER SYSTEM SET shared_preload_libraries = '<existing entries>, ${ext.name}';`,
+      // The preload edit is deliberately NOT a runnable statement: the frontend
+      // can't know the cluster's real shared_preload_libraries, and pasting a
+      // literal would overwrite it. Emit it as commented guidance the operator
+      // adapts — never something destructive that copy-pastes verbatim.
+      `-- ${ext.name} must be loaded at startup, so it has to go in shared_preload_libraries.`,
+      "-- DON'T paste a literal value: it would overwrite your real preload list and can",
+      "-- stop Postgres from booting. Instead, read your current value and append to it:",
+      "--   1. SHOW shared_preload_libraries;",
+      `--   2. ALTER SYSTEM SET shared_preload_libraries = '<your current value>, ${ext.name}';`,
       "systemctl restart postgresql",
       create,
     ];

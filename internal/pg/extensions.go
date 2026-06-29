@@ -12,12 +12,12 @@ import (
 )
 
 // This file orchestrates per-database PostgreSQL extension management on top of
-// the existing machinery: the read-only/privileged pools (acquireRead /
-// acquirePriv), the apt install pattern (mirroring Provision), the
-// peer-auth superuser psql path (runPsql, for ALTER SYSTEM), and the
-// self-healing restart (snapshotAutoConf → restartWithRollback). Extensions are
-// installed into ONE database, so every operation targets a caller-chosen
-// database rather than always the maintenance database.
+// the existing machinery: the read-only pool (acquireRead) for listing, the apt
+// install pattern (mirroring Provision), the peer-auth superuser psql path
+// (runPsql) for the extension DDL and ALTER SYSTEM, and the self-healing restart
+// (snapshotAutoConf → restartWithRollback). Extensions are installed into ONE
+// database, so every operation targets a caller-chosen database rather than
+// always the maintenance database.
 
 // ExtensionTier classifies how much work installing an available extension
 // takes, so the UI can badge each candidate and warn before a restart.
@@ -205,7 +205,7 @@ func (m *Manager) ListExtensions(ctx context.Context, database string) (*Extensi
 // catalog metadata plus on-disk presence and returning a core.Result recording
 // every command/statement that ran so the UI can show exactly what happened:
 //
-//   - Tier 1 (ready / free-form): CREATE EXTENSION via the privileged pool.
+//   - Tier 1 (ready / free-form): CREATE EXTENSION via the superuser psql path.
 //   - Tier 2 (needs_package): apt-get update + install the catalog package, then
 //     CREATE.
 //   - Tier 3 (needs_restart): install the package if needed, read-modify-write
@@ -230,15 +230,29 @@ func (m *Manager) InstallExtension(ctx context.Context, database, name, confirm 
 		return core.Result{}, err
 	}
 
+	// Every tier ends in CREATE EXTENSION run as the postgres OS superuser via psql
+	// (the pool roles are NOSUPERUSER and cannot create untrusted extensions or
+	// ones owned by postgres), so a Runner is required throughout — not just for
+	// the apt/preload tiers.
+	if m.runner == nil {
+		return core.Result{}, core.InternalError("pg: installing an extension requires a Runner")
+	}
+
 	// pg_cron can only be CREATEd in the database named by cron.database_name
-	// (default "postgres"). Creating it elsewhere fails only AFTER the package
-	// install + restart have happened, so the operator would pay the full
+	// (effective default "postgres"). Creating it elsewhere fails only AFTER the
+	// package install + restart have happened, so the operator would pay the full
 	// cluster-wide downtime for a CREATE that cannot succeed. Pre-flight it here,
-	// before any side effect.
-	if name == "pg_cron" && database != defaultConnectDatabase {
-		return core.Result{}, core.ValidationError(
-			"pg_cron can only be created in the %q database (its cron.database_name)", defaultConnectDatabase).
-			WithHint("select the " + defaultConnectDatabase + " database, then add pg_cron — or set cron.database_name to this database first")
+	// before any side effect, honouring an operator-set cron.database_name.
+	if name == "pg_cron" {
+		cronDB, err := m.cronDatabase(ctx)
+		if err != nil {
+			return core.Result{}, err
+		}
+		if database != cronDB {
+			return core.Result{}, core.ValidationError(
+				"pg_cron can only be created in the %q database (its cron.database_name)", cronDB).
+				WithHint("select the " + cronDB + " database, then add pg_cron — or set cron.database_name to this database first")
+		}
 	}
 
 	entry, inCatalog := LookupCatalog(name)
@@ -301,22 +315,20 @@ func (m *Manager) InstallExtension(ctx context.Context, database, name, confirm 
 		steps = append(steps, preloadSteps...)
 	}
 
-	// All tiers: CREATE EXTENSION inside the target database via the privileged
-	// pool. IF NOT EXISTS makes re-adding an already-present extension a no-op.
+	// All tiers: CREATE EXTENSION inside the target database as the postgres OS
+	// superuser via psql — the same peer-auth path provisioning and ALTER SYSTEM
+	// use. The privileged pool role is NOSUPERUSER and lacks CREATE on the
+	// database, so it cannot create untrusted extensions (e.g. PostGIS) or ones
+	// owned by postgres; the superuser can. IF NOT EXISTS makes re-adding an
+	// already-present extension a no-op.
 	createStmt, err := admin.CreateExtension(name)
 	if err != nil {
 		return core.Result{}, err
 	}
-	pool, release, err := m.acquirePriv(ctx, database)
-	if err != nil {
-		return core.Result{}, err
+	if _, err := m.runPsql(ctx, database, createStmt); err != nil {
+		return core.Result{}, core.ExecError("pg: creating extension %q in %q failed", name, database).Wrap(err)
 	}
-	defer release()
-	recorded, err := m.runStmtsTx(ctx, pool, []string{createStmt})
-	if err != nil {
-		return core.Result{}, err
-	}
-	steps = append(steps, recorded...)
+	steps = append(steps, createStmt)
 
 	return core.Ok(fmt.Sprintf("extension %q installed on %q", name, database)).
 		WithData("tier", string(tier)).
@@ -325,9 +337,11 @@ func (m *Manager) InstallExtension(ctx context.Context, database, name, confirm 
 }
 
 // DropExtension drops an extension from a database after a typed-name
-// confirmation, via the privileged pool against the target database. No CASCADE
-// is emitted (admin.DropExtension): a dependency error from Postgres is surfaced
-// for the operator to resolve explicitly.
+// confirmation, run as the postgres OS superuser via psql (peer auth) against the
+// target database — the same path CREATE EXTENSION uses, since the pool roles are
+// NOSUPERUSER and cannot drop extensions owned by postgres. No CASCADE is emitted
+// (admin.DropExtension): a dependency error from Postgres is surfaced for the
+// operator to resolve explicitly.
 func (m *Manager) DropExtension(ctx context.Context, database, name, confirm string) (core.Result, error) {
 	if database == "" {
 		database = defaultConnectDatabase
@@ -339,25 +353,22 @@ func (m *Manager) DropExtension(ctx context.Context, database, name, confirm str
 	if err != nil {
 		return core.Result{}, err
 	}
-	pool, release, err := m.acquirePriv(ctx, database)
-	if err != nil {
-		return core.Result{}, err
+	if m.runner == nil {
+		return core.Result{}, core.InternalError("pg: dropping an extension requires a Runner")
 	}
-	defer release()
-	recorded, err := m.runStmtsTx(ctx, pool, []string{stmt})
-	if err != nil {
-		return core.Result{}, err
+	if _, err := m.runPsql(ctx, database, stmt); err != nil {
+		return core.Result{}, core.ExecError("pg: dropping extension %q from %q failed", name, database).Wrap(err)
 	}
 	return core.Ok(fmt.Sprintf("extension %q dropped from %q", name, database)).
 		WithData("database", database).
-		WithStatements(recorded...), nil
+		WithStatements(stmt), nil
 }
 
 // UpdateExtension upgrades an installed extension to its default available
-// version with ALTER EXTENSION ... UPDATE, run through the privileged pool
-// against the target database. It returns a core.Result recording the statement
-// that ran. No confirmation is required: an update is non-destructive and never
-// restarts Postgres.
+// version with ALTER EXTENSION ... UPDATE, run as the postgres OS superuser via
+// psql against the target database. It returns a core.Result recording the
+// statement that ran. No confirmation is required: an update is non-destructive
+// and never restarts Postgres.
 func (m *Manager) UpdateExtension(ctx context.Context, database, name string) (core.Result, error) {
 	if database == "" {
 		database = defaultConnectDatabase
@@ -369,18 +380,15 @@ func (m *Manager) UpdateExtension(ctx context.Context, database, name string) (c
 	if err != nil {
 		return core.Result{}, err
 	}
-	pool, release, err := m.acquirePriv(ctx, database)
-	if err != nil {
-		return core.Result{}, err
+	if m.runner == nil {
+		return core.Result{}, core.InternalError("pg: updating an extension requires a Runner")
 	}
-	defer release()
-	recorded, err := m.runStmtsTx(ctx, pool, []string{stmt})
-	if err != nil {
-		return core.Result{}, err
+	if _, err := m.runPsql(ctx, database, stmt); err != nil {
+		return core.Result{}, core.ExecError("pg: updating extension %q on %q failed", name, database).Wrap(err)
 	}
 	return core.Ok(fmt.Sprintf("extension %q updated on %q", name, database)).
 		WithData("database", database).
-		WithStatements(recorded...), nil
+		WithStatements(stmt), nil
 }
 
 // extensionOnDisk reports whether name's control file is present in database
@@ -400,6 +408,24 @@ func (m *Manager) extensionOnDisk(ctx context.Context, database, name string) (b
 		return false, core.InternalError("pg: checking extension availability").Wrap(err)
 	}
 	return exists, nil
+}
+
+// cronDatabase returns the effective pg_cron worker database — the value of the
+// cron.database_name GUC, read as the postgres superuser via psql. The second
+// current_setting argument (missing_ok) makes it return empty rather than error
+// when pg_cron is not loaded yet; an empty/unset value means pg_cron's built-in
+// default, "postgres".
+func (m *Manager) cronDatabase(ctx context.Context) (string, error) {
+	out, err := m.runPsql(ctx, defaultConnectDatabase,
+		"SELECT current_setting('cron.database_name', true)")
+	if err != nil {
+		return "", err
+	}
+	cronDB := strings.TrimSpace(out)
+	if cronDB == "" {
+		cronDB = defaultConnectDatabase
+	}
+	return cronDB, nil
 }
 
 // installExtensionPackage installs the OS package that ships an extension's
