@@ -5,6 +5,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Archive,
   ArrowLeftRight,
+  ArrowUpCircle,
   Bell,
   Blocks,
   Database,
@@ -48,6 +49,7 @@ const NAV: NavItem[] = [
   { to: "/backups", label: "Backups", icon: Archive },
   { to: "/alerts", label: "Alerts", icon: Bell },
   { to: "/migrate", label: "Migrate", icon: ArrowLeftRight },
+  { to: "/version", label: "Version", icon: ArrowUpCircle },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

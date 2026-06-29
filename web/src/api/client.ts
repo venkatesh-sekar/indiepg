@@ -34,9 +34,11 @@ import type {
   MigrationSession,
   MigrationStarted,
   NewAppRequest,
+  PGVersionInfo,
   PoolerEnableRequest,
   PoolerEnableResult,
   PoolerStatus,
+  PreflightResult,
   QueryResult,
   Result,
   RestoreRequest,
@@ -47,6 +49,7 @@ import type {
   SingleDBMigrationRequest,
   TestChannelRequest,
   UpdateConfigRequest,
+  UpgradeStatus,
   WorkloadProfile,
 } from "./types";
 
@@ -399,6 +402,55 @@ export const api = {
   cancelSession(code: string): Promise<void> {
     return request<void>(`/migrate/sessions/${encodeURIComponent(code)}`, {
       method: "DELETE",
+    });
+  },
+
+  // pg version & upgrades --------------------------------------------------
+  // Read-only: the running version + available minor/major updates + any
+  // pending-finalization state. Drives the Version panel and the dashboard line.
+  pgVersion(signal?: AbortSignal): Promise<PGVersionInfo> {
+    return request<PGVersionInfo>("/pg/version", { signal });
+  },
+  // The live upgrade operation + pending-finalization state. Polled for progress
+  // and to resume the UI after a reload (mirrors the backup/migration pattern).
+  upgradeStatus(signal?: AbortSignal): Promise<UpgradeStatus> {
+    return request<UpgradeStatus>("/pg/upgrade/status", { signal });
+  },
+  // Minor upgrade (apt + restart). `backup` opts into a fresh pgBackRest backup
+  // first. Returns the initial operation state; poll upgradeStatus() for progress.
+  upgradeMinor(backup: boolean): Promise<UpgradeStatus> {
+    return request<UpgradeStatus>("/pg/upgrade/minor", { method: "POST", body: { backup } });
+  },
+  // Major upgrade Phase A: installs target packages + runs the checklist. Purely
+  // non-destructive — nothing is changed, this only previews and validates.
+  preflightMajorUpgrade(targetMajor: number): Promise<PreflightResult> {
+    return request<PreflightResult>("/pg/upgrade/major/preflight", {
+      method: "POST",
+      body: { target_major: targetMajor },
+    });
+  },
+  // Major upgrade Phase B: takes the mandatory backup and runs pg_upgradecluster.
+  // Refused unless the most recent preflight for this target had no `fail`.
+  startMajorUpgrade(targetMajor: number): Promise<UpgradeStatus> {
+    return request<UpgradeStatus>("/pg/upgrade/major/start", {
+      method: "POST",
+      body: { target_major: targetMajor, confirm: true },
+    });
+  },
+  // Finalize: drop the old cluster and reclaim its disk — irreversible.
+  // `confirmVersion` must equal the old major (the type-to-confirm guard).
+  finalizeUpgrade(confirmVersion: number): Promise<UpgradeStatus> {
+    return request<UpgradeStatus>("/pg/upgrade/finalize", {
+      method: "POST",
+      body: { confirm_version: confirmVersion },
+    });
+  },
+  // Roll back to the old major. DISCARDS any writes made against the new major
+  // since the upgrade. Clears the pending-finalization state.
+  rollbackUpgrade(confirmVersion: number): Promise<UpgradeStatus> {
+    return request<UpgradeStatus>("/pg/upgrade/rollback", {
+      method: "POST",
+      body: { confirm_version: confirmVersion },
     });
   },
 };

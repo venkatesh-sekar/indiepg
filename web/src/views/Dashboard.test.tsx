@@ -9,6 +9,9 @@ import { ApiError } from "@/api/client";
 const pollState = vi.hoisted(() => ({ current: null as unknown }));
 vi.mock("@/lib/hooks", () => ({
   usePolling: () => pollState.current,
+  // The dashboard's pending-finalization banner self-fetches via useAsync; stub
+  // it to "no pending upgrade" so it renders nothing in these tests.
+  useAsync: () => ({ data: null, error: null, loading: false, reload: () => {} }),
 }));
 
 import { Dashboard } from "./Dashboard";
@@ -18,7 +21,7 @@ function state(over: Partial<AsyncState<DashboardData>>): AsyncState<DashboardDa
 }
 
 const SAMPLE: DashboardData = {
-  pg: { running: true },
+  pg: { running: true, version: "16.4 (Debian 16.4-1.pgdg120+2)" },
   snapshot: {
     taken_at: "2026-06-24T10:00:00Z",
     cpu_percent: 12,
@@ -93,9 +96,10 @@ describe("Dashboard refresh-failure surfacing", () => {
     expect(screen.getByText("Latest backup")).toBeInTheDocument();
     expect(screen.getByText("Server")).toBeInTheDocument();
     expect(screen.getByText("Running")).toBeInTheDocument();
-    // The Postgres "Version" row was removed: the backend never populates it, so
-    // it always rendered an empty "—" that read as missing/partial data.
-    expect(screen.queryByText("Version")).toBeNull();
+    // The Postgres "Version" row is now populated (the version-upgrade feature
+    // wired the field): it shows the short server_version, full string on hover.
+    expect(screen.getByText("Version")).toBeInTheDocument();
+    expect(screen.getByText("16.4")).toBeInTheDocument();
     // "Connections" is surfaced exactly once — the tinted saturation gauge in the
     // Server card. The duplicate plain row in the Postgres card was dropped (same
     // metric, two formats, no extra signal).

@@ -95,7 +95,9 @@ func TestProvision_HappyPath(t *testing.T) {
 	all := strings.Join(joined, "\n")
 
 	require.Contains(t, all, "apt-get update")
-	require.Contains(t, all, "apt-get install -y postgresql postgresql-contrib pgbackrest")
+	// Versioned PGDG install (default catalog major) replaces the generic
+	// `postgresql` metapackage.
+	require.Contains(t, all, fmt.Sprintf("apt-get install -y postgresql-%d postgresql-%d-contrib pgbackrest", DefaultMajor(), DefaultMajor()))
 	require.Contains(t, all, "systemctl enable --now postgresql")
 	// roles + extension are created via psql run as the postgres OS user.
 	require.Contains(t, all, "sudo -u postgres psql")

@@ -43,6 +43,10 @@ type InstallOptions struct {
 	// NoService skips writing/enabling the systemd unit (useful on non-systemd
 	// hosts or for hands-on setups). Install still prints how to start manually.
 	NoService bool
+	// PGMajor is the PostgreSQL major version to install (from `--pg-version`).
+	// Zero selects the version catalog's default. A non-zero value must be a
+	// supported major or Install refuses with a validation error.
+	PGMajor int
 }
 
 // Install generates the instance identity, provisions Postgres, writes default
@@ -62,6 +66,12 @@ func Install(ctx context.Context, opts InstallOptions) error {
 	log := opts.Logger
 	if log == nil {
 		log = core.Discard()
+	}
+
+	// Validate the requested major up front (a zero means "catalog default").
+	if opts.PGMajor != 0 && !pg.IsSupported(opts.PGMajor) {
+		return core.ValidationError("PostgreSQL %d is not a supported version", opts.PGMajor).
+			WithHint("choose a supported major (see `indiepg install --help`) or omit --pg-version for the default")
 	}
 
 	cfg, generatedPassword, pwState, err := installCore(ctx, opts.Store, log, opts.Label, opts.BindAddr, opts.Password)
@@ -92,9 +102,10 @@ func Install(ctx context.Context, opts InstallOptions) error {
 		profile = pg.ProfileMixed
 	}
 	mgr := pg.New(pg.Options{
-		Runner: exec.NewOSRunner(log, false),
-		Config: cfg,
-		Logger: log,
+		Runner:  exec.NewOSRunner(log, false),
+		Config:  cfg,
+		Logger:  log,
+		PGMajor: opts.PGMajor,
 	})
 	res, err := mgr.Provision(ctx, profile)
 	if err != nil {

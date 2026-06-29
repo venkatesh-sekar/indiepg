@@ -27,6 +27,7 @@ import {
   ResultBadge,
   StaleBanner,
 } from "@/components/ui";
+import { DashboardUpgradeBanner } from "@/views/Version";
 import type { DashboardData } from "@/api/types";
 
 const POLL_MS = 5000;
@@ -65,6 +66,10 @@ export function Dashboard() {
           the first-load failure path already returned <ErrorNotice> above. */}
       {error ? <StaleBanner error={error} /> : null}
 
+      {/* Persistent nudge after a major upgrade: verify, then finalize/roll back.
+          Self-fetches the pending state; renders nothing when none is pending. */}
+      <DashboardUpgradeBanner />
+
       {!health_ok && health_reasons && health_reasons.length > 0 ? (
         <Callout tone="warn" title="Things to look at">
           <ul className="list-disc pl-5">
@@ -86,6 +91,11 @@ export function Dashboard() {
               <Kv label="Status">
                 {pg.running ? <Badge tone="ok">Running</Badge> : <Badge tone="danger">Stopped</Badge>}
               </Kv>
+              {pg.version ? (
+                <Kv label="Version">
+                  <span title={pg.version}>{pg.version.split(" ")[0]}</span>
+                </Kv>
+              ) : null}
               {/* Connections lives once, in the Server card below, as a tinted
                   saturation gauge alongside CPU/Memory/Disk — keeping it here too
                   was a duplicate with no extra signal. */}

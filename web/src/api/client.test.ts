@@ -56,3 +56,28 @@ describe("api.saveRule", () => {
     expect(body).toMatchObject({ id: "r1", metric: "host.disk_percent", enabled: false });
   });
 });
+
+describe("api.rollbackUpgrade", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: { operation: null, pending_finalization: null } }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the typed live major instead of a bypassable boolean", async () => {
+    await api.rollbackUpgrade(17);
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body as string)).toEqual({ confirm_version: 17 });
+  });
+});
