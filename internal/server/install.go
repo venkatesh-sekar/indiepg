@@ -80,13 +80,23 @@ func Install(ctx context.Context, opts InstallOptions) error {
 	}
 
 	// Provision the native Postgres (apt + systemctl) via a real OS runner.
-	// This is a non-hermetic step and is delegated to internal/pg.
+	// This is a non-hermetic step and is delegated to internal/pg. We hand it the
+	// operator's PERSISTED workload profile (installCore merged persisted config
+	// over defaults, so this is "mixed" on a fresh box) so a re-run after the
+	// operator picked OLTP/OLAP re-applies that profile rather than silently
+	// restarting Postgres back onto Mixed. A hand-edited/unparseable stored value
+	// falls back to Mixed rather than failing the whole install — mirroring the
+	// tuning surface, which never breaks on a stale store row.
+	profile, perr := pg.ParseWorkloadProfile(cfg.TuningProfile)
+	if perr != nil {
+		profile = pg.ProfileMixed
+	}
 	mgr := pg.New(pg.Options{
 		Runner: exec.NewOSRunner(log, false),
 		Config: cfg,
 		Logger: log,
 	})
-	res, err := mgr.Provision(ctx)
+	res, err := mgr.Provision(ctx, profile)
 	if err != nil {
 		showGeneratedPassword()
 		return err

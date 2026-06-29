@@ -8,6 +8,7 @@ import type {
   AlertRule,
   AlertsConfig,
   ApiErrorBody,
+  ApplyTuningRequest,
   AuthStatus,
   BackupHistory,
   ChannelConfig,
@@ -46,6 +47,7 @@ import type {
   SingleDBMigrationRequest,
   TestChannelRequest,
   UpdateConfigRequest,
+  WorkloadProfile,
 } from "./types";
 
 /** Typed error thrown by every client method on failure. */
@@ -306,6 +308,16 @@ export const api = {
   },
   getTuning(): Promise<TuningStatus> {
     return request<TuningStatus>("/tuning");
+  },
+  // Switches Postgres to a workload profile. The server applies the host-sized
+  // recommendation for `profile` first — resizing shared_buffers/max_connections,
+  // which restarts Postgres, rolling back to last-known-good on failure — and only
+  // then persists the chosen profile. Returns the fresh TuningStatus (re-read
+  // applied values + the now-active profile). Throws on a failed/rolled-back apply,
+  // and the profile is NOT persisted in that case.
+  applyTuning(profile: WorkloadProfile): Promise<TuningStatus> {
+    const body: ApplyTuningRequest = { profile };
+    return request<TuningStatus>("/tuning/apply", { method: "POST", body });
   },
 
   // pooler (opt-in PgBouncer) ---------------------------------------------

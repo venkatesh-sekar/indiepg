@@ -1,10 +1,13 @@
 package server
 
 import (
+	"context"
 	"net/http"
+	"strings"
 
 	"github.com/venkatesh-sekar/indiepg/internal/config"
 	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/pg"
 )
 
 // handleGetConfig returns the current panel configuration. The S3 secret key is
@@ -27,12 +30,152 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 // RAM/CPU, the live applied settings (best-effort — absent if Postgres is
 // unreachable), and the recommendation for each workload profile so the UI can
 // label every override by its effect. It never mutates Postgres.
+//
+// ActiveProfile reflects the operator's PERSISTED choice (config.TuningProfile,
+// default mixed) rather than pg's hardcoded best-default: pg knows "what's
+// applied" (read from pg_settings), the handler owns "what's chosen". This is
+// what lets the UI flip the "— current" marker once a profile is applied.
 func (s *Server) handleGetTuning(w http.ResponseWriter, r *http.Request) {
-	status, err := s.pg.CurrentTuning(r.Context())
+	ctx := r.Context()
+
+	status, err := s.pg.CurrentTuning(ctx)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+
+	profile, err := s.persistedTuningProfile(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status.ActiveProfile = profile
+
+	writeData(w, http.StatusOK, status)
+}
+
+// persistedTuningProfile reports the workload profile the operator has chosen and
+// we have applied to this box: the persisted config value (default mixed). A
+// stored value that fails to parse falls back to mixed rather than failing the
+// surface, so a hand-edited or stale store row can never break the tuning page —
+// pg.ParseWorkloadProfile only rejects genuinely unknown strings.
+func (s *Server) persistedTuningProfile(ctx context.Context) (pg.WorkloadProfile, error) {
+	cfg, err := config.Load(ctx, s.store)
+	if err != nil {
+		return "", err
+	}
+	profile, perr := pg.ParseWorkloadProfile(cfg.TuningProfile)
+	if perr != nil {
+		return pg.ProfileMixed, nil
+	}
+	return profile, nil
+}
+
+// applyTuningRequest selects the workload profile to apply. An invalid or missing
+// value is a 400 (pg.ParseWorkloadProfile refuses to silently mis-size the box),
+// so a typo can't quietly restart Postgres onto the wrong profile.
+type applyTuningRequest struct {
+	Profile string `json:"profile"`
+}
+
+// handleApplyTuning applies a workload profile to Postgres' host-sized settings.
+// This is the deliberate, system-mutating counterpart to GET /tuning: it resizes
+// shared_buffers/max_connections and restarts Postgres (a few seconds of
+// downtime), so it is a CSRF-gated POST behind requireAuth.
+//
+// Order matters and is the contract: ApplyProfile runs FIRST, and the chosen
+// profile is persisted ONLY once Postgres is confirmed running on it. So the
+// recorded "chosen" profile can never get ahead of what's actually applied — if
+// the postmaster rejects a value, ApplyTuning rolls back to last-known-good and
+// returns CodeSafety, and if Postgres is unreachable ApplyProfile errors; either
+// way we surface the error and leave the persisted profile untouched. On success
+// we re-read the live status and stamp the now-persisted profile so the response
+// reflects exactly what the box is running.
+func (s *Server) handleApplyTuning(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req applyTuningRequest
+	if err := decodeJSON(r, &req, maxBodyBytes); err != nil {
+		writeError(w, err)
+		return
+	}
+	// A missing profile is a 400 here, not the Mixed best-default: applying
+	// restarts Postgres, so we never silently restart onto a profile the operator
+	// didn't pick. ParseWorkloadProfile then rejects any unknown string.
+	if strings.TrimSpace(req.Profile) == "" {
+		writeError(w, core.ValidationError("profile is required (oltp, mixed, or olap)"))
+		return
+	}
+	profile, err := pg.ParseWorkloadProfile(req.Profile)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	// Serialize the WHOLE apply-and-persist sequence below. Two overlapping applies
+	// could otherwise interleave ALTER SYSTEM / restart / rollback / persist, so the
+	// last persisted profile might differ from the settings that actually won, and
+	// one apply's rollback could undo the other's. We Lock (queue) rather than reject
+	// with 409: applying is idempotent and the operator's intent is simply "make the
+	// box this profile", so briefly serializing yields a consistent last-writer-wins
+	// result — friendlier than a conflict the SPA would only have to retry.
+	s.tuningMu.Lock()
+	defer s.tuningMu.Unlock()
+
+	// Apply FIRST. On any failure (rejected value rolled back to last-known-good,
+	// or Postgres unreachable) surface it and DO NOT persist the profile. The
+	// audit target is the profile itself (oltp/mixed/olap), not a generic "tuning":
+	// this is the only persistent record of an action that restarts Postgres, so it
+	// must say WHICH profile a restart switched to — matching the convention where
+	// target is the specific object acted on (extensions use the extension name,
+	// backups the backup type).
+	if _, err := s.pg.ApplyProfile(ctx, profile); err != nil {
+		s.audit(ctx, "apply_tuning", string(profile), "failure", "apply workload profile failed", core.CodeOf(err))
+		writeError(w, err)
+		return
+	}
+
+	// Postgres is now running the profile. Record the success in the audit log
+	// BEFORE persisting the choice: the box has already been reconfigured, so the
+	// event must be captured even if the persist below fails — otherwise a store
+	// error after a real Postgres change would leave that change with no audit trail.
+	s.audit(ctx, "apply_tuning", string(profile), "success", "applied workload profile", "")
+
+	// Persist the chosen profile with a targeted single-key write, not a full
+	// config Load+Save: only this one string key changes, so re-reading and
+	// re-writing (and re-Validating) every field would only widen the window in
+	// which a store error could fail the request after the box is already retuned.
+	// If this does fail, the next GET /tuning shows the new applied values against
+	// the stale active profile (visible drift) and re-applying is a PG-side no-op.
+	// Surface that explicitly: a bare store error ("write config 'tuning_profile':
+	// ...") would leave the operator unable to tell whether their downtime was
+	// wasted. Name what WAS applied and that recovery is safe, so they don't fear a
+	// half-done change.
+	//
+	// Crucially, do NOT interpolate the raw err into the client Message: toAPIError
+	// returns a typed error's Message verbatim, so a %v would leak the wrapped
+	// SQLite/OS error to the SPA. Log the underlying cause server-side for
+	// diagnostics and Wrap it (the cause is never serialized — only Message/Hint/
+	// Details reach the wire), returning a clean operator-facing explanation.
+	if err := config.SaveTuningProfile(ctx, s.store, string(profile)); err != nil {
+		s.log.Error("persisting tuning profile failed after Postgres was retuned",
+			"profile", profile, "err", err)
+		writeError(w, core.InternalError(
+			"Postgres is now running the %s profile, but saving that choice failed "+
+				"— reload the page; the active profile will show as drifted and re-applying is safe",
+			profile).Wrap(err))
+		return
+	}
+
+	// Re-read the fresh applied values and stamp the now-persisted profile so the
+	// SPA can update from the returned status in one round trip.
+	status, err := s.pg.CurrentTuning(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status.ActiveProfile = profile
+
 	writeData(w, http.StatusOK, status)
 }
 

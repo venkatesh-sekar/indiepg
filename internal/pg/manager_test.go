@@ -68,7 +68,7 @@ func TestProvision_HappyPath(t *testing.T) {
 	m := newManager(r)
 	pinTuningNoOp(m, r)
 
-	res, err := m.Provision(context.Background())
+	res, err := m.Provision(context.Background(), ProfileMixed)
 	require.NoError(t, err)
 	require.True(t, res.OK)
 	require.NotEmpty(t, res.Statements)
@@ -131,7 +131,7 @@ func TestProvision_SecondRunIsIdempotentNoOp(t *testing.T) {
 	pinTuningNoOp(m, r)
 
 	// First provision: fresh box. Socket auth is configured and the reload fires.
-	first, err := m.Provision(context.Background())
+	first, err := m.Provision(context.Background(), ProfileMixed)
 	require.NoError(t, err)
 	require.True(t, first.OK)
 	require.Equal(t, "configured", first.Data["socket_auth"])
@@ -142,7 +142,7 @@ func TestProvision_SecondRunIsIdempotentNoOp(t *testing.T) {
 
 	// Second provision: already-provisioned box. It must succeed and be a no-op
 	// for the stateful step.
-	second, err := m.Provision(context.Background())
+	second, err := m.Provision(context.Background(), ProfileMixed)
 	require.NoError(t, err)
 	require.True(t, second.OK)
 	require.Equal(t, "already-present", second.Data["socket_auth"])
@@ -177,7 +177,7 @@ func TestProvision_AptInstallFailureStops(t *testing.T) {
 	r.On("install", exec.FakeResponse{ExitCode: 100, Err: errFake("dpkg lock")})
 	m := newManager(r)
 
-	_, err := m.Provision(context.Background())
+	_, err := m.Provision(context.Background(), ProfileMixed)
 	require.Error(t, err)
 	require.Equal(t, core.CodeExec, core.CodeOf(err))
 
@@ -190,9 +190,40 @@ func TestProvision_AptInstallFailureStops(t *testing.T) {
 
 func TestProvision_NoRunner(t *testing.T) {
 	m := New(Options{Config: config.Default()})
-	_, err := m.Provision(context.Background())
+	_, err := m.Provision(context.Background(), ProfileMixed)
 	require.Error(t, err)
 	require.Equal(t, core.CodeInternal, core.CodeOf(err))
+}
+
+// TestProvision_AppliesGivenProfileNotHardcodedMixed proves Provision sizes
+// Postgres to the profile it is HANDED, not a hardcoded Mixed: re-running install
+// after an operator picked OLAP must re-apply OLAP. We pin a fixed host (so each
+// profile yields a genuinely distinct recommendation) and program pg_settings to
+// already hold the OLAP-sized values, making Provision(ctx, ProfileOLAP) a tuning
+// no-op ("already-applied"). Had Provision used Mixed — whose shared_buffers /
+// max_connections differ — it would instead have issued ALTER SYSTEM and restarted
+// Postgres, so the no-op is the proof it resolved OLAP.
+func TestProvision_AppliesGivenProfileNotHardcodedMixed(t *testing.T) {
+	r := exec.NewFakeRunner()
+	hbaFile := filepath.Join(t.TempDir(), "pg_hba.conf")
+	require.NoError(t, os.WriteFile(hbaFile, []byte("local   all   all   peer\n"), 0o640))
+	r.On("hba_file", exec.FakeResponse{Stdout: hbaFile})
+	r.On("pg_reload_conf", exec.FakeResponse{})
+
+	m := newManager(r)
+	pinHostTuning(m, 4096, 4)
+	// The box already holds the OLAP recommendation (reported in native units).
+	r.On("pg_settings", exec.FakeResponse{Stdout: settingsRows(RecommendTuning(4096, 4, ProfileOLAP))})
+
+	res, err := m.Provision(context.Background(), ProfileOLAP)
+	require.NoError(t, err)
+	require.True(t, res.OK)
+	require.Equal(t, "already-applied", res.Data["tuning"],
+		"Provision(OLAP) against an OLAP-tuned box must be a tuning no-op; a hardcoded Mixed would have re-tuned")
+	require.False(t, psqlIssued(r.Calls(), "ALTER SYSTEM"),
+		"Provision must not ALTER SYSTEM when the box already holds the requested profile's values")
+	require.Zero(t, restartCount(r.Calls()),
+		"a no-op tuning re-provision must not restart Postgres")
 }
 
 // IsRunning's running/down/no-runner contract is exercised in

@@ -49,6 +49,10 @@ func (s *Server) buildRouter() http.Handler {
 			// Host-sized tuning surface (read-only): applied settings + the
 			// recommendation for each workload profile.
 			pr.Get("/tuning", s.handleGetTuning)
+			// Apply a workload profile: the deliberate, system-mutating action that
+			// resizes shared_buffers/max_connections and restarts Postgres (with
+			// rollback to last-known-good). CSRF-gated POST behind requireAuth.
+			pr.Post("/tuning/apply", s.handleApplyTuning)
 
 			// Opt-in PgBouncer pooler: read-only status, plus the deliberate,
 			// system-mutating enable action (installs + starts the service).

@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/alert"
@@ -86,6 +87,13 @@ type Server struct {
 	collector *telemetry.Collector
 	engine    *alert.Engine
 	sched     *scheduler.Scheduler
+
+	// tuningMu serializes the whole apply-a-workload-profile sequence
+	// (ApplyProfile + persist + re-read) in handleApplyTuning. Two overlapping
+	// authenticated applies could otherwise interleave ALTER SYSTEM / restart /
+	// rollback / persist, leaving the persisted profile disagreeing with the
+	// settings that actually won (and one rollback undoing the other).
+	tuningMu sync.Mutex
 
 	sessionTTL time.Duration
 	spa        http.Handler

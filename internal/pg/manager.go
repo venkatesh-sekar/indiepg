@@ -114,9 +114,16 @@ func New(opts Options) *Manager {
 // re-runnable: every role/extension step uses an idempotent guard, and an
 // already-installed package or already-running service is not an error.
 //
+// profile is the workload profile to host-size Postgres for. It is passed IN by
+// the caller (which owns config) rather than read here, so pg stays ignorant of
+// "what's chosen": a re-run after an operator picked OLTP/OLAP must re-apply THAT
+// profile, not silently restart Postgres back onto a hardcoded Mixed while config
+// and the UI still report the chosen one. A fresh install has no persisted choice,
+// so the caller passes ProfileMixed (config's default) and behaviour is unchanged.
+//
 // Provision returns a core.Result recording the statements/commands run so the
 // caller can surface them in the audit log and dry-run display.
-func (m *Manager) Provision(ctx context.Context) (core.Result, error) {
+func (m *Manager) Provision(ctx context.Context, profile WorkloadProfile) (core.Result, error) {
 	if m.runner == nil {
 		return core.Result{}, core.InternalError("pg: provision requires a Runner")
 	}
@@ -207,13 +214,15 @@ func (m *Manager) Provision(ctx context.Context) (core.Result, error) {
 	if !socketAuthChanged {
 		socketAuth = "already-present"
 	}
-	// Apply the host-sized best-default tuning for this box (Mixed profile):
+	// Apply the host-sized tuning for the operator's chosen workload profile:
 	// shared_buffers / work_mem / effective_cache_size / max_connections sized to
-	// detected RAM/CPU per DEFAULTS.md. Restart-requiring settings are activated
-	// through restartWithRollback, so a value the postmaster rejects auto-rolls-
-	// back to last-known-good and Postgres is never left down. Re-running Provision
-	// is a no-op when the settings already match.
-	tuning, _ := m.hostTuning(ProfileMixed)
+	// detected RAM/CPU per DEFAULTS.md. The profile comes from the caller (the
+	// persisted choice, default Mixed) so a re-provision preserves an OLTP/OLAP
+	// selection instead of forcing the box back onto Mixed. Restart-requiring
+	// settings are activated through restartWithRollback, so a value the postmaster
+	// rejects auto-rolls-back to last-known-good and Postgres is never left down.
+	// Re-running Provision is a no-op when the settings already match.
+	tuning, _ := m.hostTuning(profile)
 	tuningStatus := "applied"
 	tuningChanged, err := m.ApplyTuning(ctx, tuning)
 	switch {

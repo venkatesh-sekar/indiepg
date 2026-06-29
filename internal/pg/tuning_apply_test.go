@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -227,6 +228,71 @@ func TestTunedSetting_AlterValueQuoting(t *testing.T) {
 	}
 	require.Equal(t, "'1228MB'", got["shared_buffers"])
 	require.Equal(t, "179", got["max_connections"])
+}
+
+// olapRec is the host-sized OLAP recommendation the ApplyProfile tests size
+// against (4096MB / 4 CPU). It deliberately differs from mixedRec in
+// shared_buffers (1638 vs 1228MB), maintenance_work_mem and max_connections, so a
+// test can prove ApplyProfile sized to the profile it was handed rather than a
+// hardcoded Mixed.
+func olapRec() TuningRecommendation { return RecommendTuning(4096, 4, ProfileOLAP) }
+
+// settingsRows renders a recommendation as the pg_settings text the FakeRunner
+// returns, in the native units Postgres emits — 8kB blocks for the buffer
+// settings, kB for work_mem/maintenance_work_mem, unit-less for max_connections —
+// so the byte-conversion round-trip in readTunableSettings is exercised for real
+// rather than a synthetic MB==MB identity.
+func settingsRows(rec TuningRecommendation) string {
+	return strings.Join([]string{
+		fmt.Sprintf("shared_buffers|%d|8kB", rec.SharedBuffersMB*128),
+		fmt.Sprintf("effective_cache_size|%d|8kB", rec.EffectiveCacheMB*128),
+		fmt.Sprintf("work_mem|%d|kB", rec.WorkMemMB*1024),
+		fmt.Sprintf("maintenance_work_mem|%d|kB", rec.MaintenanceWorkMemMB*1024),
+		fmt.Sprintf("max_connections|%d|", rec.MaxConnections),
+	}, "\n")
+}
+
+// ApplyProfile resolves the host-sized recommendation for the requested profile
+// and delegates to ApplyTuning: switching to a profile the box already holds is a
+// no-op (no ALTER SYSTEM, no restart, no reload), which is what keeps re-applying
+// the active profile cheap and safe.
+func TestApplyProfile_NoOpWhenProfileAlreadyApplied(t *testing.T) {
+	r := exec.NewFakeRunner()
+	r.On("pg_settings", exec.FakeResponse{Stdout: settingsRows(olapRec())})
+	m := newManager(r)
+	pinHostTuning(m, 4096, 4)
+
+	changed, err := m.ApplyProfile(context.Background(), ProfileOLAP)
+	require.NoError(t, err)
+	require.False(t, changed)
+
+	calls := r.Calls()
+	require.False(t, psqlIssued(calls, "ALTER SYSTEM"), "an already-applied profile must write nothing")
+	require.Zero(t, restartCount(calls))
+	require.Zero(t, countReloads(calls))
+}
+
+// ApplyProfile must size against the profile it was handed, not a hardcoded one:
+// switching to OLAP while the box runs the Mixed values writes the OLAP-sized
+// shared_buffers (1638MB, not Mixed's 1228MB) and restarts. Had it computed Mixed
+// this would have been a no-op, so the write + value prove the resolution.
+func TestApplyProfile_SizesAgainstRequestedProfile(t *testing.T) {
+	r := exec.NewFakeRunner()
+	r.On("data_directory", exec.FakeResponse{Stdout: "/var/lib/postgresql/16/main"})
+	r.On("postgresql.auto.conf", exec.FakeResponse{Stdout: "# prior good config\n"})
+	// The box currently holds the Mixed values; ApplyProfile(OLAP) must change it.
+	r.On("pg_settings", exec.FakeResponse{Stdout: settingsRows(mixedRec())})
+	m := newManager(r)
+	pinHostTuning(m, 4096, 4)
+
+	changed, err := m.ApplyProfile(context.Background(), ProfileOLAP)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	calls := r.Calls()
+	require.True(t, psqlIssued(calls, "ALTER SYSTEM SET shared_buffers = '1638MB'"),
+		"ApplyProfile must write the OLAP-sized shared_buffers, proving it resolved OLAP not Mixed")
+	require.Equal(t, 1, restartCount(calls), "resizing shared_buffers/max_connections restarts Postgres")
 }
 
 func TestSettingUnitBytes(t *testing.T) {

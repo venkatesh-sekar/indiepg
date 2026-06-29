@@ -58,6 +58,56 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	require.Equal(t, 15*time.Second, got.StatementTimeout)
 }
 
+// SaveTuningProfile writes ONLY the workload-profile key, leaving every other
+// persisted field untouched. This is the narrow single-key path handleApplyTuning
+// uses after Postgres is already retuned, so it must not depend on (or disturb) the
+// rest of the config, and a subsequent Load must read the new profile back.
+func TestSaveTuningProfile_WritesOnlyTheProfileKey(t *testing.T) {
+	ctx := context.Background()
+	st := newFakeStore()
+
+	// Seed unrelated state so we can prove the single-key write leaves it alone.
+	st.kv[keyBindAddr] = "10.0.0.5:8443"
+	st.kv[keyS3Bucket] = "my-pg-backups"
+
+	require.NoError(t, SaveTuningProfile(ctx, st, "olap"))
+
+	require.Equal(t, "olap", st.kv[keyTuningProfile])
+	require.Equal(t, "10.0.0.5:8443", st.kv[keyBindAddr], "unrelated keys must be untouched")
+	require.Equal(t, "my-pg-backups", st.kv[keyS3Bucket], "unrelated keys must be untouched")
+
+	got, err := Load(ctx, st)
+	require.NoError(t, err)
+	require.Equal(t, "olap", got.TuningProfile)
+}
+
+// A full config Save must NOT write the tuning_profile key — it is independently
+// managed by SaveTuningProfile alone. Otherwise a PUT /config (which does Load then
+// a whole-config Save) would silently restore a stale profile over one a tuning
+// apply just persisted, while Postgres stays on the new one. We seed a profile, run
+// a full Save carrying a DIFFERENT in-memory value, and prove the stored key is
+// left untouched.
+func TestSaveDoesNotWriteTuningProfile(t *testing.T) {
+	ctx := context.Background()
+	st := newFakeStore()
+
+	// A tuning apply already persisted "olap" via the dedicated single-key path.
+	st.kv[keyTuningProfile] = "olap"
+
+	// A full config Save (e.g. PUT /config carrying the default-loaded "mixed")
+	// must not overwrite that independently-managed key.
+	cfg := Default() // TuningProfile == "mixed"
+	require.NoError(t, Save(ctx, st, cfg))
+
+	require.Equal(t, "olap", st.kv[keyTuningProfile],
+		"full Save must leave tuning_profile alone; only SaveTuningProfile owns it")
+
+	// And it is still read back on Load, so the round-trip is intact.
+	got, err := Load(ctx, st)
+	require.NoError(t, err)
+	require.Equal(t, "olap", got.TuningProfile)
+}
+
 func TestPrivateBindRule(t *testing.T) {
 	tests := []struct {
 		addr    string

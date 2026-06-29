@@ -416,14 +416,24 @@ export interface AppliedTuning {
 /** The workload profile Postgres is sized for. Mixed is the best default. */
 export type WorkloadProfile = "oltp" | "mixed" | "olap";
 
-/** pg.TuningStatus — the read-only tuning surface from GET /api/tuning.
- *  `applied` is null when Postgres is unreachable (recommendations still load). */
+/** pg.TuningStatus — the tuning surface from GET /api/tuning and the body POST
+ *  /api/tuning/apply returns. `applied` is null when Postgres is unreachable
+ *  (recommendations still load); `active_profile` is the persisted chosen
+ *  profile, which an apply flips to the profile just written. */
 export interface TuningStatus {
   memory_mb: number;
   cpu_count: number;
   active_profile: WorkloadProfile;
   applied: AppliedTuning | null;
   profiles: TuningRecommendation[];
+}
+
+/** POST /api/tuning/apply input — switch Postgres to a workload profile. The
+ *  server resolves the host-sized recommendation for `profile`, applies it (a
+ *  restart-bearing change to shared_buffers/max_connections, with rollback to
+ *  last-known-good on failure), and only on success persists the chosen profile. */
+export interface ApplyTuningRequest {
+  profile: WorkloadProfile;
 }
 
 /** pgbouncer.PoolRecommendation — host-sized PgBouncer pool sizing, coordinated

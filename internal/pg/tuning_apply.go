@@ -120,6 +120,23 @@ func (m *Manager) ApplyTuning(ctx context.Context, rec TuningRecommendation) (bo
 	return true, nil
 }
 
+// ApplyProfile resolves the host-sized recommendation for the given workload
+// profile and activates it through ApplyTuning. It is the "switch the box to this
+// workload" entry point the panel calls when the operator picks a different
+// profile: the recommendation is pure compute from detected RAM/CPU (hostTuning),
+// and ApplyTuning does the safe part — ALTER SYSTEM, snapshot-then-restart-with-
+// rollback for the restart-requiring settings (shared_buffers, max_connections),
+// a plain reload when only reloadable settings changed, or a no-op when the box
+// already holds the profile's values. It returns whether anything changed.
+//
+// pg stays deliberately ignorant of WHICH profile is "chosen"/persisted — that is
+// the handler's concern (it owns config). Here we only compute and apply: callers
+// resolve the persisted choice, call ApplyProfile, and record it only on success.
+func (m *Manager) ApplyProfile(ctx context.Context, profile WorkloadProfile) (bool, error) {
+	rec, _ := m.hostTuning(profile)
+	return m.ApplyTuning(ctx, rec)
+}
+
 // tunableSettingNames is the pg_settings names ApplyTuning manages, in the
 // SELECT below.
 const tunableSettingNames = "'shared_buffers','effective_cache_size','work_mem'," +

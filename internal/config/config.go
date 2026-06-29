@@ -29,6 +29,14 @@ const (
 
 	// DefaultRetentionDays is how long backups are kept (design proposal).
 	DefaultRetentionDays = 14
+
+	// DefaultTuningProfile is the workload profile a fresh box is sized for. It
+	// mirrors pg.ProfileMixed by value — config stays free of any pg import (pg
+	// already imports config, so depending on it here would cycle), so the profile
+	// is held as a plain string and the server handler converts it via
+	// pg.ParseWorkloadProfile. "mixed" is the balanced general-purpose default
+	// Provision applies.
+	DefaultTuningProfile = "mixed"
 )
 
 // S3Target describes an S3-compatible backup destination. Secret is never
@@ -102,6 +110,14 @@ type Config struct {
 	// Schedules holds the cron expressions for periodic jobs.
 	Schedules Schedules `json:"schedules"`
 
+	// TuningProfile is the workload profile (oltp/mixed/olap) the operator has
+	// chosen and we have applied to Postgres' host-sized settings. It records
+	// "what's chosen"; pg owns "what's actually applied" (read live from
+	// pg_settings). Held as a plain string to keep config free of a pg import —
+	// the server handler converts it via pg.ParseWorkloadProfile. Defaults to
+	// "mixed".
+	TuningProfile string `json:"tuning_profile"`
+
 	// StatementTimeout bounds the read-only query box.
 	StatementTimeout time.Duration `json:"statement_timeout"`
 	// QueryLimit is the auto-LIMIT cap for unbounded SELECTs.
@@ -118,6 +134,7 @@ func Default() Config {
 		ForcePublicBind:  false,
 		Stanza:           DefaultStanza,
 		RetentionDays:    DefaultRetentionDays,
+		TuningProfile:    DefaultTuningProfile,
 		StatementTimeout: DefaultStatementTimeout,
 		QueryLimit:       DefaultQueryLimit,
 		PGSocketDir:      "/var/run/postgresql",

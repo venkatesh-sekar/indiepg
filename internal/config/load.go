@@ -29,6 +29,7 @@ const (
 	keyStatementTimeout = "statement_timeout_ms"
 	keyQueryLimit       = "query_limit"
 	keyPGSocketDir      = "pg_socket_dir"
+	keyTuningProfile    = "tuning_profile"
 
 	keyS3Endpoint   = "backup_s3_endpoint"
 	keyS3Region     = "backup_s3_region"
@@ -64,7 +65,14 @@ func Load(ctx context.Context, st Store) (Config, error) {
 	return cfg, nil
 }
 
-// Save persists every field of cfg to the store as key/value rows.
+// Save persists every field of cfg to the store as key/value rows — EXCEPT the
+// workload profile, which is independently managed by SaveTuningProfile alone.
+// Deliberately omitting keyTuningProfile here is a correctness guard: a partial
+// PUT /config does Load (reading whatever profile is currently persisted) then a
+// full Save, so if Save also wrote the profile it would silently restore a stale
+// value over one a concurrent tuning apply just persisted — leaving config saying
+// one profile while Postgres runs another. Reads still pick the key up in Load
+// (applyMap), so a fresh box with no row Loads the "mixed" default correctly.
 func Save(ctx context.Context, st Store, cfg Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -101,6 +109,23 @@ func Save(ctx context.Context, st Store, cfg Config) error {
 	return nil
 }
 
+// SaveTuningProfile persists only the workload-profile key, without the full
+// Load+Save round-trip. handleApplyTuning calls it AFTER ApplyProfile has already
+// reconfigured Postgres: only this one string key changes, so re-reading and
+// re-writing (and re-Validating) every config field would needlessly widen the
+// window in which a store error could fail the request after the box is already
+// retuned — leaving a real Postgres change unrecorded. The caller has already
+// validated the value (pg.ParseWorkloadProfile), so no Validate round-trip is
+// needed for a single known-good string key. Keeps the key name owned by config
+// (the GET path reads the same keyTuningProfile), not duplicated in the handler.
+//
+// This is the SOLE writer of keyTuningProfile: the full-config Save deliberately
+// omits the key (see Save) so a PUT /config round-trip can never clobber a profile
+// this path persisted. Load still reads it back through applyMap.
+func SaveTuningProfile(ctx context.Context, st Store, profile string) error {
+	return st.SetConfig(ctx, keyTuningProfile, profile)
+}
+
 func applyMap(cfg *Config, kv map[string]string) {
 	setStr(kv, keyBindAddr, &cfg.BindAddr)
 	setBool(kv, keyForcePublicBind, &cfg.ForcePublicBind)
@@ -111,6 +136,7 @@ func applyMap(cfg *Config, kv map[string]string) {
 	setMillis(kv, keyStatementTimeout, &cfg.StatementTimeout)
 	setInt(kv, keyQueryLimit, &cfg.QueryLimit)
 	setStr(kv, keyPGSocketDir, &cfg.PGSocketDir)
+	setStr(kv, keyTuningProfile, &cfg.TuningProfile)
 
 	setStr(kv, keyS3Endpoint, &cfg.Backup.Endpoint)
 	setStr(kv, keyS3Region, &cfg.Backup.Region)
