@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/venkatesh-sekar/indiepg/internal/core"
@@ -18,6 +19,27 @@ func (m *Manager) DataDirectory(ctx context.Context) (string, error) {
 // Port returns the cluster's TCP port (SHOW port), used as pgBackRest's pg1-port.
 func (m *Manager) Port(ctx context.Context) (string, error) {
 	return m.showSetting(ctx, "port")
+}
+
+// MajorVersion returns the cluster's PostgreSQL major version, read from the
+// server_version_num GUC (e.g. 170004 → 17). It is used to fill the "%d" in
+// catalog package templates (postgresql-17-pgvector). server_version_num is a
+// plain integer GUC readable by any role, so it normally comes straight from
+// the read-only pool, but showSetting transparently falls back to a privileged
+// psql query when no pool is connected.
+func (m *Manager) MajorVersion(ctx context.Context) (int, error) {
+	raw, err := m.showSetting(ctx, "server_version_num")
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, core.InternalError("pg: parsing server_version_num %q", raw).Wrap(err)
+	}
+	if n <= 0 {
+		return 0, core.InternalError("pg: invalid server_version_num %d", n)
+	}
+	return n / 10000, nil
 }
 
 // showSetting reads a single Postgres GUC via SHOW. The setting name is a fixed

@@ -371,6 +371,39 @@ func DropDatabase(database, confirmTyped string) (string, error) {
 	return fmt.Sprintf("DROP DATABASE %s;", core.QuoteIdent(database)), nil
 }
 
+// CreateExtension builds a CREATE EXTENSION IF NOT EXISTS statement for the
+// target database. The name is validated as an identifier and quoted; the
+// IF NOT EXISTS clause makes re-adding an already-installed extension a no-op.
+func CreateExtension(name string) (string, error) {
+	if err := core.ValidateIdentifier(name, "extension"); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("CREATE EXTENSION IF NOT EXISTS %s;", core.QuoteIdent(name)), nil
+}
+
+// AlterExtensionUpdate builds an ALTER EXTENSION ... UPDATE statement, which
+// upgrades an installed extension to the default available version.
+func AlterExtensionUpdate(name string) (string, error) {
+	if err := core.ValidateIdentifier(name, "extension"); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("ALTER EXTENSION %s UPDATE;", core.QuoteIdent(name)), nil
+}
+
+// DropExtension builds a DROP EXTENSION statement guarded by a typed-name
+// confirmation. It returns a *core.SafetyError (CodeSafety) unless confirmTyped
+// exactly equals name. No CASCADE is emitted: a dependency error from Postgres
+// is surfaced to the operator to resolve explicitly.
+func DropExtension(name, confirmTyped string) (string, error) {
+	if err := core.ValidateIdentifier(name, "extension"); err != nil {
+		return "", err
+	}
+	if serr := core.RequireConfirmation("drop extension", name, confirmTyped); serr != nil {
+		return "", serr
+	}
+	return fmt.Sprintf("DROP EXTENSION %s;", core.QuoteIdent(name)), nil
+}
+
 // NewAppPlan describes the one-click "new app" bundle: a database owned by a
 // dedicated owner role, a read-write login user, and a read-only login user.
 type NewAppPlan struct {

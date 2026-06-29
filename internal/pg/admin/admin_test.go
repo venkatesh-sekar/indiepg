@@ -278,6 +278,68 @@ func TestDropDatabase(t *testing.T) {
 	})
 }
 
+func TestCreateExtension(t *testing.T) {
+	t.Run("quoted with IF NOT EXISTS", func(t *testing.T) {
+		got, err := CreateExtension("pg_trgm")
+		require.NoError(t, err)
+		require.Equal(t, `CREATE EXTENSION IF NOT EXISTS "pg_trgm";`, got)
+	})
+	t.Run("invalid name rejected", func(t *testing.T) {
+		_, err := CreateExtension("bad name")
+		require.Error(t, err)
+		require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	})
+	t.Run("injection in name is rejected", func(t *testing.T) {
+		_, err := CreateExtension(`x"; DROP DATABASE y; --`)
+		require.Error(t, err)
+		require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	})
+}
+
+func TestAlterExtensionUpdate(t *testing.T) {
+	t.Run("quoted update", func(t *testing.T) {
+		got, err := AlterExtensionUpdate("postgis")
+		require.NoError(t, err)
+		require.Equal(t, `ALTER EXTENSION "postgis" UPDATE;`, got)
+	})
+	t.Run("invalid name rejected", func(t *testing.T) {
+		_, err := AlterExtensionUpdate("bad-name")
+		require.Error(t, err)
+		require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	})
+}
+
+func TestDropExtension(t *testing.T) {
+	t.Run("confirmed", func(t *testing.T) {
+		got, err := DropExtension("pg_cron", "pg_cron")
+		require.NoError(t, err)
+		require.Equal(t, `DROP EXTENSION "pg_cron";`, got)
+	})
+	t.Run("unconfirmed is a safety error", func(t *testing.T) {
+		_, err := DropExtension("pg_cron", "nope")
+		require.Error(t, err)
+		require.Equal(t, core.CodeSafety, core.CodeOf(err))
+		var se *core.SafetyError
+		require.ErrorAs(t, err, &se)
+		require.Equal(t, "drop extension", se.Operation)
+	})
+	t.Run("empty confirm is a safety error", func(t *testing.T) {
+		_, err := DropExtension("pg_cron", "")
+		require.Error(t, err)
+		require.Equal(t, core.CodeSafety, core.CodeOf(err))
+	})
+	t.Run("invalid name is validation error before safety", func(t *testing.T) {
+		_, err := DropExtension("bad-name", "bad-name")
+		require.Error(t, err)
+		require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	})
+	t.Run("no CASCADE in v1", func(t *testing.T) {
+		got, err := DropExtension("hstore", "hstore")
+		require.NoError(t, err)
+		require.NotContains(t, got, "CASCADE")
+	})
+}
+
 func TestRoleMembershipBuilders(t *testing.T) {
 	t.Run("grant membership", func(t *testing.T) {
 		got, err := GrantRoleMembership("shop_owner", "indiepg_admin")
