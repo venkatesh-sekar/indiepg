@@ -413,6 +413,12 @@ export const api = {
   createDropoff(req: CreateDropoffRequest): Promise<CreateDropoffResult> {
     return request<CreateDropoffResult>("/migrate/drops", { method: "POST", body: req });
   },
+  // Active (non-terminal, not-yet-expired) drop-off sessions as the safe status
+  // view — no URLs, no command. The recovery path: if the minted code was lost to
+  // a browser reload before Start/Cancel, the operator resumes from this list.
+  listDropoffs(signal?: AbortSignal): Promise<DropoffSession[]> {
+    return request<DropoffSession[]>("/migrate/drops", { signal });
+  },
   // Safe status poll: no URLs, no command. The badge flips waiting → uploaded
   // once the source's meta.json lands; once migration_id is set, switch to
   // getMigration(migration_id) for the live import/verify progress.

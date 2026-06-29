@@ -95,6 +95,20 @@ const DROP: DropoffSession = {
   byte_size: 0,
 };
 
+// Renders the minted progress view from the CREATED fixture using the post-refactor
+// prop shape (code/target/overwrite/expiresAt/commands). `commands` present == a
+// freshly minted link that still shows the one-time push command.
+function mintedProps(overrides: Partial<{ overwrite: boolean }> = {}) {
+  return {
+    code: CREATED.code,
+    target: CREATED.target_database,
+    overwrite: overrides.overwrite ?? CREATED.overwrite,
+    expiresAt: CREATED.expires_at,
+    commands: { docker: CREATED.command_docker, native: CREATED.command_native },
+    onReset: () => {},
+  };
+}
+
 describe("Migrate pollers — no error-plus-infinite-spinner on first-load failure", () => {
   beforeEach(() => {
     pollState.current = state({});
@@ -318,7 +332,7 @@ describe("Migrate — drop-off link mode", () => {
 
   it("Start import is disabled until the upload (meta.json) lands, then enables", () => {
     pollState.current = state<DropoffSession>({ data: { ...DROP, status: "waiting_for_upload" } });
-    const { rerender } = render(<DropoffProgress created={CREATED} onReset={() => {}} />);
+    const { rerender } = render(<DropoffProgress {...mintedProps()} />);
 
     const startBtn = () => screen.getByRole("button", { name: /start import/i });
     expect(startBtn()).toBeDisabled();
@@ -327,13 +341,13 @@ describe("Migrate — drop-off link mode", () => {
     // The source has now pushed the dump + manifest: the badge flips to uploaded
     // and Start becomes the live, enabled action.
     pollState.current = state<DropoffSession>({ data: { ...DROP, status: "uploaded", byte_size: 4096 } });
-    rerender(<DropoffProgress created={CREATED} onReset={() => {}} />);
+    rerender(<DropoffProgress {...mintedProps()} />);
     expect(startBtn()).toBeEnabled();
   });
 
   it("shows the paste command with a Copy button and a live expiry countdown", () => {
     pollState.current = state<DropoffSession>({ data: { ...DROP, status: "waiting_for_upload" } });
-    render(<DropoffProgress created={CREATED} onReset={() => {}} />);
+    render(<DropoffProgress {...mintedProps()} />);
 
     // The full docker command (presigned URLs and all) is shown so it can be copied.
     expect(screen.getByText(CREATED.command_docker)).toBeInTheDocument();
@@ -345,7 +359,7 @@ describe("Migrate — drop-off link mode", () => {
 
   it("an expired link swaps the command for a clear callout and offers Start another", () => {
     pollState.current = state<DropoffSession>({ data: { ...DROP, status: "expired" } });
-    render(<DropoffProgress created={CREATED} onReset={() => {}} />);
+    render(<DropoffProgress {...mintedProps()} />);
 
     expect(screen.getByText(/this drop-off link expired/i)).toBeInTheDocument();
     // No live command once expired, and the terminal action is "Start another".
@@ -358,7 +372,7 @@ describe("Migrate — drop-off link mode", () => {
     pollState.current = state<DropoffSession>({
       data: { ...DROP, status: "importing", migration_id: 42 },
     });
-    render(<DropoffProgress created={CREATED} onReset={() => {}} />);
+    render(<DropoffProgress {...mintedProps()} />);
 
     // DirectJobProgress (reused) owns the live view — its card title appears and
     // the drop-off command does not.
@@ -375,7 +389,7 @@ describe("Migrate — drop-off link mode", () => {
     pollState.current = state({
       data: { ...DROP, status: "failed", migration_id: 7, error: "pg_restore exited 1" },
     });
-    render(<DropoffProgress created={CREATED} onReset={() => {}} />);
+    render(<DropoffProgress {...mintedProps()} />);
 
     const retry = screen.getByRole("button", { name: /retry import/i });
     fireEvent.click(retry);
@@ -398,5 +412,48 @@ describe("Migrate — drop-off link mode", () => {
     fireEvent.click(screen.getByRole("button", { name: /create drop-off link/i }));
 
     expect(await screen.findByText(/drop-off link needs s3/i)).toBeInTheDocument();
+  });
+
+  it("re-affirms a destructive overwrite by name at Start (the DROP runs now, not at mint)", () => {
+    const startSpy = vi
+      .spyOn(api, "startDropoff")
+      .mockResolvedValue({ id: 5, status: "importing" });
+    pollState.current = state<DropoffSession>({
+      data: { ...DROP, status: "uploaded", overwrite: true, byte_size: 1024 },
+    });
+    render(<DropoffProgress {...mintedProps({ overwrite: true })} />);
+
+    // First click opens the re-affirmation modal — it must NOT drop the database yet.
+    fireEvent.click(screen.getByRole("button", { name: /start import/i }));
+    expect(startSpy).not.toHaveBeenCalled();
+    expect(screen.getByText(/this drops the database now/i)).toBeInTheDocument();
+
+    // Typing the name and confirming runs the import.
+    fireEvent.change(screen.getByPlaceholderText("shop"), { target: { value: "shop" } });
+    fireEvent.click(screen.getByRole("button", { name: /drop & import/i }));
+    expect(startSpy).toHaveBeenCalledWith("ABC123");
+  });
+
+  it("a resumed session (no command) hides the one-time push command but still offers Start", () => {
+    pollState.current = state<DropoffSession>({
+      data: { ...DROP, status: "uploaded", byte_size: 2048 },
+    });
+    // No `commands` prop == re-attached from the pending list after a reload.
+    render(
+      <DropoffProgress
+        code="ABC123"
+        target="shop"
+        overwrite={false}
+        expiresAt="2999-01-01T00:00:00Z"
+        onReset={() => {}}
+      />,
+    );
+
+    // The one-time command is gone (served once, never re-served)...
+    expect(screen.queryByText(CREATED.command_docker)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^copy$/i })).not.toBeInTheDocument();
+    // ...but the recovery note and an enabled Start are present.
+    expect(screen.getByText(/resumed an open drop-off/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /start import/i })).toBeEnabled();
   });
 });

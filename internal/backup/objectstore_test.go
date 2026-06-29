@@ -2,6 +2,9 @@ package backup
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -79,4 +82,60 @@ func TestPresignPut_clampsTTL(t *testing.T) {
 	url, err = s.PresignPut(ctx, "k2", 30*24*time.Hour)
 	require.NoError(t, err)
 	require.Contains(t, url, "X-Amz-Signature=")
+}
+
+// TestProbePutReachable pins the mint-time reachability probe's tolerance: it must
+// treat a missing key AND a 403 AccessDenied (a PutObject-only policy with no
+// ListBucket/GetObject — exactly what a locked-down drop-off source path uses) as
+// REACHABLE, yet still fail on a missing bucket or genuinely-bad credentials. A GET
+// (not a HEAD) is used so the precise S3 <Code> survives in the body, letting bad
+// keys be told apart from a no-permission policy.
+func TestProbePutReachable(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    int
+		code      string // S3 <Code>; "" => empty body (gateway supplies no code)
+		reachable bool
+	}{
+		{"missing key (NoSuchKey)", http.StatusNotFound, "NoSuchKey", true},
+		{"missing key (empty body 404)", http.StatusNotFound, "", true},
+		{"PutObject-only policy (AccessDenied)", http.StatusForbidden, "AccessDenied", true},
+		{"missing bucket (NoSuchBucket)", http.StatusNotFound, "NoSuchBucket", false},
+		{"bad access key (InvalidAccessKeyId)", http.StatusForbidden, "InvalidAccessKeyId", false},
+		{"bad secret (SignatureDoesNotMatch)", http.StatusForbidden, "SignatureDoesNotMatch", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(tc.status)
+				if tc.code != "" {
+					_, _ = io.WriteString(w,
+						`<?xml version="1.0" encoding="UTF-8"?><Error><Code>`+tc.code+
+							`</Code><Message>`+tc.code+`</Message></Error>`)
+				}
+			}))
+			defer srv.Close()
+
+			// srv.URL is http://127.0.0.1:port; NewS3ObjectStore strips the scheme.
+			s, err := NewS3ObjectStore(S3StoreParams{
+				Endpoint:  srv.URL,
+				Region:    "us-east-1",
+				Bucket:    "drops",
+				AccessKey: "AK",
+				SecretKey: "SK",
+				UseSSL:    false,
+				PathStyle: true,
+			})
+			require.NoError(t, err)
+
+			perr := s.ProbePutReachable(context.Background(), "pg-migrations/dropoff/ABCDEF/dump")
+			if tc.reachable {
+				require.NoError(t, perr, "must treat %s as reachable", tc.name)
+			} else {
+				require.Error(t, perr, "must treat %s as NOT reachable", tc.name)
+				require.Equal(t, core.CodeInternal, core.CodeOf(perr))
+			}
+		})
+	}
 }

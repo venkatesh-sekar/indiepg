@@ -125,6 +125,40 @@ func TestListExpiredDropoffs(t *testing.T) {
 		"past-TTL waiting/uploaded/failed/completed are swept; never importing/expired")
 }
 
+// TestListActiveDropoffs pins the recovery-list set: only non-terminal,
+// not-yet-expired sessions (waiting/uploaded/importing) are returned, newest
+// first. A 'failed' (incl. cancelled), 'completed', 'expired' or past-TTL session
+// must never resurface as resumable.
+func TestListActiveDropoffs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insert := func(code, status string, exp time.Time) {
+		d := sampleDropoff(code, exp)
+		d.Status = status
+		_, err := s.InsertDropoff(ctx, d)
+		require.NoError(t, err)
+	}
+	insert("WAITLV", "waiting_for_upload", now.Add(time.Hour))
+	insert("UPLDLV", "uploaded", now.Add(time.Hour))
+	insert("IMPRLV", "importing", now.Add(time.Hour))
+	insert("FAILLV", "failed", now.Add(time.Hour))     // cancelled/abandoned: excluded
+	insert("DONELV", "completed", now.Add(time.Hour))  // terminal: excluded
+	insert("WAITEX", "waiting_for_upload", now.Add(-time.Hour)) // past TTL: excluded
+
+	active, err := s.ListActiveDropoffs(ctx, now, 100)
+	require.NoError(t, err)
+	codes := make([]string, len(active))
+	for i, a := range active {
+		codes[i] = a.Code
+	}
+	require.ElementsMatch(t, []string{"WAITLV", "UPLDLV", "IMPRLV"}, codes,
+		"only live non-terminal sessions are resumable")
+	// Newest-first ordering (by id desc): IMPRLV was inserted last.
+	require.Equal(t, "IMPRLV", codes[0], "newest session first")
+}
+
 // TestListExpiredDropoffs_subSecondBoundary pins the fixed-width expires_at
 // comparison. The headline failure of a variable-width RFC3339Nano comparison is a
 // stored whole-second timestamp ("...:00:00Z", zero nanoseconds) vs a query `now`

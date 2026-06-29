@@ -134,6 +134,7 @@ func (s *Server) buildRouter() http.Handler {
 			//     a source the panel cannot reach pushes one database's dump +
 			//     meta.json to them via curl|sh, then the panel imports from S3.
 			//     Requires S3 (same honest nil-transport rule as the sessions).
+			pr.Get("/migrate/drops", s.handleListDropoffs)
 			pr.Post("/migrate/drops", s.handleCreateDropoff)
 			pr.Get("/migrate/drops/{code}", s.handleGetDropoff)
 			pr.Post("/migrate/drops/{code}/start", s.handleStartDropoff)

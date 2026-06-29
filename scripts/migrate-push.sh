@@ -23,6 +23,11 @@
 # prompted on the terminal. It is NEVER passed as a command-line flag (which would
 # leak it in the process listing).
 #
+# Temp space: the whole dump is staged on disk before upload (to checksum it). It
+# goes in INDIEPG_TMPDIR if set, else TMPDIR, else /tmp. On distros where /tmp is a
+# tmpfs (RAM), a multi-GB dump there can OOM the box — set INDIEPG_TMPDIR to a
+# disk-backed directory with room for the dump.
+#
 # Quiesce the source: row counts are captured AFTER the dump snapshot and frozen in
 # meta.json, so writes to the source DURING the push can make the panel's row-count
 # verification fail — and because the meta is frozen, re-importing can't fix it; you
@@ -67,6 +72,11 @@ out of `ps`; --dump-url / --meta-url remain as an explicit fallback.
 
 Password (native mode only): set PGPASSWORD in the environment, or you will be
 prompted on the terminal. It is NEVER passed as a command-line flag.
+
+Temp space: the whole dump is staged on disk before upload. It goes in
+INDIEPG_TMPDIR if set, else TMPDIR, else /tmp. If /tmp is a tmpfs (RAM-backed), a
+large dump can OOM the box — set INDIEPG_TMPDIR to a disk-backed dir with room for
+the dump.
 
 Quiesce the source first: row counts are captured after the dump snapshot and
 frozen in meta.json, so writes DURING the push can make the panel's row-count
@@ -213,10 +223,20 @@ run_psql() {
 }
 
 # --- temp files (0600, removed on exit) -----------------------------------
-DUMP_FILE="$(mktemp)" || die "could not create a temp file"
-META_FILE="$(mktemp)" || die "could not create a temp file"
+# The ENTIRE dump is staged on disk here before upload (to checksum it and learn
+# its size). On many distros /tmp is a tmpfs (RAM-backed); a multi-GB dump staged
+# there can OOM-kill a small source box — exactly the kind of constrained host this
+# mode targets. So stage in INDIEPG_TMPDIR if set (point it at a disk-backed dir
+# with room for the dump), else TMPDIR, else /tmp. Pick the dir explicitly rather
+# than relying on mktemp's default so the override is honored on every platform.
+WORK_DIR="${INDIEPG_TMPDIR:-${TMPDIR:-/tmp}}"
+[ -d "$WORK_DIR" ] || die "temp directory '$WORK_DIR' does not exist — set INDIEPG_TMPDIR to a writable, disk-backed directory with room for the dump"
+[ -w "$WORK_DIR" ] || die "temp directory '$WORK_DIR' is not writable — set INDIEPG_TMPDIR to a writable, disk-backed directory with room for the dump"
+DUMP_FILE="$(mktemp "$WORK_DIR/indiepg-dump.XXXXXX")" || die "could not create a temp file in '$WORK_DIR'"
+META_FILE="$(mktemp "$WORK_DIR/indiepg-meta.XXXXXX")" || die "could not create a temp file in '$WORK_DIR'"
 chmod 0600 "$DUMP_FILE" "$META_FILE" 2>/dev/null || true
 trap 'rm -f "$DUMP_FILE" "$META_FILE"' EXIT INT TERM
+say "staging the dump under '$WORK_DIR' (needs free disk room for the whole dump; set INDIEPG_TMPDIR if /tmp is small or RAM-backed)"
 
 # --- 1. dump --------------------------------------------------------------
 # Row counts are captured after this dump's snapshot and frozen in meta.json, so a

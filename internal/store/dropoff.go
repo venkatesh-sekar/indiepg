@@ -227,6 +227,46 @@ func (s *Store) ListExpiredDropoffs(ctx context.Context, now time.Time, limit in
 	return out, nil
 }
 
+// ListActiveDropoffs returns the non-terminal, not-yet-expired drop-off sessions
+// (waiting_for_upload / uploaded / importing), newest first, so the panel can
+// re-discover a session whose minted code was lost to a browser reload, tab
+// discard or close BEFORE Start/Cancel — the operator returns to a status list and
+// can resume Start/Cancel instead of being stranded until the expiry sweep.
+//
+// It returns only the safe, re-servable columns (the presigned URLs and the push
+// command were NEVER stored, only the keys), so this can never re-leak the
+// upload secret. It deliberately EXCLUDES 'failed': a cancel records 'failed' with
+// reason 'cancelled', and a cancelled/abandoned session must not resurface as
+// resumable. limit <= 0 defaults to 50.
+func (s *Store) ListActiveDropoffs(ctx context.Context, now time.Time, limit int) ([]DropoffRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+dropoffColumns+`
+		FROM dropoff_sessions
+		WHERE status IN ('waiting_for_upload','uploaded','importing') AND expires_at > ?
+		ORDER BY id DESC LIMIT ?`,
+		now.UTC().Format(dropoffExpiresLayout), limit)
+	if err != nil {
+		return nil, core.InternalError("list active dropoffs").Wrap(err)
+	}
+	defer rows.Close()
+
+	var out []DropoffRecord
+	for rows.Next() {
+		d, err := scanDropoff(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, core.InternalError("iterate active dropoffs").Wrap(err)
+	}
+	return out, nil
+}
+
 // SweepRunningDropoffs marks every drop-off session left "importing" by a panel
 // restart as failed (its worker goroutine is gone), returning the rows affected.
 // Mirrors SweepRunningMigrations; called best-effort on startup.

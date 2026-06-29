@@ -256,6 +256,59 @@ func (s *S3ObjectStore) DownloadToFile(ctx context.Context, key, dest string, ma
 	return nil
 }
 
+// ProbePutReachable confirms the configured credentials can reach the bucket
+// BEFORE the panel hands a presigned-PUT command to a source it cannot otherwise
+// help — so an unreachable endpoint or genuinely-bad credentials fail the mint
+// while the operator is still in the panel, instead of surfacing later on the
+// hard-to-reach source as a misleading "the link may have expired".
+//
+// It is deliberately MORE permissive than StatObject about a permission error,
+// because the only operation the source performs is a single PutObject via the
+// presigned URL — it never lists or gets. A GET (not a HEAD) is used on purpose:
+// S3 omits the response body on a HEAD, so minio-go synthesizes Code="AccessDenied"
+// for EVERY 403 there and cannot tell a no-permission policy from bad keys; a GET
+// returns the precise <Code> in its body, letting us distinguish them. key need not
+// exist (it is a fresh per-session dump key at mint time). The cases:
+//
+//   - NoSuchKey / a bare 404: healthy — valid creds, reachable bucket, key absent.
+//   - AccessDenied (403 WITH a parsed code): treated as REACHABLE. A deliberately
+//     PutObject-only policy (no s3:GetObject / s3:ListBucket — exactly what a
+//     drop-off source path may use) denies the GET yet still honors the presigned
+//     PUT, so we must NOT block the mint on it.
+//   - NoSuchBucket, InvalidAccessKeyId, SignatureDoesNotMatch, and any transport
+//     failure (no HTTP status): NOT reachable — the presigned PUT would fail too,
+//     so fail the mint now with a clear cause.
+func (s *S3ObjectStore) ProbePutReachable(ctx context.Context, key string) error {
+	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return s.classifyProbe(err, key)
+	}
+	defer func() { _ = obj.Close() }()
+	// minio's GetObject is lazy: the request is issued on first read, so a missing
+	// key / auth error surfaces here. io.EOF (an empty existing object) is success.
+	if _, rerr := obj.Read(make([]byte, 1)); rerr != nil && rerr != io.EOF {
+		return s.classifyProbe(rerr, key)
+	}
+	return nil
+}
+
+// classifyProbe maps a minio GET error during a reachability probe to nil
+// (reachable) or a clear internal error. See ProbePutReachable for the rationale
+// behind tolerating AccessDenied but not NoSuchBucket / bad credentials.
+func (s *S3ObjectStore) classifyProbe(err error, key string) error {
+	resp := minio.ToErrorResponse(err)
+	switch {
+	case resp.Code == "NoSuchBucket":
+		// The bucket itself is missing/unreachable — the PUT would fail too. Fall
+		// through to the error (do NOT let the StatusCode==404 branch swallow it).
+	case resp.Code == "NoSuchKey" || (resp.Code == "" && resp.StatusCode == http.StatusNotFound):
+		return nil
+	case resp.Code == "AccessDenied":
+		return nil
+	}
+	return core.InternalError("backup: S3 is not reachable for a presigned PUT to %q", key).Wrap(err)
+}
+
 // classifyGet maps a minio "not found" to CodeNotFound (per the ObjectStore
 // contract) and anything else to an internal error.
 func (s *S3ObjectStore) classifyGet(err error, key string) error {

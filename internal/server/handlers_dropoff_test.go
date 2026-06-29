@@ -107,6 +107,7 @@ func TestDropoffEndpointsRequireS3(t *testing.T) {
 		method, path string
 		body         any
 	}{
+		{http.MethodGet, "/api/migrate/drops", nil},
 		{http.MethodPost, "/api/migrate/drops", map[string]any{"target_database": "appdb"}},
 		{http.MethodGet, "/api/migrate/drops/ABCDEF", nil},
 		{http.MethodPost, "/api/migrate/drops/ABCDEF/start", nil},
@@ -164,9 +165,54 @@ func TestCreateDropoffMintsCommandAndRecord(t *testing.T) {
 	require.NotContains(t, drec.DumpKey, "X-Amz", "URLs must never be persisted")
 }
 
+// TestListDropoffsReturnsActiveWithoutSecrets verifies the recovery list endpoint
+// returns the live, non-terminal sessions as the safe status view (never the
+// presigned URLs/command) so a minted-but-not-started link is resumable after a
+// browser reload.
+func TestListDropoffsReturnsActiveWithoutSecrets(t *testing.T) {
+	srv, fake, token := withDrops(t)
+
+	// Mint two sessions; upload one so it flips to 'uploaded'.
+	mint := func(db string) string {
+		rec := authedRequest(t, srv, http.MethodPost, "/api/migrate/drops", token, map[string]any{
+			"target_database": db,
+		})
+		require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+		var env struct {
+			Data createDropoffResponse `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env))
+		return env.Data.Code
+	}
+	c1 := mint("appone")
+	c2 := mint("apptwo")
+	fake.put(migrate.DropDumpKey(c2), []byte("PGDMP"))
+	fake.put(migrate.DropMetaKey(c2), []byte(`{"sha256":"x"}`))
+
+	rec := authedRequest(t, srv, http.MethodGet, "/api/migrate/drops", token, nil)
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	// The list view must NEVER carry the presigned command/URL.
+	require.NotContains(t, rec.Body.String(), "X-Amz-Signature")
+	require.NotContains(t, rec.Body.String(), "migrate-push.sh")
+
+	var env struct {
+		Data []dropoffStatusResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env))
+	byCode := map[string]dropoffStatusResponse{}
+	for _, d := range env.Data {
+		byCode[d.Code] = d
+	}
+	require.Contains(t, byCode, c1)
+	require.Contains(t, byCode, c2)
+	require.Equal(t, string(migrate.DropWaiting), byCode[c1].Status)
+	// The list applies the same upload-readiness flip the single-code status does.
+	require.Equal(t, string(migrate.DropUploaded), byCode[c2].Status)
+}
+
 // errStatDrop wraps a fake transport but fails every StatObject, modelling S3 with
 // wrong credentials or an unreachable bucket. PresignPut is a purely local signing
-// op that would still "succeed", so the mint-time HEAD probe is the only thing that
+// op that would still "succeed", so the mint-time probe is the only thing that
 // catches the misconfiguration before a command is handed out.
 type errStatDrop struct {
 	*fakeServerDrop
@@ -175,6 +221,36 @@ type errStatDrop struct {
 
 func (e *errStatDrop) StatObject(ctx context.Context, key string) (int64, bool, error) {
 	return 0, false, e.err
+}
+
+// putReachableDrop models the real S3 store's smart probe: StatObject (a HEAD)
+// would fail under a PutObject-only policy, but ProbePutReachable (a GET that
+// tolerates AccessDenied) confirms the single presigned PUT the source performs
+// would still succeed — so the mint must NOT be blocked.
+type putReachableDrop struct {
+	*fakeServerDrop
+}
+
+func (p *putReachableDrop) StatObject(ctx context.Context, key string) (int64, bool, error) {
+	return 0, false, core.InternalError("backup: stat S3 object: AccessDenied (no ListBucket)")
+}
+
+func (p *putReachableDrop) ProbePutReachable(ctx context.Context, key string) error {
+	return nil
+}
+
+// TestCreateDropoffToleratesPutOnlyPolicy pins the ListBucket false-negative fix: a
+// transport whose HEAD probe (StatObject) is denied but whose PUT-reachability
+// probe succeeds must still mint — a deliberately PutObject-only S3 policy is a
+// supported, secure configuration for the source path.
+func TestCreateDropoffToleratesPutOnlyPolicy(t *testing.T) {
+	srv, fake, token := withDrops(t)
+	srv.drops = &putReachableDrop{fakeServerDrop: fake}
+
+	rec := authedRequest(t, srv, http.MethodPost, "/api/migrate/drops", token, map[string]any{
+		"target_database": "appdb",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
 }
 
 // TestCreateDropoffFailsFastOnUnreachableS3 pins the mint-time reachability probe:

@@ -1057,29 +1057,123 @@ function SessionSend() {
 
 export function DropoffPanel() {
   const [created, setCreated] = useState<CreateDropoffResult | null>(null);
+  const [resumed, setResumed] = useState<DropoffSession | null>(null);
 
   if (created) {
+    // Freshly minted: hand the one-time push command + URLs to the progress view.
     // "Start another" clears the minted link so a stale (and soon-expired) command
     // can't be re-used, returning to a blank form.
-    return <DropoffProgress created={created} onReset={() => setCreated(null)} />;
+    return (
+      <DropoffProgress
+        code={created.code}
+        target={created.target_database}
+        overwrite={created.overwrite}
+        expiresAt={created.expires_at}
+        commands={{ docker: created.command_docker, native: created.command_native }}
+        onReset={() => setCreated(null)}
+      />
+    );
+  }
+  if (resumed) {
+    // Resumed from the active-sessions list after a reload/tab close: the one-time
+    // command is gone (served once, never re-served), but Start/Cancel and live
+    // status are fully recoverable from the code alone.
+    return (
+      <DropoffProgress
+        code={resumed.code}
+        target={resumed.target_database}
+        overwrite={resumed.overwrite}
+        expiresAt={resumed.expires_at}
+        onReset={() => setResumed(null)}
+      />
+    );
   }
 
   return (
-    <Card title="Receive a drop from a server you can't reach">
+    <div className="flex flex-col gap-5">
+      <DropoffResumeList onResume={setResumed} />
+      <Card title="Receive a drop from a server you can't reach">
+        <p className="text-muted-foreground">
+          Pulls <strong>one database</strong> off a source this panel can&apos;t connect to — behind a
+          NAT or firewall, with no inbound access and no panel installed. The source only needs to
+          reach the public internet. This panel mints two upload links; you paste a one-line command
+          on the source; it pushes the dump to your S3 bucket; then you click Start here to import and
+          verify.
+        </p>
+        <Callout tone="info">
+          This mode requires S3 configured on this panel — it&apos;s the bucket the source uploads to.
+          If you <em>can</em> reach the source directly, the “One database” direct pull is simpler and
+          needs no S3.
+        </Callout>
+        <DropoffForm onCreated={setCreated} />
+      </Card>
+    </div>
+  );
+}
+
+// DropoffResumeList surfaces active drop-off sessions so a minted-but-not-started
+// link is recoverable after a browser reload/tab close — the code lives only in
+// transient React state and the push (the expensive, hard-to-repeat part) may
+// already be done, so without this the operator would be stranded until the expiry
+// sweep. It shows only the safe status view (no URLs/command); Resume re-attaches
+// the progress view by code for Start/Cancel/live status.
+function DropoffResumeList({ onResume }: { onResume: (s: DropoffSession) => void }) {
+  // Poll so a session that finishes uploading (or is started/cancelled in another
+  // tab) updates here without a manual refresh.
+  const { data, error } = usePolling<DropoffSession[]>((signal) => api.listDropoffs(signal), 5000);
+  const sessions = data ?? [];
+  // A missing/410 list endpoint or no S3 shouldn't nag on the create screen; the
+  // form below surfaces the real S3 error. Only render when there's something to
+  // resume.
+  if (error || sessions.length === 0) return null;
+
+  return (
+    <Card title="Pending drop-offs">
       <p className="text-muted-foreground">
-        Pulls <strong>one database</strong> off a source this panel can&apos;t connect to — behind a
-        NAT or firewall, with no inbound access and no panel installed. The source only needs to
-        reach the public internet. This panel mints two upload links; you paste a one-line command
-        on the source; it pushes the dump to your S3 bucket; then you click Start here to import and
-        verify.
+        These links are still open. If you minted one, ran the push on the source, then reloaded this
+        page, resume it here to import — you don&apos;t need to re-run the push.
       </p>
-      <Callout tone="info">
-        This mode requires S3 configured on this panel — it&apos;s the bucket the source uploads to.
-        If you <em>can</em> reach the source directly, the “One database” direct pull is simpler and
-        needs no S3.
-      </Callout>
-      <DropoffForm onCreated={setCreated} />
+      <div className="mt-3 flex flex-col gap-2">
+        {sessions.map((s) => (
+          <div
+            key={s.code}
+            className="flex flex-wrap items-center gap-3 rounded-md border bg-muted/30 p-3"
+          >
+            <DropStatusBadge status={s.status} />
+            <span className="text-sm">
+              into <code>{s.target_database}</code>
+              {s.overwrite ? " (replace)" : ""}
+            </span>
+            <ResumeExpiry expiresAt={s.expires_at} />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="ml-auto"
+              onClick={() => onResume(s)}
+            >
+              {s.status === "importing" ? "View" : "Resume"}
+            </Button>
+          </div>
+        ))}
+      </div>
     </Card>
+  );
+}
+
+/** Compact expiry countdown for a row in the pending-drop-offs list. */
+function ResumeExpiry({ expiresAt }: { expiresAt: string }) {
+  const msLeft = useCountdown(expiresAt);
+  return (
+    <span className="text-sm text-muted-foreground" aria-live="polite">
+      {msLeft <= 0 ? (
+        "expired"
+      ) : (
+        <>
+          expires in <span className="font-mono">{duration(Math.floor(msLeft / 1000))}</span>
+        </>
+      )}
+    </span>
   );
 }
 
@@ -1236,21 +1330,41 @@ function isDropTerminal(status: DropoffStatus): boolean {
   return status === "failed" || status === "expired";
 }
 
+// The push command + URLs are minted ONCE and never re-served, so a resumed
+// session (re-attached from the pending list after a reload) has no commands.
+type DropoffCommands = { docker: string; native: string };
+
 export function DropoffProgress({
-  created,
+  code,
+  target,
+  overwrite,
+  expiresAt: initialExpiresAt,
+  commands,
   onReset,
 }: {
-  created: CreateDropoffResult;
+  code: string;
+  target: string;
+  overwrite: boolean;
+  expiresAt: string;
+  /** Present only for a freshly minted session; absent when resumed from the list. */
+  commands?: DropoffCommands;
   onReset: () => void;
 }) {
   const { data: drop, error } = usePolling<DropoffSession>(
-    (signal) => api.getDropoff(created.code, signal),
+    (signal) => api.getDropoff(code, signal),
     2500,
   );
   const [startedId, setStartedId] = useState<number | null>(null);
   const [starting, setStarting] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
+  // Start-time re-affirmation of a destructive overwrite. The typed-name confirm at
+  // mint authorized the drop, but the actual DROP DATABASE runs only here, when
+  // Start is clicked — potentially close to the TTL later. Re-affirm so a database
+  // that looked disposable at mint isn't silently dropped much later.
+  const [startConfirmOpen, setStartConfirmOpen] = useState(false);
+  const [startConfirm, setStartConfirm] = useState("");
+  const startConfirmMatches = startConfirm.trim() === target;
 
   const status: DropoffStatus = drop?.status ?? "waiting_for_upload";
 
@@ -1260,7 +1374,7 @@ export function DropoffProgress({
   // row and re-points the live poller at it.
   const retryImport = async () => {
     try {
-      const res = await api.startDropoff(created.code);
+      const res = await api.startDropoff(code);
       toast.success("Retrying the import.");
       setStartedId(res.id);
     } catch (err) {
@@ -1283,14 +1397,16 @@ export function DropoffProgress({
     );
   }
 
-  const expiresAt = drop?.expires_at ?? created.expires_at;
+  const expiresAt = drop?.expires_at ?? initialExpiresAt;
   const terminal = isDropTerminal(status);
 
   const start = async () => {
     setStarting(true);
     try {
-      const res = await api.startDropoff(created.code);
+      const res = await api.startDropoff(code);
       toast.success("Import started.");
+      setStartConfirmOpen(false);
+      setStartConfirm("");
       setStartedId(res.id);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Could not start the import.");
@@ -1299,10 +1415,17 @@ export function DropoffProgress({
     }
   };
 
+  // A non-destructive import starts immediately; a destructive overwrite must be
+  // re-affirmed by name first, because the DROP executes now, not at mint.
+  const onStartClick = () => {
+    if (overwrite) setStartConfirmOpen(true);
+    else void start();
+  };
+
   const cancel = async () => {
     setCancelBusy(true);
     try {
-      await api.cancelDropoff(created.code);
+      await api.cancelDropoff(code);
       toast.info("Drop-off cancelled.");
       onReset();
     } catch (err) {
@@ -1349,14 +1472,14 @@ export function DropoffProgress({
         <Callout tone="danger" title="Drop-off failed">
           {drop?.error || "The drop-off could not complete."}
         </Callout>
-      ) : (
+      ) : commands ? (
         <>
           <p className="mt-1 text-sm text-muted-foreground">
             On the <strong>source</strong> server — the one this panel can&apos;t reach — paste this
             into a shell. It needs <code>curl</code> and either Docker or <code>pg_dump</code>.
           </p>
-          <DropoffCommand created={created} />
-          <DropoffSteps target={created.target_database} />
+          <DropoffCommand commands={commands} />
+          <DropoffSteps target={target} />
           <Callout tone="warn" title="Treat these links like a password">
             The command carries two upload links anyone could use to write to your bucket until they
             expire. Don&apos;t share them. They ride in environment variables (
@@ -1366,13 +1489,22 @@ export function DropoffProgress({
             this panel).
           </Callout>
         </>
+      ) : (
+        // Resumed from the pending list: the one-time command is no longer shown
+        // (served once, by design). The upload may already be done — if so, Start
+        // below; if you still need to push, cancel and create a fresh link.
+        <Callout tone="info" title="Resumed an open drop-off">
+          {status === "uploaded"
+            ? "The source finished uploading — click Start import below to restore and verify."
+            : "Waiting for the source to finish uploading. The one-time push command isn’t shown again for security — if you still need to run it on the source, cancel this and create a new link."}
+        </Callout>
       )}
 
       {!terminal ? (
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <Button
             type="button"
-            onClick={start}
+            onClick={onStartClick}
             disabled={status !== "uploaded" || starting}
           >
             {starting ? (
@@ -1390,13 +1522,72 @@ export function DropoffProgress({
             </span>
           ) : (
             <span className="text-sm text-muted-foreground">
-              Imports into <code>{created.target_database}</code>
-              {created.overwrite ? " (replacing the existing database)" : ""}, then verifies row
-              counts.
+              Imports into <code>{target}</code>
+              {overwrite ? " (replacing the existing database)" : ""}, then verifies row counts.
             </span>
           )}
         </div>
       ) : null}
+
+      <Modal
+        open={startConfirmOpen}
+        title="Replace the existing database?"
+        tone="danger"
+        width="sm"
+        onClose={starting ? () => undefined : () => setStartConfirmOpen(false)}
+        footer={
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setStartConfirmOpen(false)}
+              disabled={starting}
+            >
+              Back
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={start}
+              disabled={starting || !startConfirmMatches}
+            >
+              {starting ? (
+                <>
+                  <InlineSpinner data-icon="inline-start" />
+                  Starting…
+                </>
+              ) : (
+                "Drop & import"
+              )}
+            </Button>
+          </>
+        }
+      >
+        <Callout tone="danger" title="This drops the database now">
+          Starting the import will drop <strong>{target}</strong> on this server and recreate it from
+          the upload. You confirmed this when you created the link; confirm again since the drop
+          happens now. This cannot be undone.
+        </Callout>
+        <Field className="mt-4" data-invalid={startConfirm.length > 0 && !startConfirmMatches}>
+          <FieldLabel htmlFor="drop-start-confirm">
+            Type <code>{target}</code> to confirm
+          </FieldLabel>
+          <Input
+            id="drop-start-confirm"
+            value={startConfirm}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={target}
+            aria-invalid={startConfirm.length > 0 && !startConfirmMatches}
+            onChange={(e) => setStartConfirm(e.target.value)}
+          />
+          {startConfirm.length > 0 && !startConfirmMatches ? (
+            <FieldError>
+              Must match <code>{target}</code> exactly.
+            </FieldError>
+          ) : null}
+        </Field>
+      </Modal>
 
       <Modal
         open={cancelOpen}
@@ -1482,9 +1673,9 @@ function DropStatusBadge({ status }: { status: DropoffStatus }) {
 /** The docker/native command toggle + copy block. The presigned URLs live in
  *  these commands and are sensitive, but must be copy-pasteable, so they're shown
  *  in full with a Copy button (the callout above frames them as a password). */
-function DropoffCommand({ created }: { created: CreateDropoffResult }) {
+function DropoffCommand({ commands }: { commands: DropoffCommands }) {
   const [variant, setVariant] = useState<"docker" | "native">("docker");
-  const command = variant === "docker" ? created.command_docker : created.command_native;
+  const command = variant === "docker" ? commands.docker : commands.native;
   return (
     <div className="mt-3 flex flex-col gap-2">
       <Tabs value={variant} onValueChange={(v) => setVariant(v as "docker" | "native")}>
@@ -1582,6 +1773,11 @@ function DropoffSteps({ target }: { target: string }) {
         </span>
       </li>
       </ol>
+      <p className="mt-3 text-sm text-muted-foreground">
+        The push stages the whole dump on the source&apos;s disk before uploading. If the source&apos;s{" "}
+        <code>/tmp</code> is small or RAM-backed (tmpfs), point it at a roomier disk-backed directory
+        first, e.g. <code>export INDIEPG_TMPDIR=/var/tmp</code>.
+      </p>
     </>
   );
 }

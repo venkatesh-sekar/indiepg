@@ -65,6 +65,54 @@ func errDropRequiresS3() error {
 		WithHint("configure an S3 backup target in Settings, or use Direct pull which needs no S3")
 }
 
+// s3PutProber is the optional fast-reachability probe a drop transport may
+// implement. The real *backup.S3ObjectStore does (tolerating a PutObject-only
+// policy); the in-memory test fakes don't and fall back to a plain StatObject.
+type s3PutProber interface {
+	ProbePutReachable(ctx context.Context, key string) error
+}
+
+// probeDropTransport fails fast when S3 is misconfigured BEFORE a mint hands out a
+// presigned-PUT command. It prefers the transport's PUT-reachability probe (which
+// tolerates a ListBucket/GetObject-less, PutObject-only policy — the only
+// permission the source actually exercises) and falls back to a plain HEAD via
+// StatObject for transports that don't implement it (the test fakes).
+func (s *Server) probeDropTransport(ctx context.Context, key string) error {
+	if p, ok := s.drops.(s3PutProber); ok {
+		return p.ProbePutReachable(ctx, key)
+	}
+	_, _, err := s.drops.StatObject(ctx, key)
+	return err
+}
+
+// handleListDropoffs returns the active (non-terminal, not-yet-expired) drop-off
+// sessions as the safe status view — no URLs, no command. It is the recovery path
+// for a minted-but-not-started session whose code was lost to a browser reload/tab
+// close during the mint -> push -> Start window: the operator returns to a list and
+// can resume Start/Cancel instead of waiting out the expiry sweep. Requires S3.
+// GET /migrate/drops.
+func (s *Server) handleListDropoffs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if s.drops == nil {
+		writeError(w, errDropRequiresS3())
+		return
+	}
+	recs, err := s.store.ListActiveDropoffs(ctx, nowUTC(), 50)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	out := make([]dropoffStatusResponse, 0, len(recs))
+	for i := range recs {
+		// Apply the same upload-readiness flip (waiting -> uploaded) the single-code
+		// status endpoint does, so the list badge says "ready to import" the moment
+		// the source's meta.json lands and the operator can Start straight from here.
+		rec := s.refreshDropoff(ctx, &recs[i])
+		out = append(out, toDropoffStatusResponse(*rec))
+	}
+	writeData(w, http.StatusOK, out)
+}
+
 // handleCreateDropoff mints a drop-off session: two presigned S3 PUT URLs (dump +
 // meta.json), a local dropoff_sessions record (KEYS only), and a paste-able push
 // command. Requires S3. POST /migrate/drops.
@@ -129,18 +177,17 @@ func (s *Server) handleCreateDropoff(w http.ResponseWriter, r *http.Request) {
 	ttl := migrate.DropDefaultTTL
 	expiresAt := nowUTC().Add(ttl)
 
-	// Probe S3 reachability with a cheap authenticated HEAD BEFORE handing out a
+	// Probe S3 reachability with a cheap authenticated request BEFORE handing out a
 	// command. PresignPut is a purely local SigV4 signing op and NewS3ObjectStore
 	// only checks that endpoint/bucket are non-empty, so without this a mint would
 	// happily return a paste-able command even with wrong access/secret keys or an
 	// unreachable bucket — and the failure would only surface on the hard-to-reach
-	// source as migrate-push.sh's misleading "the link may have expired". StatObject
-	// maps a missing object to (0,false,nil); any other error (bad creds → 403,
-	// missing bucket, unreachable endpoint) means the upload would fail too, so fail
-	// the mint NOW, while the operator is still in the panel, with a clear cause. The
-	// probed key does not exist yet, so a healthy bucket returns "not found" (no
-	// error).
-	if _, _, perr := s.drops.StatObject(ctx, dumpKey); perr != nil {
+	// source as migrate-push.sh's misleading "the link may have expired". The probe
+	// tolerates a PutObject-only policy (no s3:ListBucket / s3:GetObject) since the
+	// source only ever performs the single presigned PUT — see
+	// S3ObjectStore.ProbePutReachable — but still fails on bad creds / a missing
+	// bucket / an unreachable endpoint, so the mint fails NOW with a clear cause.
+	if perr := s.probeDropTransport(ctx, dumpKey); perr != nil {
 		s.audit(ctx, "migrate_dropoff_create", req.TargetDatabase, "failure", "S3 reachability probe failed", core.CodeOf(perr))
 		writeError(w, core.InternalError("S3 object storage is not reachable with the configured credentials").
 			WithHint("check the S3 endpoint, bucket, and access/secret keys in Settings, then try again").
