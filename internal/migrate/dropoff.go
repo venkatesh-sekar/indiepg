@@ -79,19 +79,23 @@ func DropMetaKey(code string) string {
 // DropTransport is the S3 capability surface the drop-off mode needs. It is a
 // superset of the 3-method ObjectStore (kept intact for the ssh-less fakes):
 // minting the presigned PUT (PresignPut), checking readiness/size authoritatively
-// (StatObject), streaming the dump to disk (DownloadToFile), reading the small
-// meta.json with a hard ceiling (GetObjectLimited), and cleaning up after import
-// (DeleteObject). *backup.S3ObjectStore satisfies it.
+// (StatObject), streaming the dump to disk under a hard byte ceiling
+// (DownloadToFile), reading the small meta.json with a hard ceiling
+// (GetObjectLimited), and cleaning up after import (DeleteObject).
+// *backup.S3ObjectStore satisfies it.
 //
-// The meta read is GetObjectLimited, not an unbounded GetObject: the meta-key
-// presigned PUT is a PUT-only bearer token valid for the full TTL and can be
-// re-uploaded, so a holder of that URL could swap in a multi-GB meta.json. The
-// StatObject pre-check is a TOCTOU (a DB round-trip happens before the read), so
-// the read itself must be bounded to keep the single binary from OOMing.
+// BOTH object reads are size-bounded, not merely pre-checked via StatObject: the
+// dump-key and meta-key presigned PUTs are PUT-only bearer tokens valid for the
+// full TTL and can be re-uploaded, so a holder of either URL could swap in a much
+// larger object between the StatObject pre-check and the read (a TOCTOU). The
+// bounded read — GetObjectLimited for meta, the max argument to DownloadToFile for
+// the dump — is therefore the authoritative guard, keeping the single binary from
+// OOMing on a swapped-in giant manifest or exhausting the disk on a swapped-in
+// giant dump.
 type DropTransport interface {
 	PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error)
 	StatObject(ctx context.Context, key string) (size int64, exists bool, err error)
-	DownloadToFile(ctx context.Context, key, dest string) error
+	DownloadToFile(ctx context.Context, key, dest string, max int64) error
 	GetObjectLimited(ctx context.Context, key string, max int64) ([]byte, error)
 	DeleteObject(ctx context.Context, key string) error
 }
@@ -249,10 +253,16 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 			WithHint("the upload is incomplete or the metadata is stale; re-run the push command"))
 	}
 
-	// --- downloading (streamed to disk; NO in-memory cap) ---------------
+	// --- downloading (streamed to disk; bounded by the single-PUT ceiling) ---
+	// The download is hard-capped at MaxDropBytes, not merely pre-checked by the
+	// StatObject above (a TOCTOU): a holder of the dump-key presigned PUT could swap
+	// a much larger object in after the stat, and DownloadToFile would otherwise
+	// write it whole and exhaust the disk before the SHA-256 mismatch ever rejected
+	// it. The bounded transfer makes the dump guard authoritative the way
+	// GetObjectLimited already makes the meta guard authoritative.
 	o.stage(ctx, rec, StatusImporting, PhaseDownloading)
 	dumpPath := filepath.Join(o.workDir, "dropoff.dump")
-	if err := tr.DownloadToFile(ctx, spec.DumpKey, dumpPath); err != nil {
+	if err := tr.DownloadToFile(ctx, spec.DumpKey, dumpPath, MaxDropBytes); err != nil {
 		return o.fail(ctx, rec, core.InternalError("failed to download drop-off dump for %s", spec.Code).Wrap(err))
 	}
 	st, err := os.Stat(dumpPath)
@@ -291,6 +301,17 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 			o.preserveWorkDir = true
 			return o.fail(ctx, rec, core.ExecError("restore of %q failed after the original was dropped; the dump is kept in S3 for retry", job.TargetDatabase).Wrap(err))
 		}
+		// Non-overwrite path: validateTargetOverwrite guaranteed the target was
+		// EMPTY (or absent) before this attempt, so any tables now present can only
+		// be this failed restore's partial output. Drop it so a "Retry import" from
+		// the kept-in-S3 dump starts clean — otherwise the leftover tables read as
+		// non-empty and validateTargetOverwrite would refuse every retry forever
+		// (the dump can't be re-pushed from the hard-to-reach source). The dump is
+		// kept in S3; only the poisoned local target is reset.
+		if derr := o.engine.DropDatabase(ctx, job.Target, job.TargetDatabase); derr != nil {
+			o.log.Warn("could not drop partially-restored drop-off target after a failed restore; a retry may need a manual drop",
+				"database", job.TargetDatabase, "code", spec.Code, "error", derr)
+		}
 		return o.fail(ctx, rec, err)
 	}
 	_ = rec.Progress(ctx, 1, 1, st.Size())
@@ -307,11 +328,15 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 	}
 
 	// --- success: remove the full DB at rest, then record completion ----
+	// Best-effort: if a delete fails here (transient S3 error, rotated creds) the
+	// object is NOT orphaned — the expiry sweep also reclaims completed sessions
+	// past their TTL (ListExpiredDropoffs no longer excludes 'completed'), so the
+	// lingering dump is deleted as a backstop and never outlives its TTL.
 	if derr := tr.DeleteObject(ctx, spec.DumpKey); derr != nil {
-		o.log.Warn("could not delete drop-off dump after import", "code", spec.Code, "error", derr)
+		o.log.Warn("could not delete drop-off dump after import; the expiry sweep will reclaim it", "code", spec.Code, "error", derr)
 	}
 	if derr := tr.DeleteObject(ctx, spec.MetaKey); derr != nil {
-		o.log.Warn("could not delete drop-off metadata after import", "code", spec.Code, "error", derr)
+		o.log.Warn("could not delete drop-off metadata after import; the expiry sweep will reclaim it", "code", spec.Code, "error", derr)
 	}
 	if err := o.succeed(ctx, rec, srcCounts, tgtCounts); err != nil {
 		return o.fail(ctx, rec, err)

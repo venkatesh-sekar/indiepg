@@ -1109,7 +1109,20 @@ function DropoffForm({ onCreated }: { onCreated: (r: CreateDropoffResult) => voi
       setConfirm("");
       onCreated(res);
     } catch (err) {
-      setError(asApiError(err));
+      const ae = asApiError(err);
+      // The mint-time pre-check refuses a target that already exists and is
+      // non-empty unless overwrite is authorized. Instead of dead-ending, flip to
+      // the overwrite + typed-confirm flow so the operator authorizes it NOW (free,
+      // before the source runs the expensive, hard-to-repeat upload) rather than
+      // discovering it only after the dump has landed.
+      if (ae.code === "safety" && !overwrite) {
+        setOverwrite(true);
+        setConfirmOpen(true);
+        setError(null);
+        toast.info(ae.hint || ae.message);
+      } else {
+        setError(ae);
+      }
     } finally {
       setBusy(false);
     }
@@ -1345,10 +1358,12 @@ export function DropoffProgress({
           <DropoffCommand created={created} />
           <DropoffSteps target={created.target_database} />
           <Callout tone="warn" title="Treat these links like a password">
-            The command embeds two upload links anyone could use to write to your bucket until they
-            expire. Don&apos;t share them. The source database password is read from{" "}
-            <code>PGPASSWORD</code> or a prompt on the source — never passed as a flag (so it
-            won&apos;t leak in <code>ps</code>) and never sent to this panel.
+            The command carries two upload links anyone could use to write to your bucket until they
+            expire. Don&apos;t share them. They ride in environment variables (
+            <code>INDIEPG_DUMP_URL</code> / <code>INDIEPG_META_URL</code>), not arguments, so they
+            stay out of the source&apos;s <code>ps</code> listing — the same protection the database
+            password gets (read from <code>PGPASSWORD</code> or a prompt, never a flag, never sent to
+            this panel).
           </Callout>
         </>
       )}
@@ -1534,7 +1549,14 @@ function DropoffSteps({ target }: { target: string }) {
     "Watch the badge above flip to “Uploaded” when the push finishes — this page checks every few seconds.",
   ];
   return (
-    <ol className="mt-4 flex flex-col gap-2">
+    <>
+      <Callout tone="info" title="Keep the source idle during the push">
+        The push captures each table’s row count just after the dump and freezes it for verification.
+        If the source takes writes mid-push, the counts won’t match and the import will fail — and
+        because the manifest is frozen, retrying can’t fix it (you’d re-run the whole push). Pause
+        writes or put the source read-only first.
+      </Callout>
+      <ol className="mt-4 flex flex-col gap-2">
       {steps.map((text, i) => (
         <li key={i} className="flex items-start gap-3 text-sm">
           <span
@@ -1559,7 +1581,8 @@ function DropoffSteps({ target }: { target: string }) {
           table — only reporting success when every table matches.
         </span>
       </li>
-    </ol>
+      </ol>
+    </>
   );
 }
 

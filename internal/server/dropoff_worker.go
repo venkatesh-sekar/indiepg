@@ -22,6 +22,11 @@ var _ migrate.DropTransport = (*backup.S3ObjectStore)(nil)
 func (s *Server) runDropImportWorker(id int64, code string) {
 	ctx, cancel := workerContext()
 	defer cancel()
+	// Publish this worker's cancel so handleCancelDropoff can INTERRUPT an in-flight
+	// restore (the worker is detached from the request context), not merely mark the
+	// row cancelled and let pg_restore run to completion. Removed on return.
+	s.registerDropCancel(code, cancel)
+	defer s.unregisterDropCancel(code)
 	rec := newStoreRecorder(s.store, id)
 
 	if s.drops == nil {
@@ -74,58 +79,112 @@ func (s *Server) runDropImportWorker(id int64, code string) {
 	s.finishDropoff(ctx, code, ierr)
 }
 
+// registerDropCancel publishes an in-flight import worker's cancel func (keyed by
+// session code) so handleCancelDropoff can interrupt it. unregisterDropCancel
+// removes it when the worker returns.
+func (s *Server) registerDropCancel(code string, cancel context.CancelFunc) {
+	s.dropCancelMu.Lock()
+	s.dropCancels[code] = cancel
+	s.dropCancelMu.Unlock()
+}
+
+func (s *Server) unregisterDropCancel(code string) {
+	s.dropCancelMu.Lock()
+	delete(s.dropCancels, code)
+	s.dropCancelMu.Unlock()
+}
+
+// cancelDropWorker interrupts the in-flight import worker for code by cancelling
+// its context (which kills any pg_restore subprocess via exec.CommandContext). It
+// is a no-op when no worker is registered (already finished, or never started).
+func (s *Server) cancelDropWorker(code string) {
+	s.dropCancelMu.Lock()
+	cancel := s.dropCancels[code]
+	s.dropCancelMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // finishDropoff records the terminal dropoff_sessions status. Like the recorder's
 // Fail/Succeed, the write runs on a context detached from the worker's
 // cancellation/deadline (then re-bounded), so a timeout-expired worker context —
 // the headline stalled-transfer scenario — still persists the outcome instead of
 // leaving the session stuck "importing".
+//
+// The write is CONDITIONAL on the session still being 'importing'
+// (FinalizeDropoffFromImporting): if a concurrent cancel — or the expiry sweep —
+// moved it to a terminal state while this worker was mid-restore, that decision is
+// authoritative and must not be clobbered. Without this guard a cancelled import
+// whose restore happened to finish would resurrect itself to 'completed', silently
+// reporting success for an import the operator had cancelled.
 func (s *Server) finishDropoff(ctx context.Context, code string, jobErr error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 
-	rec, err := s.store.GetDropoffByCode(ctx, code)
+	status := string(migrate.DropCompleted)
+	errMsg := ""
+	if jobErr != nil {
+		status = string(migrate.DropFailed)
+		errMsg = jobErr.Error()
+	}
+	won, err := s.store.FinalizeDropoffFromImporting(ctx, code, status, errMsg)
 	if err != nil {
-		s.log.Warn("could not load drop-off to finalize", "code", code, "err", err)
+		s.log.Warn("could not finalize drop-off status", "code", code, "err", err)
 		return
 	}
-	if jobErr != nil {
-		rec.Status = string(migrate.DropFailed)
-		rec.Error = jobErr.Error()
-	} else {
-		rec.Status = string(migrate.DropCompleted)
-		rec.Error = ""
-	}
-	if uerr := s.store.UpdateDropoff(ctx, *rec); uerr != nil {
-		s.log.Warn("could not finalize drop-off status", "code", code, "err", uerr)
+	if !won {
+		s.log.Info("drop-off already finalized by cancel or sweep; worker outcome not applied",
+			"code", code, "worker_status", status)
 	}
 }
 
 // sweepExpiredDropoffs deletes the S3 objects of past-TTL drop-off sessions (a
 // full database at rest must not linger past its TTL) and moves them to a terminal
-// 'expired' state. ListExpiredDropoffs already excludes actively-'importing'
-// sessions (never reclaim a live import's dump) and includes 'failed' ones (whose
-// kept-for-retry dump must still be reclaimed once the TTL passes). Best-effort:
-// per-session errors only log. Called on startup and on a periodic schedule.
+// 'expired' state. ListExpiredDropoffs excludes actively-'importing' sessions
+// (never reclaim a live import's dump) and includes 'failed' ones (whose
+// kept-for-retry dump must still be reclaimed) AND 'completed' ones (a backstop for
+// a success-path delete that failed transiently, which would otherwise orphan the
+// dump forever). Deletes are idempotent, so a session whose objects are already
+// gone is a cheap no-op. Best-effort: per-session errors only log. Called on
+// startup and on a periodic schedule.
 func (s *Server) sweepExpiredDropoffs(ctx context.Context) error {
 	expired, err := s.store.ListExpiredDropoffs(ctx, time.Now().UTC(), 100)
 	if err != nil {
 		return err
 	}
 	for _, rec := range expired {
+		// Re-read immediately before reclaiming: the list ran a moment ago and a
+		// start could have raced in and claimed this session to 'importing' since
+		// (ClaimDropoffForImport flips atomically from waiting/uploaded/failed).
+		// Deleting a just-started import's dump out from under its worker would fail
+		// the job spuriously, so skip a row that is no longer reclaimable. (A tiny
+		// window between this re-read and the delete remains; its worst case is a
+		// recoverable spurious failure, not data loss — the worker's first act is a
+		// StatObject that surfaces the missing object as a retryable error.)
+		cur, gerr := s.store.GetDropoffByCode(ctx, rec.Code)
+		if gerr != nil {
+			s.log.Warn("could not re-read drop-off before reclaim", "code", rec.Code, "err", gerr)
+			continue
+		}
+		switch migrate.DropStatus(cur.Status) {
+		case migrate.DropImporting, migrate.DropExpired:
+			continue
+		}
 		if s.drops != nil {
-			if derr := s.drops.DeleteObject(ctx, rec.DumpKey); derr != nil {
-				s.log.Warn("could not delete expired drop-off dump", "code", rec.Code, "err", derr)
+			if derr := s.drops.DeleteObject(ctx, cur.DumpKey); derr != nil {
+				s.log.Warn("could not delete expired drop-off dump", "code", cur.Code, "err", derr)
 			}
-			if derr := s.drops.DeleteObject(ctx, rec.MetaKey); derr != nil {
-				s.log.Warn("could not delete expired drop-off metadata", "code", rec.Code, "err", derr)
+			if derr := s.drops.DeleteObject(ctx, cur.MetaKey); derr != nil {
+				s.log.Warn("could not delete expired drop-off metadata", "code", cur.Code, "err", derr)
 			}
 		}
 		// Move to the terminal 'expired' state so the row drains out of the sweep's
 		// set (it won't be reclaimed again every cycle) while preserving any failure
 		// Error, so the UI can still explain why a previously-failed drop-off ended.
-		rec.Status = string(migrate.DropExpired)
-		if uerr := s.store.UpdateDropoff(ctx, rec); uerr != nil {
-			s.log.Warn("could not mark drop-off expired", "code", rec.Code, "err", uerr)
+		cur.Status = string(migrate.DropExpired)
+		if uerr := s.store.UpdateDropoff(ctx, *cur); uerr != nil {
+			s.log.Warn("could not mark drop-off expired", "code", cur.Code, "err", uerr)
 		}
 	}
 	return nil

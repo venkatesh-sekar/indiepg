@@ -97,9 +97,10 @@ func TestListExpiredDropoffs(t *testing.T) {
 	// Insert one of every status, expired vs live, to pin the sweep set exactly:
 	//   - waiting + expired  -> swept (objects reclaimed, then marked expired)
 	//   - failed  + expired  -> swept (its kept-for-retry dump must not linger)
+	//   - completed+ expired -> swept (backstop: a success-path delete that failed
+	//                                  would otherwise orphan the dump forever)
 	//   - waiting + live     -> NOT swept (still inside its TTL)
 	//   - importing+ expired -> NOT swept (a live import owns its dump)
-	//   - completed+ expired -> NOT swept (objects already deleted on success)
 	//   - expired  + expired -> NOT swept (already terminal; drained)
 	insert := func(code, status string, exp time.Time) {
 		d := sampleDropoff(code, exp)
@@ -120,8 +121,8 @@ func TestListExpiredDropoffs(t *testing.T) {
 	for i, e := range expired {
 		codes[i] = e.Code
 	}
-	require.ElementsMatch(t, []string{"WAITEX", "FAILEX"}, codes,
-		"only past-TTL waiting/uploaded/failed (never importing/completed/expired) are swept")
+	require.ElementsMatch(t, []string{"WAITEX", "FAILEX", "DONEEX"}, codes,
+		"past-TTL waiting/uploaded/failed/completed are swept; never importing/expired")
 }
 
 func TestClaimDropoffForImport(t *testing.T) {
@@ -170,6 +171,71 @@ func TestClaimDropoffForImport(t *testing.T) {
 	won, err = s.ClaimDropoffForImport(ctx, "NOPENO")
 	require.NoError(t, err)
 	require.False(t, won)
+}
+
+func TestFinalizeDropoffFromImporting(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	exp := time.Now().Add(time.Hour)
+
+	mk := func(code, status string) {
+		d := sampleDropoff(code, exp)
+		d.Status = status
+		_, err := s.InsertDropoff(ctx, d)
+		require.NoError(t, err)
+	}
+
+	// From 'importing' the finalize wins and records the terminal outcome.
+	mk("IMPGO", "importing")
+	won, err := s.FinalizeDropoffFromImporting(ctx, "IMPGO", "completed", "")
+	require.NoError(t, err)
+	require.True(t, won)
+	got, err := s.GetDropoffByCode(ctx, "IMPGO")
+	require.NoError(t, err)
+	require.Equal(t, "completed", got.Status)
+
+	// From a non-'importing' state (a cancel already moved it to 'failed') the
+	// finalize is a no-op: the terminal cancel decision is authoritative.
+	mk("CANCL", "failed")
+	won, err = s.FinalizeDropoffFromImporting(ctx, "CANCL", "completed", "")
+	require.NoError(t, err)
+	require.False(t, won, "must not resurrect a cancelled/failed session to completed")
+	got, err = s.GetDropoffByCode(ctx, "CANCL")
+	require.NoError(t, err)
+	require.Equal(t, "failed", got.Status)
+}
+
+func TestMarkDropoffCancelled(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	exp := time.Now().Add(time.Hour)
+
+	mk := func(code, status string) {
+		d := sampleDropoff(code, exp)
+		d.Status = status
+		_, err := s.InsertDropoff(ctx, d)
+		require.NoError(t, err)
+	}
+
+	// A live (importing) session is cancellable.
+	mk("CXLIMP", "importing")
+	won, err := s.MarkDropoffCancelled(ctx, "CXLIMP")
+	require.NoError(t, err)
+	require.True(t, won)
+	got, err := s.GetDropoffByCode(ctx, "CXLIMP")
+	require.NoError(t, err)
+	require.Equal(t, "failed", got.Status)
+	require.Equal(t, "cancelled", got.Error)
+
+	// A completed session must NOT be relabelled cancelled (a completion that landed
+	// just before the cancel is authoritative).
+	mk("CXLDONE", "completed")
+	won, err = s.MarkDropoffCancelled(ctx, "CXLDONE")
+	require.NoError(t, err)
+	require.False(t, won)
+	got, err = s.GetDropoffByCode(ctx, "CXLDONE")
+	require.NoError(t, err)
+	require.Equal(t, "completed", got.Status)
 }
 
 func TestSweepRunningDropoffs(t *testing.T) {

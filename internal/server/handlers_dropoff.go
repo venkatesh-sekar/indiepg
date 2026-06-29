@@ -17,6 +17,11 @@ import (
 // the source box, mirroring scripts/install.sh's one-liner convention.
 const migratePushScriptURL = "https://raw.githubusercontent.com/venkatesh-sekar/indiepg/main/scripts/migrate-push.sh"
 
+// dropoffPrecheckTimeout bounds the best-effort, mint-time "is the target already
+// non-empty?" probe against the local Postgres, so a slow or unreachable cluster
+// can never stall a drop-off mint (the import-time gate is the real authority).
+const dropoffPrecheckTimeout = 10 * time.Second
+
 // createDropoffRequest mints a drop-off session for a single target database. A
 // destructive overwrite of a non-empty target requires the typed-name Confirm
 // (re-typing TargetDatabase), exactly like the direct single-db handler.
@@ -86,6 +91,34 @@ func (s *Server) handleCreateDropoff(w http.ResponseWriter, r *http.Request) {
 		if err := core.RequireConfirmation("overwrite database "+req.TargetDatabase, req.TargetDatabase, req.Confirm); err != nil {
 			s.audit(ctx, "migrate_dropoff_create", req.TargetDatabase, "failure", "overwrite not confirmed", core.CodeOf(err))
 			writeError(w, err)
+			return
+		}
+	}
+
+	// Mint-time overwrite pre-check (best-effort): if the local target already holds
+	// tables and overwrite was NOT authorized, refuse NOW — while the decision is
+	// free to redo — instead of after the source has run an expensive, hard-to-repeat
+	// pg_dump + upload only to hit the SAME gate at import time, where the uploaded
+	// dump cannot be re-driven from the unreachable source. The import-time gate
+	// (Orchestrator.validateTargetOverwrite) remains the authority; this only
+	// front-loads the common case. A local Postgres unreachable here is NOT fatal to
+	// minting (the import can't run yet either) — log and defer to the import gate.
+	if !req.Overwrite {
+		// Bound the probe so a slow/unreachable local Postgres can never stall the
+		// mint: on any error (timeout included) we log and defer to the import gate.
+		checkCtx, cancelCheck := context.WithTimeout(ctx, dropoffPrecheckTimeout)
+		defer cancelCheck()
+		if tgt, terr := s.localTargetConn(checkCtx); terr != nil {
+			s.log.Warn("drop-off mint: could not reach local Postgres for the overwrite pre-check; deferring to the import-time gate", "err", terr)
+		} else if nonEmpty, nerr := s.migrateEngine.DatabaseNonEmpty(checkCtx, tgt, req.TargetDatabase); nerr != nil {
+			s.log.Warn("drop-off mint: could not check whether the target is empty; deferring to the import-time gate", "database", req.TargetDatabase, "err", nerr)
+		} else if nonEmpty {
+			// req.Confirm is empty in the non-overwrite path, so this yields a CodeSafety
+			// RequireConfirmation the SPA turns into "tick Replace and type the name".
+			se := core.RequireConfirmation("overwrite database "+req.TargetDatabase, req.TargetDatabase, req.Confirm)
+			se.Err.Hint = "a database named " + req.TargetDatabase + " already exists and is not empty here — enable Replace and re-type its name to overwrite it on import"
+			s.audit(ctx, "migrate_dropoff_create", req.TargetDatabase, "failure", "target non-empty; overwrite not confirmed", core.CodeOf(se))
+			writeError(w, se)
 			return
 		}
 	}
@@ -266,6 +299,14 @@ func (s *Server) handleCancelDropoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Interrupt an in-flight import FIRST so its pg_restore is killed before we pull
+	// the dump out from under it (and so it can't finish and report success after
+	// the user cancelled). The worker's finalize is conditional on the row still
+	// being 'importing', so the 'cancelled' state we set below is authoritative even
+	// if the restore had already completed by the time the cancel landed. (No-op
+	// when no worker is running.)
+	s.cancelDropWorker(code)
+
 	// Best-effort delete of the data at rest (idempotent: a missing object is fine).
 	if derr := s.drops.DeleteObject(ctx, rec.DumpKey); derr != nil {
 		s.log.Warn("could not delete drop-off dump on cancel", "code", code, "err", derr)
@@ -274,12 +315,12 @@ func (s *Server) handleCancelDropoff(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("could not delete drop-off metadata on cancel", "code", code, "err", derr)
 	}
 
-	if rec.Status != string(migrate.DropCompleted) {
-		rec.Status = string(migrate.DropFailed)
-		rec.Error = "cancelled"
-		if uerr := s.store.UpdateDropoff(ctx, *rec); uerr != nil {
-			s.log.Warn("could not mark cancelled drop-off", "code", code, "err", uerr)
-		}
+	// Mark the session cancelled, but never clobber a terminal 'completed'/'expired'
+	// row: a completion that landed between the read above and here (the worker's
+	// finalize racing this cancel), or a prior sweep, is authoritative. The
+	// conditional UPDATE makes this race-safe instead of trusting the stale rec.
+	if _, uerr := s.store.MarkDropoffCancelled(ctx, code); uerr != nil {
+		s.log.Warn("could not mark cancelled drop-off", "code", code, "err", uerr)
 	}
 	// Mark a linked, still-running migration record cancelled too.
 	if rec.MigrationID != nil {
@@ -389,25 +430,32 @@ func dropoffMigrationRecord(code, targetDB string, overwrite bool) store.Migrati
 }
 
 // dropoffCommandDocker / dropoffCommandNative render the paste-able push command,
-// mirroring scripts/install.sh's curl|sh one-liner. The presigned URLs are
-// single-key, PUT-only, short-lived bearer tokens; the DBNAME / CONTAINER /
+// mirroring scripts/install.sh's curl|sh one-liner. The DBNAME / CONTAINER /
 // SOURCE_HOST / POSTGRES_USER tokens are placeholders the operator fills in.
+//
+// The two presigned URLs are single-key, PUT-only, short-lived bearer tokens —
+// bucket-write secrets that cannot be revoked once minted. They are passed via the
+// ENVIRONMENT (INDIEPG_DUMP_URL / INDIEPG_META_URL) rather than as --dump-url /
+// --meta-url argv, so they do NOT appear in the source box's process listing (`ps`
+// / /proc/<pid>/cmdline is world-readable; /proc/<pid>/environ is owner-only). This
+// gives the upload URLs the same anti-`ps` protection migrate-push.sh already gives
+// the DB password (PGPASSWORD / /dev/tty, never a flag). migrate-push.sh reads the
+// URLs from these env vars (with --dump-url/--meta-url kept as a fallback).
 //
 // The placeholders deliberately use plain UPPERCASE words rather than
 // <angle-bracket> tokens: the common newbie mistake is pasting the line before
 // substituting, and unquoted <…> would make the shell attempt input redirection
 // ("No such file or directory") before sh ever reads the args. A literal DBNAME
 // instead reaches migrate-push.sh, which catches it with a friendly placeholder
-// guard. The password is NEVER a flag — migrate-push.sh reads it from PGPASSWORD
-// or a /dev/tty prompt.
+// guard.
 func dropoffCommandDocker(dumpURL, metaURL string) string {
 	return fmt.Sprintf(
-		"curl -fsSL %s | sh -s -- --dump-url '%s' --meta-url '%s' --db DBNAME --docker CONTAINER",
+		"curl -fsSL %s | INDIEPG_DUMP_URL='%s' INDIEPG_META_URL='%s' sh -s -- --db DBNAME --docker CONTAINER",
 		migratePushScriptURL, dumpURL, metaURL)
 }
 
 func dropoffCommandNative(dumpURL, metaURL string) string {
 	return fmt.Sprintf(
-		"curl -fsSL %s | sh -s -- --dump-url '%s' --meta-url '%s' --db DBNAME --host SOURCE_HOST --port 5432 --user POSTGRES_USER",
+		"curl -fsSL %s | INDIEPG_DUMP_URL='%s' INDIEPG_META_URL='%s' sh -s -- --db DBNAME --host SOURCE_HOST --port 5432 --user POSTGRES_USER",
 		migratePushScriptURL, dumpURL, metaURL)
 }

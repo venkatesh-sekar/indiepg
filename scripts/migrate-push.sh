@@ -7,21 +7,30 @@
 # panel minted. The panel then imports it with SHA-256 + row-count verification.
 # No panel install and no AWS keys are needed on this box.
 #
-# Usage (copy the exact line from the panel; it has the two URLs filled in, then
-# replace the UPPERCASE placeholders):
+# Usage (copy the exact line from the panel; it has the two upload URLs filled in
+# as environment variables, then replace the UPPERCASE placeholders):
 #   curl -fsSL https://raw.githubusercontent.com/venkatesh-sekar/indiepg/main/scripts/migrate-push.sh \
-#     | sh -s -- --dump-url '<dump-url>' --meta-url '<meta-url>' --db DBNAME --docker CONTAINER
+#     | INDIEPG_DUMP_URL='<dump-url>' INDIEPG_META_URL='<meta-url>' \
+#       sh -s -- --db DBNAME --docker CONTAINER
 #
 #   native alternative (no Docker):
 #   ... --db DBNAME --host SOURCE_HOST [--port 5432] [--user POSTGRES_USER]
+#
+# The upload URLs come from INDIEPG_DUMP_URL / INDIEPG_META_URL (env) so they stay
+# out of `ps`; --dump-url / --meta-url remain as an explicit fallback.
 #
 # Password (native mode only): set PGPASSWORD in the environment, or you will be
 # prompted on the terminal. It is NEVER passed as a command-line flag (which would
 # leak it in the process listing).
 #
+# Quiesce the source: row counts are captured AFTER the dump snapshot and frozen in
+# meta.json, so writes to the source DURING the push can make the panel's row-count
+# verification fail — and because the meta is frozen, re-importing can't fix it; you
+# would have to re-run this whole push. Stop writes / put the source read-only first.
+#
 # Flags:
-#   --dump-url URL    presigned PUT URL for the dump object        (required)
-#   --meta-url URL    presigned PUT URL for the meta.json object   (required)
+#   --dump-url URL    presigned PUT URL for the dump (or set INDIEPG_DUMP_URL)
+#   --meta-url URL    presigned PUT URL for meta.json (or set INDIEPG_META_URL)
 #   --db NAME         source database to migrate                   (required)
 #   --docker NAME     run pg_dump/psql inside this docker container
 #   --host HOST       connect to a native Postgres at HOST  (XOR --docker)
@@ -44,20 +53,29 @@ Dumps ONE PostgreSQL database from a source the panel cannot reach and uploads i
 to S3 through two short-lived presigned PUT URLs the panel minted. No panel and no
 AWS credentials are needed on this box.
 
-Usage (copy the exact line from the panel; it has the two URLs filled in, then
-replace the UPPERCASE placeholders):
-  curl -fsSL .../scripts/migrate-push.sh | sh -s -- \
-    --dump-url '<dump-url>' --meta-url '<meta-url>' --db DBNAME --docker CONTAINER
+Usage (copy the exact line from the panel; it has the two upload URLs filled in as
+environment variables, then replace the UPPERCASE placeholders):
+  curl -fsSL .../scripts/migrate-push.sh \
+    | INDIEPG_DUMP_URL='<dump-url>' INDIEPG_META_URL='<meta-url>' \
+      sh -s -- --db DBNAME --docker CONTAINER
 
   native alternative (no Docker):
     ... --db DBNAME --host SOURCE_HOST [--port 5432] [--user POSTGRES_USER]
 
+The upload URLs come from INDIEPG_DUMP_URL / INDIEPG_META_URL (env) so they stay
+out of `ps`; --dump-url / --meta-url remain as an explicit fallback.
+
 Password (native mode only): set PGPASSWORD in the environment, or you will be
 prompted on the terminal. It is NEVER passed as a command-line flag.
 
+Quiesce the source first: row counts are captured after the dump snapshot and
+frozen in meta.json, so writes DURING the push can make the panel's row-count
+verification fail unrecoverably (re-importing won't fix a frozen mismatch; you'd
+re-run the whole push). Stop writes / set the source read-only before running this.
+
 Flags:
-  --dump-url URL    presigned PUT URL for the dump object        (required)
-  --meta-url URL    presigned PUT URL for the meta.json object   (required)
+  --dump-url URL    presigned PUT URL for the dump (or set INDIEPG_DUMP_URL)
+  --meta-url URL    presigned PUT URL for meta.json (or set INDIEPG_META_URL)
   --db NAME         source database to migrate                   (required)
   --docker NAME     run pg_dump/psql inside this docker container
   --host HOST       connect to a native Postgres at HOST  (XOR --docker)
@@ -68,8 +86,13 @@ EOF
 }
 
 # --- defaults / args ------------------------------------------------------
-DUMP_URL=""
-META_URL=""
+# The two presigned upload URLs default from the environment (INDIEPG_DUMP_URL /
+# INDIEPG_META_URL) — the form the panel's copy-paste command uses — so they stay
+# OUT of this process's argv and cannot be read from `ps` by other local users
+# (the same protection PGPASSWORD gets). The --dump-url / --meta-url flags remain
+# as an explicit override/fallback.
+DUMP_URL="${INDIEPG_DUMP_URL:-}"
+META_URL="${INDIEPG_META_URL:-}"
 DB=""
 CONTAINER=""
 HOST=""
@@ -196,6 +219,10 @@ chmod 0600 "$DUMP_FILE" "$META_FILE" 2>/dev/null || true
 trap 'rm -f "$DUMP_FILE" "$META_FILE"' EXIT INT TERM
 
 # --- 1. dump --------------------------------------------------------------
+# Row counts are captured after this dump's snapshot and frozen in meta.json, so a
+# source taking writes during the push can fail the panel's verification in a way a
+# re-import cannot fix. Remind the operator to quiesce the source.
+say "note: the source should be idle / read-only during this push (counts are frozen for verification)"
 say "dumping database '$DB'..."
 if ! run_pg_dump > "$DUMP_FILE"; then
 	die "pg_dump failed — check the database name, the container/host, and the credentials"

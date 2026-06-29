@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -210,13 +211,47 @@ func (s *S3ObjectStore) StatObject(ctx context.Context, key string) (int64, bool
 	return info.Size, true, nil
 }
 
-// DownloadToFile streams an object straight to dest via minio's FGetObject, so a
-// large dump (up to the single-PUT ceiling) never has to be buffered in memory —
-// an improvement over the ssh-less import path, which reads the whole object into
-// a []byte. A missing key is mapped to CodeNotFound per the GetObject contract.
-func (s *S3ObjectStore) DownloadToFile(ctx context.Context, key, dest string) error {
-	if err := s.client.FGetObject(ctx, s.bucket, key, dest, minio.GetObjectOptions{}); err != nil {
+// DownloadToFile streams an object to dest, refusing to write more than max bytes
+// to disk. It is the dump transport for the drop-off import: a large dump (up to
+// the single-PUT ceiling) is streamed straight to disk and never buffered in
+// memory — an improvement over the ssh-less import path, which reads the whole
+// object into a []byte.
+//
+// minio's FGetObject is deliberately NOT used: it has no byte ceiling. A holder of
+// the dump-key presigned PUT can swap a much larger object in AFTER the panel's
+// StatObject pre-check (a TOCTOU), so the transfer itself — not a stale pre-stat —
+// must be the authoritative size guard, exactly as GetObjectLimited is for the
+// (small) meta.json. We copy at most max+1 bytes through an io.LimitReader; if the
+// ceiling is reached the partial file is removed and the object is rejected, so a
+// swapped-in giant dump can never exhaust the disk before the SHA-256 check runs.
+// A missing key is mapped to CodeNotFound per the GetObject contract.
+func (s *S3ObjectStore) DownloadToFile(ctx context.Context, key, dest string, max int64) error {
+	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
 		return s.classifyGet(err, key)
+	}
+	defer func() { _ = obj.Close() }()
+
+	f, err := os.Create(dest)
+	if err != nil {
+		return core.InternalError("backup: create download file %q", dest).Wrap(err)
+	}
+	// Copy one byte past the ceiling so an over-limit object is detectable without
+	// writing it whole. minio's GetObject is lazy, so a missing key / transport
+	// error surfaces here on the first read.
+	n, copyErr := io.Copy(f, io.LimitReader(obj, max+1))
+	closeErr := f.Close()
+	if copyErr != nil {
+		_ = os.Remove(dest)
+		return s.classifyGet(copyErr, key)
+	}
+	if closeErr != nil {
+		_ = os.Remove(dest)
+		return core.InternalError("backup: finalize download file %q", dest).Wrap(closeErr)
+	}
+	if n > max {
+		_ = os.Remove(dest)
+		return core.ValidationError("backup: S3 object %q exceeds the %d-byte download limit", key, max)
 	}
 	return nil
 }

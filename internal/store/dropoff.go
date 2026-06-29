@@ -125,10 +125,52 @@ func (s *Store) ClaimDropoffForImport(ctx context.Context, code string) (bool, e
 	return n == 1, nil
 }
 
+// FinalizeDropoffFromImporting records a drop-off session's terminal outcome
+// (status + error) but ONLY when it is still 'importing', returning true when the
+// transition was applied. It is the guard against an import worker resurrecting a
+// session that a concurrent cancel (or expiry sweep) already moved to a terminal
+// state while the worker was mid-restore: a cancelled session must STAY cancelled
+// even though the worker's restore may have finished. The worker only reaches its
+// finalize after winning ClaimDropoffForImport, so the normal (un-cancelled) case
+// always matches 'importing' and is applied.
+func (s *Store) FinalizeDropoffFromImporting(ctx context.Context, code, status, errMsg string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE dropoff_sessions SET status = ?, error = ?, updated_at = ?
+		WHERE code = ? AND status = 'importing'`,
+		status, errMsg, nowRFC3339(), code)
+	if err != nil {
+		return false, core.InternalError("finalize dropoff from importing").Wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, core.InternalError("finalize dropoff rows affected").Wrap(err)
+	}
+	return n == 1, nil
+}
+
+// MarkDropoffCancelled records a cancel on a drop-off session — status 'failed'
+// with the reason 'cancelled' — but ONLY when it is not already terminal
+// ('completed'/'expired'), returning true when applied. The condition makes cancel
+// race-safe against a completion (or sweep) that landed between the handler's read
+// and this write: a genuinely-completed import must not be relabelled cancelled.
+func (s *Store) MarkDropoffCancelled(ctx context.Context, code string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE dropoff_sessions SET status = 'failed', error = 'cancelled', updated_at = ?
+		WHERE code = ? AND status NOT IN ('completed','expired')`,
+		nowRFC3339(), code)
+	if err != nil {
+		return false, core.InternalError("mark dropoff cancelled").Wrap(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, core.InternalError("mark dropoff cancelled rows affected").Wrap(err)
+	}
+	return n == 1, nil
+}
+
 // ListExpiredDropoffs returns drop-off sessions whose expiry has passed and whose
 // S3 objects may still be at rest, oldest first, so the periodic sweep can delete
-// the dump+metadata and (for non-failed rows) mark them expired. limit <= 0
-// defaults to 100.
+// the dump+metadata and mark them expired. limit <= 0 defaults to 100.
 //
 // The status filter deliberately EXCLUDES 'importing': an import that legitimately
 // Started shortly before the (short) TTL can still be streaming/restoring past it
@@ -137,6 +179,14 @@ func (s *Store) ClaimDropoffForImport(ctx context.Context, code string) (bool, e
 // SweepRunningDropoffs on startup. It INCLUDES 'failed': a failed/abandoned
 // session keeps its (up to multi-GiB) dump in S3 for retry, which must still be
 // reclaimed once the TTL passes, or a full database lingers at rest indefinitely.
+//
+// It also INCLUDES 'completed': the import path deletes the dump+metadata on
+// success best-effort, but a transient S3 error there would otherwise orphan the
+// full database forever (a completed session is never otherwise revisited). Making
+// the sweep reclaim completed-and-past-TTL sessions too is the backstop that
+// upholds the invariant "a full database at rest must not linger past its TTL".
+// The deletes are idempotent, so a completed session whose objects were already
+// removed is a cheap no-op.
 func (s *Store) ListExpiredDropoffs(ctx context.Context, now time.Time, limit int) ([]DropoffRecord, error) {
 	if limit <= 0 {
 		limit = 100
@@ -144,7 +194,7 @@ func (s *Store) ListExpiredDropoffs(ctx context.Context, now time.Time, limit in
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+dropoffColumns+`
 		FROM dropoff_sessions
-		WHERE status NOT IN ('completed','expired','importing') AND expires_at <= ?
+		WHERE status NOT IN ('expired','importing') AND expires_at <= ?
 		ORDER BY id LIMIT ?`,
 		now.UTC().Format(time.RFC3339Nano), limit)
 	if err != nil {

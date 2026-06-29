@@ -85,6 +85,15 @@ type Server struct {
 	// the drop-off endpoints report "requires S3".
 	drops migrate.DropTransport
 
+	// dropCancels holds the cancel func of each in-flight drop-off import worker,
+	// keyed by session code, so handleCancelDropoff can INTERRUPT a running restore
+	// (the worker runs on its own bounded context, detached from the request) rather
+	// than only marking the row cancelled and letting the restore finish anyway.
+	// Guarded by dropCancelMu; entries are added by runDropImportWorker and removed
+	// when it returns.
+	dropCancelMu sync.Mutex
+	dropCancels  map[string]context.CancelFunc
+
 	// upgrades persists the version-upgrade feature's durable state (the in-
 	// flight operation + the pending-finalization record), backed by the config
 	// key/value table so it survives a panel restart. upgradeMu is the single
@@ -397,6 +406,7 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 		migrateEngine: migrate.NewEngine(runner, log),
 		migrate:       migrateServiceFor(cfg, runner, log),
 		drops:         dropTransportFor(cfg, log),
+		dropCancels:   make(map[string]context.CancelFunc),
 
 		// Version-upgrade durable state, backed by the panel's local store (config
 		// key/value table). The *store.Store satisfies pg.StateStore directly.

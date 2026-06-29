@@ -49,12 +49,15 @@ func (f *fakeServerDrop) StatObject(ctx context.Context, key string) (int64, boo
 	return int64(len(data)), true, nil
 }
 
-func (f *fakeServerDrop) DownloadToFile(ctx context.Context, key, dest string) error {
+func (f *fakeServerDrop) DownloadToFile(ctx context.Context, key, dest string, max int64) error {
 	f.mu.Lock()
 	data, ok := f.objects[key]
 	f.mu.Unlock()
 	if !ok {
 		return core.NotFoundError("object %s not found", key)
+	}
+	if int64(len(data)) > max {
+		return core.ValidationError("object %s exceeds the %d-byte download limit", key, max)
 	}
 	return os.WriteFile(dest, data, 0o600)
 }
@@ -138,7 +141,11 @@ func TestCreateDropoffMintsCommandAndRecord(t *testing.T) {
 	require.Len(t, env.Data.Code, migrate.CodeLength)
 	require.Equal(t, "appdb", env.Data.TargetDatabase)
 	require.Contains(t, env.Data.CommandDocker, "migrate-push.sh")
-	require.Contains(t, env.Data.CommandDocker, "--dump-url")
+	// The presigned URLs ride in the environment (INDIEPG_DUMP_URL/INDIEPG_META_URL),
+	// NOT argv, so they stay out of the source's `ps` listing — never as --dump-url.
+	require.Contains(t, env.Data.CommandDocker, "INDIEPG_DUMP_URL=")
+	require.Contains(t, env.Data.CommandDocker, "INDIEPG_META_URL=")
+	require.NotContains(t, env.Data.CommandDocker, "--dump-url")
 	require.Contains(t, env.Data.CommandDocker, "X-Amz-Signature")
 	require.Contains(t, env.Data.CommandDocker, "--docker CONTAINER")
 	require.Contains(t, env.Data.CommandNative, "--host SOURCE_HOST")
@@ -393,4 +400,80 @@ func TestSweepExpiredDropoffsReclaimsFailedAndSkipsImporting(t *testing.T) {
 	imp, err := srv.store.GetDropoffByCode(ctx, "IMPORT1")
 	require.NoError(t, err)
 	require.Equal(t, string(migrate.DropImporting), imp.Status)
+}
+
+// TestSweepExpiredDropoffsReclaimsCompletedWithLingeringObjects covers the
+// orphaned-dump fix: the import success path deletes the dump+meta best-effort, so
+// a transient S3 error there would otherwise strand a full database at rest forever
+// (a completed session is never otherwise revisited). The sweep now also reclaims
+// completed-and-past-TTL sessions, deleting any lingering objects and draining the
+// row to terminal 'expired'.
+func TestSweepExpiredDropoffsReclaimsCompletedWithLingeringObjects(t *testing.T) {
+	srv, fake, _ := withDrops(t)
+	ctx := context.Background()
+	past := time.Now().Add(-time.Hour).UTC()
+
+	completed := store.DropoffRecord{
+		Code: "DONE01", DumpKey: migrate.DropDumpKey("DONE01"), MetaKey: migrate.DropMetaKey("DONE01"),
+		TargetDatabase: "appdb", Status: string(migrate.DropCompleted), ExpiresAt: past,
+	}
+	_, err := srv.store.InsertDropoff(ctx, completed)
+	require.NoError(t, err)
+	// Simulate the success-path delete having failed: the objects are still at rest.
+	fake.put(migrate.DropDumpKey("DONE01"), []byte("PGDMP-orphaned-after-success"))
+	fake.put(migrate.DropMetaKey("DONE01"), []byte(`{"sha256":"x"}`))
+
+	require.NoError(t, srv.sweepExpiredDropoffs(ctx))
+
+	require.Contains(t, fake.deletes, migrate.DropDumpKey("DONE01"))
+	require.Contains(t, fake.deletes, migrate.DropMetaKey("DONE01"))
+	got, err := srv.store.GetDropoffByCode(ctx, "DONE01")
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.DropExpired), got.Status)
+}
+
+// TestFinishDropoffDoesNotResurrectCancelled pins the cancel-vs-completion guard: a
+// session a cancel moved to 'failed' while the worker was mid-restore must STAY
+// failed/cancelled — finishDropoff(nil) (a restore that happened to finish) must
+// not flip it back to 'completed' and silently report a cancelled import as a
+// success.
+func TestFinishDropoffDoesNotResurrectCancelled(t *testing.T) {
+	srv, _, _ := withDrops(t)
+	ctx := context.Background()
+
+	d := store.DropoffRecord{
+		Code: "CANC01", DumpKey: migrate.DropDumpKey("CANC01"), MetaKey: migrate.DropMetaKey("CANC01"),
+		TargetDatabase: "appdb", Status: string(migrate.DropFailed), Error: "cancelled",
+		ExpiresAt: time.Now().Add(time.Hour).UTC(),
+	}
+	_, err := srv.store.InsertDropoff(ctx, d)
+	require.NoError(t, err)
+
+	srv.finishDropoff(ctx, "CANC01", nil)
+
+	got, err := srv.store.GetDropoffByCode(ctx, "CANC01")
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.DropFailed), got.Status, "a cancelled session must not be resurrected to completed")
+	require.Equal(t, "cancelled", got.Error)
+}
+
+// TestFinishDropoffCompletesFromImporting is the positive case: the normal worker
+// finalize flips an actively-importing session to its terminal outcome.
+func TestFinishDropoffCompletesFromImporting(t *testing.T) {
+	srv, _, _ := withDrops(t)
+	ctx := context.Background()
+
+	d := store.DropoffRecord{
+		Code: "IMP02", DumpKey: migrate.DropDumpKey("IMP02"), MetaKey: migrate.DropMetaKey("IMP02"),
+		TargetDatabase: "appdb", Status: string(migrate.DropImporting),
+		ExpiresAt: time.Now().Add(time.Hour).UTC(),
+	}
+	_, err := srv.store.InsertDropoff(ctx, d)
+	require.NoError(t, err)
+
+	srv.finishDropoff(ctx, "IMP02", nil)
+
+	got, err := srv.store.GetDropoffByCode(ctx, "IMP02")
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.DropCompleted), got.Status)
 }

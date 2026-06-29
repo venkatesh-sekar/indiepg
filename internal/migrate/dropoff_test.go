@@ -25,8 +25,9 @@ type fakeDropTransport struct {
 	downloadErr error
 	getErr      error
 
-	presigned []string // keys presigned
-	deletes   []string // keys deleted
+	presigned   []string // keys presigned
+	deletes     []string // keys deleted
+	downloadMax int64    // the byte ceiling DownloadToFile was last called with
 }
 
 func newFakeDrop() *fakeDropTransport {
@@ -62,15 +63,21 @@ func (f *fakeDropTransport) StatObject(ctx context.Context, key string) (int64, 
 	return int64(len(data)), true, nil
 }
 
-func (f *fakeDropTransport) DownloadToFile(ctx context.Context, key, dest string) error {
+func (f *fakeDropTransport) DownloadToFile(ctx context.Context, key, dest string, max int64) error {
 	if f.downloadErr != nil {
 		return f.downloadErr
 	}
 	f.mu.Lock()
+	f.downloadMax = max
 	data, ok := f.objects[key]
 	f.mu.Unlock()
 	if !ok {
 		return core.NotFoundError("object %s not found", key)
+	}
+	// Mirror the real S3ObjectStore.DownloadToFile: refuse to write an object that
+	// exceeds the byte ceiling (a dump swapped huge after the StatObject pre-check).
+	if int64(len(data)) > max {
+		return core.ValidationError("object %s exceeds the %d-byte download limit", key, max)
 	}
 	return os.WriteFile(dest, data, 0o600)
 }
@@ -179,9 +186,33 @@ func TestImportFromDrop_happyPath(t *testing.T) {
 	require.Equal(t, map[string]int64{"public.users": 4}, rec.srcCounts)
 	require.Contains(t, rec.phases(), PhaseDownloading)
 	require.Equal(t, []Phase{PhaseValidating, PhaseDownloading, PhaseRestoring, PhaseVerifying}, rec.phases())
+	// The dump download is hard-capped at the single-PUT ceiling so a dump swapped
+	// huge after the StatObject pre-check cannot exhaust the disk.
+	require.Equal(t, MaxDropBytes, tr.downloadMax)
 	// On success the full DB at rest is removed.
 	require.Contains(t, tr.deletes, DropDumpKey("ABCDEF"))
 	require.Contains(t, tr.deletes, DropMetaKey("ABCDEF"))
+}
+
+// TestImportFromDrop_nonOverwriteRestoreFailureDropsTarget pins the retry-from-S3
+// salvage fix: a NON-overwrite restore that fails after creating/using a fresh
+// target leaves partial tables behind; those poison the next retry (they read as
+// non-empty and the overwrite gate would refuse forever, but the dump can't be
+// re-pushed from the unreachable source). The failed restore must therefore DROP
+// the poisoned target so a retry from the kept-in-S3 dump starts clean.
+func TestImportFromDrop_nonOverwriteRestoreFailureDropsTarget(t *testing.T) {
+	tr := newFakeDrop()
+	stageDrop(t, tr, "ABCDEF", []byte("PGDMP"), map[string]int64{})
+
+	eng := &fakeEngine{exists: true, restoreErr: core.ExecError("pg_restore boom")}
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, nil, nil)
+	err := o.ImportFromDrop(context.Background(), tr, dropSpec("ABCDEF"), rec)
+	require.Error(t, err)
+	// The partially-restored target is dropped so a retry starts from a clean slate.
+	require.Equal(t, []string{"appdb"}, eng.dropped)
+	// The dump is KEPT in S3 for that retry — only the local target was reset.
+	require.Empty(t, tr.deletes)
 }
 
 func TestImportFromDrop_createsTargetWhenAbsent(t *testing.T) {
