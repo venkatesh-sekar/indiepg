@@ -27,7 +27,15 @@ const (
 	// sit at "never" forever while the repo silently rotted (a bit-flip, a
 	// truncated WAL). Scheduling it closes the loop on "backups proven restorable".
 	restoreTestJob = "restore-test"
+	// dropoffSweepJob deletes the S3 objects of expired drop-off sessions (a full
+	// database at rest must not linger past its TTL) and marks them expired.
+	dropoffSweepJob = "dropoff-sweep"
 )
+
+// dropoffSweepSchedule is the (fixed) cadence of the drop-off expiry sweep. It is
+// not operator-tunable: a full database dump sitting in S3 past its short TTL is a
+// data-at-rest concern, so it is swept frequently regardless of config.
+const dropoffSweepSchedule = "@every 30m"
 
 // seedTimeout bounds the one-shot default-rule seed at startup so a slow or hung
 // store can never delay the server from accepting its first connection. Mirrors
@@ -78,6 +86,12 @@ func (s *Server) startBackgroundJobs(ctx context.Context) {
 	// it cannot conflict and needs no single-flight guard.
 	s.registerJob(restoreTestJob, s.cfg.Schedules.RestoreTest, s.scheduledRestoreTest(),
 		"restore verification is disabled (empty schedule); backups will not be automatically proven recoverable")
+
+	// Drop-off expiry sweep on a fixed cadence: delete the full database dumps of
+	// timed-out drop-off sessions from S3 and mark them expired. Always on (a bad
+	// hardcoded spec only disables the loop, never takes the panel down).
+	s.registerJob(dropoffSweepJob, dropoffSweepSchedule, s.scheduledDropoffSweep(),
+		"drop-off expiry sweep is disabled; expired drop-off dumps may linger in S3")
 
 	s.sched.Start(ctx)
 }
@@ -160,6 +174,15 @@ func (s *Server) scheduledRestoreTest() scheduler.JobFunc {
 		}
 		s.log.Info("scheduled restore test completed", "message", res.Message)
 		return nil
+	}
+}
+
+// scheduledDropoffSweep builds the JobFunc that sweeps expired drop-off sessions:
+// it deletes their S3 dump+meta objects and marks them expired. A sweep error is
+// returned so the scheduler logs it; the next tick retries.
+func (s *Server) scheduledDropoffSweep() scheduler.JobFunc {
+	return func(ctx context.Context) error {
+		return s.sweepExpiredDropoffs(ctx)
 	}
 }
 

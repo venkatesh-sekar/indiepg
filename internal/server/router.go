@@ -129,6 +129,15 @@ func (s *Server) buildRouter() http.Handler {
 			pr.Get("/migrate/sessions/{code}", s.handleGetMigrationSession)
 			pr.Post("/migrate/sessions/{code}/export", s.handleExportMigrationSession)
 			pr.Delete("/migrate/sessions/{code}", s.handleCancelMigrationSession)
+
+			//   - Drop-off link (drops): the panel mints two presigned S3 PUT URLs;
+			//     a source the panel cannot reach pushes one database's dump +
+			//     meta.json to them via curl|sh, then the panel imports from S3.
+			//     Requires S3 (same honest nil-transport rule as the sessions).
+			pr.Post("/migrate/drops", s.handleCreateDropoff)
+			pr.Get("/migrate/drops/{code}", s.handleGetDropoff)
+			pr.Post("/migrate/drops/{code}/start", s.handleStartDropoff)
+			pr.Delete("/migrate/drops/{code}", s.handleCancelDropoff)
 		})
 	})
 

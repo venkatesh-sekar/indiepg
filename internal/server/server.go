@@ -79,6 +79,12 @@ type Server struct {
 	migrateEngine migrate.PgEngine
 	migrate       *migrate.Service
 
+	// drops is the S3 transport for the "drop-off link" migration mode (presigned
+	// PUT mint + streaming download + stat + cleanup). Like migrate it is nil
+	// unless an S3 backup target is configured — that nil is the ONLY honest reason
+	// the drop-off endpoints report "requires S3".
+	drops migrate.DropTransport
+
 	// upgrades persists the version-upgrade feature's durable state (the in-
 	// flight operation + the pending-finalization record), backed by the config
 	// key/value table so it survives a panel restart. upgradeMu is the single
@@ -174,6 +180,18 @@ func New(opts Options) (*Server, error) {
 	}
 	if rerr := os.RemoveAll(migrateWorkBaseDir); rerr != nil {
 		log.Warn("could not clear stale migration work dir on startup", "dir", migrateWorkBaseDir, "err", rerr)
+	}
+
+	// Sweep drop-off sessions left "importing" by a panel restart (their worker
+	// goroutine is gone) to failed, then expire any past-TTL sessions — deleting
+	// the full database at rest from S3. Best-effort: failures only log.
+	if swept, serr := srv.store.SweepRunningDropoffs(connectCtx); serr != nil {
+		log.Warn("could not sweep interrupted drop-off sessions on startup", "err", serr)
+	} else if swept > 0 {
+		log.Warn("marked interrupted drop-off sessions as failed on startup", "count", swept)
+	}
+	if serr := srv.sweepExpiredDropoffs(connectCtx); serr != nil {
+		log.Warn("could not sweep expired drop-off sessions on startup", "err", serr)
 	}
 
 	// Sweep any backup left "running" by a panel restart: the async backup's
@@ -319,6 +337,33 @@ func migrateServiceFor(cfg config.Config, runner exec.Runner, log *core.Logger) 
 	return migrate.NewService(objstore, runner, log)
 }
 
+// dropTransportFor builds the S3 transport for the drop-off migration mode when an
+// S3 backup target is configured, or returns nil when there is none (a nil
+// transport is what makes the drop-off endpoints honestly report "requires S3").
+// It reuses the same bucket/credentials as the backup repo, so no second
+// credential is needed.
+//
+// It is a free function (not a method) so newServer can call it while still
+// assembling the Server.
+func dropTransportFor(cfg config.Config, log *core.Logger) migrate.DropTransport {
+	if cfg.Backup.Bucket == "" && cfg.Backup.Endpoint == "" {
+		return nil // no S3 target: drop-off is unavailable, direct pull still works.
+	}
+	objstore, err := backup.NewS3ObjectStore(backup.S3StoreParams{
+		Endpoint:  cfg.Backup.Endpoint,
+		Region:    cfg.Backup.Region,
+		Bucket:    cfg.Backup.Bucket,
+		AccessKey: cfg.Backup.AccessKey,
+		SecretKey: cfg.Backup.SecretKey,
+		UseSSL:    cfg.Backup.UseSSL,
+	})
+	if err != nil {
+		log.Warn("drop-off migration unavailable: could not build S3 client", "err", err)
+		return nil
+	}
+	return objstore
+}
+
 // newServer is the unexported builder used by New and by tests to inject a
 // pre-wired authenticator and SPA filesystem.
 func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth.Authenticator, dist fs.FS, ttl time.Duration) (*Server, error) {
@@ -351,6 +396,7 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 		// no S3); the S3 session Service is built only when an S3 target exists.
 		migrateEngine: migrate.NewEngine(runner, log),
 		migrate:       migrateServiceFor(cfg, runner, log),
+		drops:         dropTransportFor(cfg, log),
 
 		// Version-upgrade durable state, backed by the panel's local store (config
 		// key/value table). The *store.Store satisfies pg.StateStore directly.

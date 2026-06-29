@@ -6,12 +6,21 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
 	"github.com/venkatesh-sekar/indiepg/internal/core"
 	"github.com/venkatesh-sekar/indiepg/internal/identity"
+)
+
+// Presigned-URL expiry bounds. minio's signer rejects an expiry under 1 second
+// or over 7 days (api-presigned.go -> isValidExpiry), so PresignPut clamps the
+// caller's ttl into this range before signing.
+const (
+	minPresignTTL = 1 * time.Second
+	maxPresignTTL = 7 * 24 * time.Hour
 )
 
 // S3ObjectStore adapts minio-go to identity.ObjectStore, the minimal S3 surface
@@ -129,6 +138,59 @@ func (s *S3ObjectStore) PutObjectIfAbsent(ctx context.Context, key string, data 
 func (s *S3ObjectStore) DeleteObject(ctx context.Context, key string) error {
 	if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {
 		return core.InternalError("backup: delete S3 object %q", key).Wrap(err)
+	}
+	return nil
+}
+
+// PresignPut returns a short-lived, single-key, PUT-only presigned URL for key.
+// It is the transport for the drop-off migration mode: the panel mints the URL
+// and hands it to a source box that cannot otherwise reach S3 with credentials.
+// The minio V4 signature binds the URL to exactly PUT + this one object key, so
+// it is a bounded bearer token — safe to paste into the operator's own shell but
+// still a secret, so the returned URL is NEVER logged or persisted in plaintext.
+//
+// ttl is clamped to minio's accepted 1s..7d range; callers should pass the
+// session TTL (e.g. migrate.DropDefaultTTL).
+func (s *S3ObjectStore) PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	if ttl < minPresignTTL {
+		ttl = minPresignTTL
+	}
+	if ttl > maxPresignTTL {
+		ttl = maxPresignTTL
+	}
+	// No Content-Type / extra signed headers: keep the canonical request minimal so
+	// a plain `curl --upload-file` (which adds only unsigned headers) satisfies the
+	// signature on AWS S3, R2, B2 and MinIO alike.
+	u, err := s.client.PresignedPutObject(ctx, s.bucket, key, ttl)
+	if err != nil {
+		// Deliberately do not include the (would-be) URL in the error.
+		return "", core.InternalError("backup: presign PUT for S3 object %q", key).Wrap(err)
+	}
+	return u.String(), nil
+}
+
+// StatObject reports an object's size and whether it exists. A missing object is
+// the normal "not uploaded yet" signal, returned as (0, false, nil) rather than
+// an error, so the drop-off readiness check can branch on it cleanly. Any other
+// transport failure is returned as an internal error.
+func (s *S3ObjectStore) StatObject(ctx context.Context, key string) (int64, bool, error) {
+	info, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		if core.CodeOf(s.classifyGet(err, key)) == core.CodeNotFound {
+			return 0, false, nil
+		}
+		return 0, false, core.InternalError("backup: stat S3 object %q", key).Wrap(err)
+	}
+	return info.Size, true, nil
+}
+
+// DownloadToFile streams an object straight to dest via minio's FGetObject, so a
+// large dump (up to the single-PUT ceiling) never has to be buffered in memory —
+// an improvement over the ssh-less import path, which reads the whole object into
+// a []byte. A missing key is mapped to CodeNotFound per the GetObject contract.
+func (s *S3ObjectStore) DownloadToFile(ctx context.Context, key, dest string) error {
+	if err := s.client.FGetObject(ctx, s.bucket, key, dest, minio.GetObjectOptions{}); err != nil {
+		return s.classifyGet(err, key)
 	}
 	return nil
 }

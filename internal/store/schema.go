@@ -128,6 +128,30 @@ var schemaStatements = []string{
 		finished_at     TEXT
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_migrations_created ON migrations (created_at)`,
+
+	// dropoff_sessions — the local source of truth for "drop-off link" migrations:
+	// the panel mints two presigned S3 PUT URLs, a source box pushes one database's
+	// dump + meta.json to them, and the panel imports from S3. Only the S3 object
+	// KEYS are stored here (never the presigned URLs or any password). A dedicated
+	// table (not new columns on `migrations`) because the schema runner only issues
+	// CREATE TABLE IF NOT EXISTS and SQLite's ADD COLUMN has no IF NOT EXISTS, so
+	// re-running ALTERs would crash migrate() on the second startup.
+	`CREATE TABLE IF NOT EXISTS dropoff_sessions (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		code            TEXT    NOT NULL UNIQUE,
+		migration_id    INTEGER,
+		dump_key        TEXT    NOT NULL,
+		meta_key        TEXT    NOT NULL,
+		target_database TEXT    NOT NULL,
+		overwrite       INTEGER NOT NULL DEFAULT 0,
+		status          TEXT    NOT NULL,
+		error           TEXT    NOT NULL DEFAULT '',
+		byte_size       INTEGER NOT NULL DEFAULT 0,
+		expires_at      TEXT    NOT NULL,
+		created_at      TEXT    NOT NULL,
+		updated_at      TEXT    NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_dropoff_expires ON dropoff_sessions (expires_at)`,
 }
 
 // connectionPragmas are encoded into the DSN by buildDSN so the driver applies
