@@ -632,6 +632,160 @@ export interface MigrationStarted {
   status: MigrationStatus;
 }
 
+// ---------------------------------------------------------------------------
+// PostgreSQL version & upgrade (internal/pg, internal/server/handlers_pgversion)
+//
+// Mirrors the API contract in docs/plans/2026-06-29-postgres-version-upgrade-
+// design.md §7. The explicitly-documented JSON shapes (PGVersionInfo,
+// PreflightResult, PendingFinalization, Check) match §7 field-for-field. The
+// async-operation envelope (UpgradeOperation / UpgradeStatus) mirrors the
+// backup/migration long-running pattern; §7 only says these endpoints "return an
+// operation handle" + expose GET /api/pg/upgrade/status, so the UI treats the
+// status endpoint as the source of truth and re-polls it after every mutation.
+// ---------------------------------------------------------------------------
+
+/** The running PostgreSQL version: the full server_version string + its major. */
+export interface PGCurrentVersion {
+  /** e.g. "16.2 (Debian 16.2-1.pgdg120+2)". */
+  full: string;
+  major: number;
+}
+
+/** An available minor update for the running major (e.g. 16.2 → 16.4). */
+export interface PGMinorUpdate {
+  available: boolean;
+  /** The candidate version apt would install, e.g. "16.4"; "" when none. */
+  target: string;
+}
+
+/** A major release the panel can upgrade to (a catalog entry newer than current). */
+export interface PGMajorTarget {
+  major: number;
+  /** The latest stable major the panel recommends. */
+  default?: boolean;
+}
+
+/** The set of upgrades available from the running version. */
+export interface PGAvailableUpgrades {
+  minor: PGMinorUpdate;
+  majors: PGMajorTarget[];
+}
+
+/** A completed major upgrade awaiting finalize: the old cluster is stopped but
+ *  still on disk (the rollback target). Non-null only while the two-phase
+ *  finalize/rollback window is open. */
+export interface PendingFinalization {
+  from_major: number;
+  to_major: number;
+  /** Disk the old cluster frees when finalized. */
+  reclaimable_bytes: number;
+  upgraded_at: string;
+}
+
+/** GET /api/pg/version — drives the Version panel + the dashboard line. */
+export interface PGVersionInfo {
+  running: boolean;
+  current: PGCurrentVersion;
+  available: PGAvailableUpgrades;
+  /** Non-null when a major upgrade awaits finalize/rollback. */
+  pending_finalization: PendingFinalization | null;
+}
+
+/** A single pre-flight check outcome (internal/pg/preflight). A `fail` blocks the
+ *  operation; a `warn` is shown but proceedable. */
+export type CheckStatus = "pass" | "warn" | "fail";
+
+export interface Check {
+  id: string;
+  title: string;
+  status: CheckStatus;
+  message: string;
+  /** Optional hint on how to clear a warn/fail. */
+  remediation?: string;
+}
+
+/** The preview of what a major upgrade will do, shown before committing (§7). */
+export interface UpgradePreview {
+  from_major: number;
+  to_major: number;
+  disk_required_bytes: number;
+  disk_free_bytes: number;
+  /** Extensions carried over to the new major. */
+  extensions: string[];
+  /** True when any check failed — the upgrade is blocked. */
+  blocking: boolean;
+}
+
+/** POST /api/pg/upgrade/major/preflight response (§5 Phase A). */
+export interface PreflightResult {
+  checks: Check[];
+  preview: UpgradePreview;
+}
+
+/** Which upgrade an operation is performing, for progress labelling. */
+export type UpgradeKind = "minor" | "major" | "finalize" | "rollback";
+
+/** Lifecycle of a single upgrade operation. Matches the backend's
+ *  OperationState.Status (internal/pg/upgradestate.go): success, not "succeeded". */
+export type UpgradeOpStatus = "running" | "success" | "failed";
+
+/** A long-running upgrade operation, mirroring the backup/migration async model.
+ *  Polled via GET /api/pg/upgrade/status; the mutating POSTs return the same
+ *  envelope so the UI can switch straight to progress. */
+export interface UpgradeOperation {
+  kind: UpgradeKind;
+  /** Target major (the running major for a minor upgrade / finalize / rollback). */
+  target_major: number;
+  status: UpgradeOpStatus;
+  /** Human-readable current step, e.g. "Running pg_upgradecluster…". */
+  phase: string;
+  /** Captured command output so far, oldest first (already redacted). The backend
+   *  omits this field while empty (omitempty), so treat it as optional. */
+  log?: string[];
+  /** Populated when status === "failed". */
+  error: string;
+  started_at: string;
+  finished_at?: string | null;
+}
+
+/** GET /api/pg/upgrade/status — the current operation + pending-finalization
+ *  state, used to drive live progress and to resume the UI after a reload. Both
+ *  fields are null when nothing is in flight and no upgrade awaits finalize. */
+export interface UpgradeStatus {
+  operation: UpgradeOperation | null;
+  pending_finalization: PendingFinalization | null;
+}
+
+/** POST /api/pg/upgrade/minor body (§4). `backup: true` takes a fresh pgBackRest
+ *  backup before upgrading (the one-click stale-backup option). */
+export interface MinorUpgradeRequest {
+  backup: boolean;
+}
+
+/** POST /api/pg/upgrade/major/preflight body (§5 Phase A). */
+export interface PreflightRequest {
+  target_major: number;
+}
+
+/** POST /api/pg/upgrade/major/start body (§5 Phase B). The server refuses unless
+ *  the most recent preflight for this target had no `fail`, and always takes a
+ *  mandatory fresh backup as the first step. */
+export interface StartMajorUpgradeRequest {
+  target_major: number;
+  confirm: boolean;
+}
+
+/** POST /api/pg/upgrade/finalize body (§6). `confirm_version` must equal the old
+ *  major to authorise dropping the old cluster (type-to-confirm guard). */
+export interface FinalizeRequest {
+  confirm_version: number;
+}
+
+/** POST /api/pg/upgrade/rollback body (§6). */
+export interface RollbackRequest {
+  confirm: boolean;
+}
+
 /** Finer step within a status, surfaced for progress. Empty in terminal states. */
 export type MigrationPhase =
   | ""

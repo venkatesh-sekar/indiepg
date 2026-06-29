@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/alert"
@@ -77,6 +78,15 @@ type Server struct {
 	// is the ONLY honest reason the ssh-less handshake reports "S3 required".
 	migrateEngine migrate.PgEngine
 	migrate       *migrate.Service
+
+	// upgrades persists the version-upgrade feature's durable state (the in-
+	// flight operation + the pending-finalization record), backed by the config
+	// key/value table so it survives a panel restart. upgradeMu is the single
+	// global lock that makes every upgrade operation mutually exclusive (§10):
+	// it is acquired by a handler and released by the async worker, exactly like
+	// the backup single-flight guard.
+	upgrades  *pg.UpgradeStore
+	upgradeMu sync.Mutex
 
 	// Background telemetry + alerting. collector samples host/PG metrics (folding
 	// in backup health) and buffers them; engine evaluates the persisted alert
@@ -168,6 +178,11 @@ func New(opts Options) (*Server, error) {
 	} else if swept > 0 {
 		log.Warn("marked interrupted backups as failed on startup", "count", swept)
 	}
+
+	// Sweep an upgrade operation left "running" by a panel restart: its goroutine
+	// died with the previous process. The pending-finalization state is left
+	// intact so the banner reappears after a restart mid-window.
+	srv.sweepInterruptedUpgrade(connectCtx)
 
 	return srv, nil
 }
@@ -329,6 +344,10 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 		// no S3); the S3 session Service is built only when an S3 target exists.
 		migrateEngine: migrate.NewEngine(runner, log),
 		migrate:       migrateServiceFor(cfg, runner, log),
+
+		// Version-upgrade durable state, backed by the panel's local store (config
+		// key/value table). The *store.Store satisfies pg.StateStore directly.
+		upgrades: pg.NewUpgradeStore(st),
 
 		sessionTTL: ttl,
 		spa:        newSPAHandler(dist),

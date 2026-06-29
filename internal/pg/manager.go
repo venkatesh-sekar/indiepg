@@ -45,13 +45,6 @@ const (
 // cluster-wide queries (listing databases, reading the system identifier).
 const defaultConnectDatabase = "postgres"
 
-// aptPackages is the set of packages Provision installs. pgbackrest is included
-// here (not installed lazily) because the backup feature shells out to the
-// `pgbackrest` binary via `sudo -u postgres`; without it the first backup fails
-// with "sudo: pgbackrest: command not found". The Debian/Ubuntu package puts the
-// binary in /usr/bin, which is on sudo's secure_path.
-var aptPackages = []string{"postgresql", "postgresql-contrib", "pgbackrest"}
-
 // serviceName is the systemd unit for the managed Postgres.
 const serviceName = "postgresql"
 
@@ -71,6 +64,12 @@ type Manager struct {
 	mu       sync.RWMutex
 	readPool *pgxpool.Pool
 	privPool *pgxpool.Pool
+
+	// installMajor is the PostgreSQL major version Provision installs (the
+	// versioned postgresql-<major> packages from PGDG). Zero means "use the
+	// catalog default" (DefaultMajor). It is set from Options.PGMajor, threaded
+	// from `indiepg install --pg-version`.
+	installMajor int
 
 	// detectTuning resolves this host's recommended tuning for a profile. nil
 	// means use detectHostTuning (real /proc/meminfo + runtime CPU); tests set
@@ -93,6 +92,10 @@ type Options struct {
 	Runner exec.Runner
 	Config config.Config
 	Logger *core.Logger
+	// PGMajor is the PostgreSQL major version Provision installs. Zero selects
+	// the catalog default (DefaultMajor). It is only consulted by Provision; the
+	// serve path leaves it zero.
+	PGMajor int
 }
 
 // New builds a Manager from Options.
@@ -102,9 +105,10 @@ func New(opts Options) *Manager {
 		log = core.Discard()
 	}
 	return &Manager{
-		runner: opts.Runner,
-		cfg:    opts.Config,
-		log:    log,
+		runner:       opts.Runner,
+		cfg:          opts.Config,
+		log:          log,
+		installMajor: opts.PGMajor,
 	}
 }
 
@@ -121,7 +125,7 @@ func (m *Manager) Provision(ctx context.Context) (core.Result, error) {
 		return core.Result{}, core.InternalError("pg: provision requires a Runner")
 	}
 
-	steps := make([]string, 0, 8)
+	steps := make([]string, 0, 12)
 	record := func(rs exec.RunResult, fallback string) {
 		if len(rs.Command) > 0 {
 			steps = append(steps, strings.Join(rs.Command, " "))
@@ -130,33 +134,35 @@ func (m *Manager) Provision(ctx context.Context) (core.Result, error) {
 		steps = append(steps, fallback)
 	}
 
-	// 1. apt-get update so the package index is fresh.
+	// Resolve which major to install (explicit --pg-version or catalog default).
+	major := m.resolveInstallMajor()
+
+	// 1. Set up the PGDG apt repository (signing key + sources + index refresh).
+	// Only PGDG ships every supported major side-by-side, which is what makes
+	// version selection and later pg_upgradecluster possible.
+	repoSteps, err := m.ensurePGDGRepo(ctx)
+	if err != nil {
+		return core.Result{}, err
+	}
+	steps = append(steps, repoSteps...)
+
+	// 2. Install the VERSIONED packages (postgresql-<major>, -contrib, pgbackrest)
+	// rather than the generic `postgresql` metapackage.
+	pkgSteps, err := m.installVersionedPackages(ctx, major)
+	if err != nil {
+		return core.Result{}, err
+	}
+	steps = append(steps, pkgSteps...)
+
+	// 3. Pin the installed major so an unattended apt upgrade cannot jump majors.
+	pinSteps, err := m.writeAptPin(ctx, major)
+	if err != nil {
+		return core.Result{}, err
+	}
+	steps = append(steps, pinSteps...)
+
+	// 4. enable + start the service (systemctl enable --now is idempotent).
 	res, err := m.runner.Run(ctx, exec.RunSpec{
-		Name:    "apt-get",
-		Args:    []string{"update"},
-		Env:     []string{"DEBIAN_FRONTEND=noninteractive"},
-		Timeout: commandTimeout,
-	})
-	if err != nil {
-		return core.Result{}, core.ExecError("pg: apt-get update failed").Wrap(err)
-	}
-	record(res, "apt-get update")
-
-	// 2. install Postgres packages.
-	res, err = m.runner.Run(ctx, exec.RunSpec{
-		Name:    "apt-get",
-		Args:    append([]string{"install", "-y"}, aptPackages...),
-		Env:     []string{"DEBIAN_FRONTEND=noninteractive"},
-		Timeout: commandTimeout,
-	})
-	if err != nil {
-		return core.Result{}, core.ExecError("pg: installing postgresql failed").
-			WithHint("ensure the apt sources include the postgresql packages").Wrap(err)
-	}
-	record(res, "apt-get install -y "+strings.Join(aptPackages, " "))
-
-	// 3. enable + start the service (systemctl enable --now is idempotent).
-	res, err = m.runner.Run(ctx, exec.RunSpec{
 		Name:    "systemctl",
 		Args:    []string{"enable", "--now", serviceName},
 		Timeout: commandTimeout,

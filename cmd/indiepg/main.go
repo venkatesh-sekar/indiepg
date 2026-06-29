@@ -28,6 +28,7 @@ import (
 
 	"github.com/venkatesh-sekar/indiepg/internal/config"
 	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/pg"
 	"github.com/venkatesh-sekar/indiepg/internal/server"
 	"github.com/venkatesh-sekar/indiepg/internal/store"
 )
@@ -131,14 +132,16 @@ func installCmd(statePath, logLevel *string) *cobra.Command {
 		bindAddr  string
 		password  string
 		noService bool
+		pgVersion int
 	)
 	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "Set up indiepg: provision Postgres, install the service, print URL + password",
-		Long: "Install provisions the native Postgres, sets the admin password, and " +
-			"installs+starts a systemd service so the panel is running and reboot-safe " +
-			"after this one command. It ends by printing the panel URL and a one-time " +
-			"admin password. Safe to re-run.",
+		Long: "Install provisions the native Postgres (from the PGDG apt repository), sets " +
+			"the admin password, and installs+starts a systemd service so the panel is " +
+			"running and reboot-safe after this one command. Use --pg-version to pick the " +
+			"PostgreSQL major (default: the panel's recommended latest). It ends by printing " +
+			"the panel URL and a one-time admin password. Safe to re-run.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			log, st, err := openFoundation(*statePath, *logLevel)
 			if err != nil {
@@ -154,6 +157,7 @@ func installCmd(statePath, logLevel *string) *cobra.Command {
 				Password:  password,
 				StatePath: *statePath,
 				NoService: noService,
+				PGMajor:   pgVersion,
 			})
 		},
 	}
@@ -161,6 +165,7 @@ func installCmd(statePath, logLevel *string) *cobra.Command {
 	cmd.Flags().StringVar(&bindAddr, "bind", config.DefaultBindAddr, "private bind address")
 	cmd.Flags().StringVar(&password, "password", "", "admin password (generated and shown once if empty)")
 	cmd.Flags().BoolVar(&noService, "no-service", false, "do not install/start the systemd service")
+	cmd.Flags().IntVar(&pgVersion, "pg-version", 0, fmt.Sprintf("PostgreSQL major version to install (default: %d)", pg.DefaultMajor()))
 	return cmd
 }
 

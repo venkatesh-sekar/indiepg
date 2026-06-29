@@ -42,6 +42,16 @@ func (m *Manager) MajorVersion(ctx context.Context) (int, error) {
 	return n / 10000, nil
 }
 
+// ServerVersion returns the cluster's full PostgreSQL version string (SHOW
+// server_version), e.g. "16.2 (Debian 16.2-1.pgdg120+2)". It is the human label
+// shown on the dashboard and Version panel; the numeric major comes from
+// MajorVersion. server_version is readable by any role, so it normally comes
+// straight from the read-only pool, with the usual psql fallback when no pool is
+// connected.
+func (m *Manager) ServerVersion(ctx context.Context) (string, error) {
+	return m.showSetting(ctx, "server_version")
+}
+
 // showSetting reads a single Postgres GUC via SHOW. The setting name is a fixed
 // caller-provided constant (never user input); it is validated against an
 // identifier charset as defense-in-depth before being placed in the statement.

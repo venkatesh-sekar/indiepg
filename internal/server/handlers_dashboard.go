@@ -14,8 +14,8 @@ import (
 const dashboardDiskFullPercent = 90.0
 
 // dashboardPGStatus is the at-a-glance Postgres status for the dashboard header.
-// Version is omitted when unknown (the foundation does not expose a server
-// version yet); SystemID is best-effort and absent when Postgres is unreachable.
+// Version is the running server_version string (omitted when Postgres is
+// unreachable); SystemID is best-effort and absent when Postgres is unreachable.
 type dashboardPGStatus struct {
 	Running  bool   `json:"running"`
 	Version  string `json:"version,omitempty"`
@@ -62,6 +62,13 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	running, _ := s.pg.IsRunning(ctx)
 	sysID, _ := s.pg.SystemIdentifier(ctx)
+
+	// Best-effort running version for the dashboard line; absent (omitted) when
+	// Postgres is unreachable.
+	var pgVersion string
+	if running {
+		pgVersion, _ = s.pg.ServerVersion(ctx)
+	}
 
 	var reasons []string
 
@@ -134,6 +141,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data := dashboardData{
 		PG: dashboardPGStatus{
 			Running:  running,
+			Version:  pgVersion,
 			SystemID: sysID,
 		},
 		Snapshot:      out,

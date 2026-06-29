@@ -15,6 +15,7 @@ import { Extensions } from "@/views/Extensions";
 import { Backups } from "@/views/Backups";
 import { Alerts } from "@/views/Alerts";
 import { Migrate } from "@/views/Migrate";
+import { Version } from "@/views/Version";
 import { Settings } from "@/views/Settings";
 
 export default function App() {
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="backups" element={<Backups />} />
           <Route path="alerts" element={<Alerts />} />
           <Route path="migrate" element={<Migrate />} />
+          <Route path="version" element={<Version />} />
           <Route path="settings" element={<Settings />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

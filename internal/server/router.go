@@ -77,6 +77,19 @@ func (s *Server) buildRouter() http.Handler {
 			pr.Post("/extensions/{name}/update", s.handleUpdateExtension)
 			pr.Delete("/extensions/{name}", s.handleDropExtension)
 
+			// PostgreSQL version & upgrades. Read endpoints (version, upgrade
+			// status) are synchronous; the mutating operations (minor upgrade,
+			// major start, finalize, rollback) run async behind a single global
+			// lock and are polled via GET /pg/upgrade/status. Major preflight is
+			// synchronous (its contract is an inline checks+preview body).
+			pr.Get("/pg/version", s.handleGetPGVersion)
+			pr.Get("/pg/upgrade/status", s.handleUpgradeStatus)
+			pr.Post("/pg/upgrade/minor", s.handleMinorUpgrade)
+			pr.Post("/pg/upgrade/major/preflight", s.handleMajorPreflight)
+			pr.Post("/pg/upgrade/major/start", s.handleMajorUpgradeStart)
+			pr.Post("/pg/upgrade/finalize", s.handleUpgradeFinalize)
+			pr.Post("/pg/upgrade/rollback", s.handleUpgradeRollback)
+
 			// Roles & grants.
 			pr.Get("/roles", s.handleListRoles)
 			pr.Post("/roles", s.handleCreateRole)
