@@ -58,18 +58,22 @@ func TestRenderConfig_S3(t *testing.T) {
 }
 
 func TestRenderConfig_BundlesSmallFiles(t *testing.T) {
-	// repo-bundle packs the many small relation/catalog files a Postgres cluster
+	// repo1-bundle packs the many small relation/catalog files a Postgres cluster
 	// is made of into a few large repo objects, so an S3 backup is not bottlenecked
 	// on one HTTP round-trip per tiny file. It is unconditional (helps posix too).
+	// The option MUST carry the repo index — pgBackRest rejects the bare
+	// `repo-bundle` with "option 'repo-bundle' requires an index", which aborts
+	// stanza-create and every backup.
 	out, err := RenderConfig(baseS3Params())
 	require.NoError(t, err)
-	require.Contains(t, out, "repo-bundle=y")
+	require.Contains(t, out, "repo1-bundle=y")
+	require.NotContains(t, out, "\nrepo-bundle=", "must be the indexed repo1-bundle, never the bare repo-bundle")
 
 	p := baseS3Params()
 	p.Bucket, p.Endpoint = "", ""
 	local, err := RenderConfig(p)
 	require.NoError(t, err)
-	require.Contains(t, local, "repo-bundle=y", "bundling applies to local repos too")
+	require.Contains(t, local, "repo1-bundle=y", "bundling applies to local repos too")
 }
 
 func TestRenderConfig_ProcessMaxRenderedOnlyWhenSet(t *testing.T) {

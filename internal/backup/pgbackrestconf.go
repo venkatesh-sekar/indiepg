@@ -167,10 +167,13 @@ func RenderConfig(p ConfigParams) (string, error) {
 	// A Postgres cluster is thousands of small files (catalogs, per-relation
 	// segments); without bundling pgBackRest writes each as its own repo object, so
 	// an S3 backup pays one HTTP round-trip per tiny file and is dominated by
-	// request count, not bytes. repo-bundle packs small files into a few large repo
-	// objects, collapsing thousands of PUTs into a handful. Supported since
-	// pgBackRest 2.32; harmless for posix repos. Applies to new backups only.
-	global.set("repo-bundle", "y")
+	// request count, not bytes. repo1-bundle packs small files into a few large repo
+	// objects, collapsing thousands of PUTs into a handful. It is a per-repo option
+	// and MUST carry the repo index: the bare `repo-bundle` is rejected with
+	// "ERROR [031]: option 'repo-bundle' requires an index" (seen on pgBackRest
+	// 2.45), which aborts stanza-create and every backup. Supported since pgBackRest
+	// 2.39; harmless for posix repos. Applies to new backups only.
+	global.set("repo1-bundle", "y")
 	// Parallel workers overlap S3 request latency across files; rendered only when
 	// the caller sized it (see DefaultProcessMax). pgBackRest defaults to 1.
 	if p.ProcessMax > 0 {
