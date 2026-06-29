@@ -13,7 +13,8 @@ import { useAsync, usePolling } from "@/lib/hooks";
 import { bytes } from "@/lib/format";
 import { Modal } from "@/components/Modal";
 import { toast } from "sonner";
-import { backupFreshness } from "@/views/Backups";
+import { Link } from "react-router-dom";
+import { backupFreshness, RunningDuration } from "@/views/Backups";
 import {
   Badge,
   Callout,
@@ -45,6 +46,7 @@ import type {
 } from "@/api/types";
 
 const STATUS_POLL_MS = 3000;
+const DISMISSED_FAILURE_KEY = "indiepg.dismissedFailedOp";
 
 /** The short "16.2" form pulled from a full server_version string. */
 function shortVersion(full: string): string {
@@ -64,7 +66,15 @@ export function Version() {
   const [wizardTarget, setWizardTarget] = useState<number | null>(null);
   const [minorOpen, setMinorOpen] = useState(false);
   // A failed op surfaces a dismissible banner so the stderr isn't lost in a toast.
-  const [dismissedFailure, setDismissedFailure] = useState<string | null>(null);
+  // The dismissal is keyed by the op's start time and remembered for the browser
+  // session, so a banner you already dismissed doesn't reappear on every visit.
+  const [dismissedFailure, setDismissedFailure] = useState<string | null>(
+    () => sessionStorage.getItem(DISMISSED_FAILURE_KEY),
+  );
+  const dismissFailure = (startedAt: string) => {
+    sessionStorage.setItem(DISMISSED_FAILURE_KEY, startedAt);
+    setDismissedFailure(startedAt);
+  };
 
   // When an operation finishes, refresh the version info (new running version,
   // cleared update offers) and drop the wizard. A one-shot toast confirms it.
@@ -113,7 +123,7 @@ export function Version() {
       ) : version.data ? (
         <>
           {failedOp ? (
-            <FailedOpBanner op={failedOp} onDismiss={() => setDismissedFailure(failedOp.started_at)} />
+            <FailedOpBanner op={failedOp} onDismiss={() => dismissFailure(failedOp.started_at)} />
           ) : null}
 
           <RunningVersionCard info={version.data} />
@@ -156,7 +166,7 @@ function RunningVersionCard({ info }: { info: PGVersionInfo }) {
             <Badge tone="danger">Stopped</Badge>
           )}
         </Row>
-        <Row label="Major">{info.current.major || "—"}</Row>
+        <Row label="Major version">{info.current.major || "—"}</Row>
         <Row label="Full version">
           <span className="font-mono text-sm">{info.current.full || "—"}</span>
         </Row>
@@ -234,10 +244,9 @@ function MajorUpgradeCard({
       ) : (
         <div className="flex flex-col gap-3">
           <p className="text-muted-foreground">
-            A major upgrade (e.g. {info.current.major} → {majors[0].major}) moves the
-            on-disk format forward via <code>pg_upgrade</code>. It&apos;s gated behind
-            pre-flight checks and a mandatory backup, and stays reversible — the old
-            version is kept until you finalize.
+            A major upgrade (e.g. {info.current.major} → {majors[0].major}) is gated behind
+            pre-flight checks and a mandatory backup, and stays reversible — your old version is
+            kept until you finalize (permanently delete it to free disk).
           </p>
           <div className="flex flex-wrap gap-2">
             {majors.map((m) => (
@@ -390,6 +399,9 @@ function MajorUpgradeWizard({
 
   const blocked =
     !pre.data || pre.data.preview.blocking || pre.data.checks.some((c) => c.status === "fail");
+  const failingChecks = (pre.data?.checks ?? [])
+    .filter((c) => c.status === "fail")
+    .map((c) => c.title);
 
   const start = async () => {
     setBusy(true);
@@ -416,7 +428,8 @@ function MajorUpgradeWizard({
     >
       <p className="text-muted-foreground">
         Moving from major <strong>{current}</strong> to <strong>{target}</strong>. The panel
-        first installs the target packages and runs the checks below — nothing is changed yet.
+        installs PostgreSQL {target} alongside your current version (safe and reversible) and runs
+        the checks below. Your database itself hasn&apos;t been touched yet.
       </p>
 
       {pre.loading ? (
@@ -434,13 +447,21 @@ function MajorUpgradeWizard({
 
           {blocked ? (
             <Callout tone="danger" title="This upgrade is blocked">
-              One or more checks failed. Resolve the red items above, then re-open this
-              upgrade to run the checks again.
+              {failingChecks.length > 0
+                ? `${failingChecks.length} ${
+                    failingChecks.length === 1 ? "check needs" : "checks need"
+                  } attention: ${failingChecks.join(", ")}. `
+                : "One or more checks didn't pass. "}
+              Fix the red items above, then re-open this upgrade to run the checks again.
             </Callout>
           ) : (
-            <Callout tone="warn" title="A fresh backup is taken automatically">
-              When you start, the panel takes a mandatory pgBackRest backup before touching
-              anything. The old PostgreSQL {current} cluster is preserved afterward so you can
+            <Callout tone="ok" title="A fresh backup is taken automatically">
+              When you start, the panel first takes a mandatory backup before touching anything —
+              you&apos;ll find it on the{" "}
+              <Link to="/backups" className="underline">
+                Backups page
+              </Link>
+              . Your old PostgreSQL {current} files are then kept (stopped, moved aside) so you can
               roll back during a verification window.
             </Callout>
           )}
@@ -456,15 +477,16 @@ function MajorUpgradeWizard({
                 disabled={busy}
               />
               <FieldLabel htmlFor="major-ack" className="font-normal">
-                I understand: a backup is taken first, there is a short downtime window, and the
-                old cluster is kept for rollback until I finalize.
+                I understand: a backup is taken first, my database is offline while it upgrades
+                (usually a few minutes — longer for large databases), and my old PostgreSQL{" "}
+                {current} files are kept so I can roll back until I finalize.
               </FieldLabel>
             </Field>
           ) : null}
 
           <div className="flex gap-2">
             <Button variant="outline" onClick={onCancel} disabled={busy}>
-              Back
+              Cancel
             </Button>
             <Button onClick={start} disabled={blocked || !ack || busy}>
               {busy ? (
@@ -554,10 +576,25 @@ function UpgradePreviewView({ result }: { result: PreflightResult }) {
           )}
         </Row>
       </dl>
-      <p className="text-sm text-muted-foreground">
-        The old cluster is preserved (stopped, moved aside) so the upgrade is reversible until
-        you finalize.
-      </p>
+      <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm text-muted-foreground">
+        <li>
+          <strong>Downtime:</strong> your database is offline only while it upgrades — usually a
+          few minutes for small databases, longer for large ones. During that window your app&apos;s
+          connections are refused, so consider pausing it or showing a maintenance page.
+        </li>
+        <li>
+          <strong>No app changes:</strong> your connection details don&apos;t change — same host,
+          same port 5432, same passwords. Your app needs no edits.
+        </li>
+        <li>
+          <strong>Reversible:</strong> your old PostgreSQL {p.from_major} files are kept (stopped,
+          moved aside) so you can roll back until you finalize.
+        </li>
+        <li>
+          <strong>Briefly slower at first:</strong> right after upgrading, the database may be a
+          little slow while it rebuilds its query statistics — this is normal and clears on its own.
+        </li>
+      </ul>
     </div>
   );
 }
@@ -575,11 +612,14 @@ function UpgradeProgress({ op }: { op: UpgradeOperation }) {
   return (
     <Card title={KIND_TITLES[op.kind] ?? "Upgrade in progress"}>
       <div className="flex flex-col gap-3">
-        <Spinner label={op.phase || "Working…"} />
+        <div className="flex items-center justify-between gap-3">
+          <Spinner label={op.phase || "Working…"} />
+          <RunningDuration startedAt={op.started_at} />
+        </div>
         <p className="text-sm text-muted-foreground">
           This continues even if you leave the page — come back here any time to check on it.
           {op.kind === "major"
-            ? " Do not stop PostgreSQL or reboot the server while this runs."
+            ? " Large databases can take several minutes. Don't stop PostgreSQL or reboot the server while this runs."
             : null}
         </p>
         {(op.log?.length ?? 0) > 0 ? <OpLog log={op.log ?? []} /> : null}
@@ -593,9 +633,9 @@ function FailedOpBanner({ op, onDismiss }: { op: UpgradeOperation; onDismiss: ()
     <Callout tone="danger" title={`${KIND_TITLES[op.kind] ?? "Upgrade"} failed`}>
       <p>{op.error || "The operation did not complete."}</p>
       <p className="mt-1 text-sm">
-        Nothing was deleted — your data and the old cluster are intact. Review the output below,
-        resolve the cause, and try again. If a major upgrade left the new version in a bad state,
-        the rollback option appears once it reaches the pending-finalization step.
+        Nothing was deleted — your data and your old PostgreSQL version are intact. Review the
+        output below, resolve the cause, and try again. If a major upgrade left the new version in
+        a bad state, a rollback option appears below the failure once the old version is ready.
       </p>
       {(op.log?.length ?? 0) > 0 ? <OpLog log={op.log ?? []} /> : null}
       <Button variant="outline" size="sm" className="mt-2" onClick={onDismiss}>
@@ -606,8 +646,17 @@ function FailedOpBanner({ op, onDismiss }: { op: UpgradeOperation; onDismiss: ()
 }
 
 function OpLog({ log }: { log: string[] }) {
+  const ref = useRef<HTMLPreElement>(null);
+  // Keep the newest output in view as lines stream in.
+  useEffect(() => {
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [log]);
   return (
-    <pre className="mt-2 max-h-64 overflow-auto rounded-md border bg-muted/40 p-3 text-[13px] leading-relaxed text-foreground">
+    <pre
+      ref={ref}
+      className="mt-2 max-h-64 overflow-auto rounded-md border bg-muted/40 p-3 text-[13px] leading-relaxed text-foreground"
+    >
       {log.join("\n")}
     </pre>
   );
@@ -638,13 +687,19 @@ export function PendingFinalizationBanner({
       title={`Upgraded to PostgreSQL ${pending.to_major} — verify your app, then reclaim space`}
     >
       <p>
-        You&apos;re now running PostgreSQL {pending.to_major}. The old PostgreSQL{" "}
-        {pending.from_major} cluster is kept (stopped) as a rollback for now, using{" "}
-        <strong>{bytes(pending.reclaimable_bytes)}</strong> of disk. Once you&apos;ve confirmed
-        your app works, finalize to free that space — or roll back if something&apos;s wrong.
+        You&apos;re now running PostgreSQL {pending.to_major}, and your connection details are
+        unchanged (same host, port 5432, and passwords). Your old PostgreSQL {pending.from_major}{" "}
+        files are kept (stopped) as a one-click rollback for now, using{" "}
+        <strong>{bytes(pending.reclaimable_bytes)}</strong> of disk. There&apos;s no deadline —
+        take your time. Once you&apos;ve confirmed your app works, finalize (permanently delete the
+        old version to free that space) — or roll back if something&apos;s wrong.
+      </p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        If the database feels a little slow right now, that&apos;s normal while it rebuilds its
+        query statistics — it clears on its own.
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
-        <Button onClick={() => setFinalizeOpen(true)}>
+        <Button variant="destructive" onClick={() => setFinalizeOpen(true)}>
           Finalize (reclaim {bytes(pending.reclaimable_bytes)})
         </Button>
         <Button
@@ -743,10 +798,11 @@ function FinalizeDialog({
     >
       {error ? <ErrorNotice error={error} /> : null}
       <Callout tone="danger" title="This is the point of no return">
-        Finalizing drops the old PostgreSQL {pending.from_major} cluster and frees{" "}
+        Finalizing permanently deletes your old PostgreSQL {pending.from_major} files and frees{" "}
         <strong>{bytes(pending.reclaimable_bytes)}</strong>. After this you{" "}
         <strong>cannot roll back</strong>. Only finalize once you&apos;ve verified your app on
-        PostgreSQL {pending.to_major}.
+        PostgreSQL {pending.to_major}. Your pgBackRest backups are unaffected — this only removes
+        the instant one-click rollback.
       </Callout>
       <Field className="mt-4">
         <FieldLabel htmlFor="finalize-confirm">
@@ -779,9 +835,14 @@ function RollbackDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [ack, setAck] = useState(false);
+  const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
+
+  // Rollback permanently discards writes, so it gets the same type-to-confirm
+  // guard as finalize: type the version you're abandoning (the new major).
+  const expected = String(pending.to_major);
+  const matches = typed.trim() === expected;
 
   const rollback = async () => {
     setBusy(true);
@@ -814,7 +875,7 @@ function RollbackDialog({
             type="button"
             variant="destructive"
             onClick={rollback}
-            disabled={busy || !ack}
+            disabled={busy || !matches}
           >
             {busy ? (
               <>
@@ -830,23 +891,32 @@ function RollbackDialog({
     >
       {error ? <ErrorNotice error={error} /> : null}
       <Callout tone="danger" title="Any writes since the upgrade will be LOST">
-        Rolling back returns you to the old PostgreSQL {pending.from_major} cluster exactly as it
-        was at the moment of the upgrade. <strong>Every change written to PostgreSQL{" "}
-        {pending.to_major} since then — new rows, edits, deletes — is discarded and cannot be
-        recovered.</strong> If your app has been live on the new version, do not roll back
-        without understanding this.
+        Rolling back returns you to your old PostgreSQL {pending.from_major} exactly as it was at
+        the moment of the upgrade. <strong>Every change written to PostgreSQL {pending.to_major}{" "}
+        since then — new rows, edits, deletes — is discarded and cannot be recovered.</strong> If
+        your app has been live on the new version, do not roll back without understanding this.
       </Callout>
-      <Field orientation="horizontal" className="mt-4">
-        <Checkbox
-          id="rollback-ack"
-          checked={ack}
-          onCheckedChange={(c) => setAck(c === true)}
-          disabled={busy}
-        />
-        <FieldLabel htmlFor="rollback-ack" className="font-normal">
-          I understand that writes made on PostgreSQL {pending.to_major} since the upgrade will be
-          permanently lost.
+      <Field className="mt-4">
+        <FieldLabel htmlFor="rollback-confirm">
+          Type <code>{expected}</code> (the version you&apos;re abandoning) to confirm you accept
+          losing those writes
         </FieldLabel>
+        <Input
+          id="rollback-confirm"
+          type="text"
+          autoComplete="off"
+          autoCorrect="off"
+          spellCheck={false}
+          inputMode="numeric"
+          value={typed}
+          placeholder={expected}
+          aria-invalid={typed.length > 0 && !matches}
+          onChange={(e) => setTyped(e.target.value)}
+        />
+        <FieldDescription>
+          This is permanent data loss — the typed confirmation guards against an accidental
+          rollback.
+        </FieldDescription>
       </Field>
     </Modal>
   );
@@ -855,15 +925,31 @@ function RollbackDialog({
 // --- Dashboard wrapper ------------------------------------------------------
 
 /**
- * Self-fetching pending-finalization banner for the dashboard. Reads the version
- * endpoint (which carries the pending state) and renders the shared banner only
- * when a major upgrade awaits finalize; otherwise nothing.
+ * Self-fetching upgrade banner for the dashboard. Polls the upgrade status so it
+ * updates live without a page reload: while an upgrade runs it shows a compact
+ * in-flight pointer (so a user on any page knows a critical operation is active),
+ * and once one awaits finalize it shows the shared pending-finalization banner.
  */
 export function DashboardUpgradeBanner() {
-  const version = useAsync<PGVersionInfo>((s) => api.pgVersion(s), []);
-  const pending = version.data?.pending_finalization ?? null;
-  if (!pending) return null;
-  return <PendingFinalizationBanner pending={pending} onChanged={version.reload} />;
+  const status = usePolling<UpgradeStatus>((s) => api.upgradeStatus(s), STATUS_POLL_MS);
+  const op = status.data?.operation ?? null;
+  const pending = status.data?.pending_finalization ?? null;
+
+  if (op?.status === "running") {
+    return (
+      <Callout tone="info" title="A PostgreSQL upgrade is in progress">
+        {KIND_TITLES[op.kind] ?? "An upgrade"} is running ({op.phase || "working…"}).{" "}
+        <Link to="/version" className="underline">
+          Watch it on the Version page
+        </Link>
+        .
+      </Callout>
+    );
+  }
+  if (pending) {
+    return <PendingFinalizationBanner pending={pending} onChanged={status.reload} />;
+  }
+  return null;
 }
 
 // --- helpers ----------------------------------------------------------------

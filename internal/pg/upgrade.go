@@ -462,6 +462,12 @@ var portLineRe = regexp.MustCompile(`(?m)^\s*port\s*=\s*\S+`)
 // rollback, on a real box; the data dir / conf path is the standard Debian
 // layout.
 func (m *Manager) setClusterPort(ctx context.Context, major int, port string) error {
+	// Defence in depth: `port` originates from pg_lsclusters output. Refuse to
+	// write a non-numeric value into postgresql.conf — a corrupt port directive
+	// would break the old cluster exactly when a rollback needs it to start.
+	if _, err := strconv.Atoi(strings.TrimSpace(port)); err != nil {
+		return core.InternalError("pg: refusing to write non-numeric port %q to the cluster config", port)
+	}
 	path := clusterConfPath(major)
 	info, err := os.Stat(path)
 	if err != nil {
@@ -474,7 +480,7 @@ func (m *Manager) setClusterPort(ctx context.Context, major int, port string) er
 	replacement := "port = " + port
 	var updated string
 	if portLineRe.Match(data) {
-		updated = portLineRe.ReplaceAllString(string(data), replacement)
+		updated = portLineRe.ReplaceAllLiteralString(string(data), replacement)
 	} else {
 		updated = strings.TrimRight(string(data), "\n") + "\n" + replacement + "\n"
 	}

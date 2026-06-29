@@ -232,6 +232,12 @@ func (s *Server) handleMajorPreflight(w http.ResponseWriter, r *http.Request) {
 
 // --- POST /api/pg/upgrade/major/start ---
 
+// maxPreflightAge bounds how long a passing preflight stays valid for starting a
+// major upgrade. The cluster state the preflight inspects — prepared
+// transactions, replication slots, free disk — can drift after it runs, so a
+// pass older than this must be re-run before the upgrade may begin.
+const maxPreflightAge = time.Hour
+
 type majorStartRequest struct {
 	TargetMajor int  `json:"target_major"`
 	Confirm     bool `json:"confirm"`
@@ -289,6 +295,16 @@ func (s *Server) handleMajorUpgradeStart(w http.ResponseWriter, r *http.Request)
 			"major upgrade",
 			[]string{"a clean (no-fail) preflight for this target major"},
 			"refusing to start a major upgrade to %d without a passing preflight; run the preflight and clear all blockers first", req.TargetMajor))
+		return
+	}
+	// A stale pass is not a pass: the blockers the preflight checks (prepared
+	// transactions, replication slots, free disk) can change after it ran.
+	if age := time.Since(st.LastPreflight.At); age > maxPreflightAge {
+		writeError(w, core.NewSafetyError(
+			"major upgrade",
+			[]string{fmt.Sprintf("a preflight run within the last %s", maxPreflightAge)},
+			"the preflight for PostgreSQL %d ran %s ago; re-run it so the checks reflect your database's current state",
+			req.TargetMajor, age.Round(time.Minute)))
 		return
 	}
 
@@ -468,6 +484,24 @@ func (s *Server) runMajorUpgrade(fromMajor, toMajor int) {
 	}
 	s.appendUpgradeLog(up.Steps...)
 
+	// Record the pending-finalization + rollback metadata the instant the new
+	// cluster is live and the old one is parked — BEFORE any later step that could
+	// fail (C-1). pg_upgradecluster has already created the rollback situation; if
+	// the reconnect, reconfigure, or smoke test then fails, the operator must
+	// still be able to roll back or finalize from the panel rather than be
+	// stranded with two clusters and no UI. ReclaimableBytes is filled in below
+	// once the upgrade verifies.
+	upgradedAt := time.Now().UTC()
+	s.mutateUpgrade(func(st *pg.UpgradeState) {
+		st.Pending = &pg.PendingFinalization{
+			FromMajor:  fromMajor,
+			ToMajor:    toMajor,
+			UpgradedAt: upgradedAt,
+		}
+		st.OldClusterPort = up.OldPort
+		st.OldDataDir = up.OldDataDir
+	})
+
 	// The new cluster is now live on the original port; reconnect the pools to it.
 	s.pg.Close()
 	if cerr := s.pg.Connect(ctx); cerr != nil {
@@ -507,22 +541,17 @@ func (s *Server) runMajorUpgrade(fromMajor, toMajor int) {
 		return
 	}
 
-	// 7. Land in pending-finalization with the reclaimable figure.
-	var reclaim int64
+	// 7. Now that the upgrade is verified, fill in the reclaimable figure on the
+	// pending state that was recorded right after pg_upgradecluster.
 	if up.OldDataDir != "" {
-		reclaim, _ = s.pg.DirSizeBytes(ctx, up.OldDataDir)
-	}
-	now := time.Now().UTC()
-	s.mutateUpgrade(func(st *pg.UpgradeState) {
-		st.Pending = &pg.PendingFinalization{
-			FromMajor:        fromMajor,
-			ToMajor:          toMajor,
-			ReclaimableBytes: reclaim,
-			UpgradedAt:       now,
+		if reclaim, derr := s.pg.DirSizeBytes(ctx, up.OldDataDir); derr == nil && reclaim > 0 {
+			s.mutateUpgrade(func(st *pg.UpgradeState) {
+				if st.Pending != nil {
+					st.Pending.ReclaimableBytes = reclaim
+				}
+			})
 		}
-		st.OldClusterPort = up.OldPort
-		st.OldDataDir = up.OldDataDir
-	})
+	}
 	s.succeedUpgradeOp(fmt.Sprintf("upgraded to PostgreSQL %d — verify, then finalize to reclaim space or roll back", toMajor))
 }
 
