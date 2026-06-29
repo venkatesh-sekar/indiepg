@@ -60,24 +60,38 @@ type pgVersionResponse struct {
 func (s *Server) handleGetPGVersion(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	full, major, running, _ := s.pg.CurrentVersion(ctx)
+	full, major, running, err := s.pg.CurrentVersion(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 
 	minor := pgMinorUpdate{}
 	if running && major > 0 {
-		if avail, target, _ := s.pg.MinorUpdateAvailable(ctx, major); avail {
+		avail, target, err := s.pg.MinorUpdateAvailable(ctx, major)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if avail {
 			minor = pgMinorUpdate{Available: true, Target: target}
 		}
 	}
 
 	majors := make([]pgMajorOption, 0)
-	for _, mr := range pg.MajorsNewerThan(major) {
-		majors = append(majors, pgMajorOption{Major: mr.Major, Default: mr.Default})
+	if running && major > 0 {
+		for _, mr := range pg.MajorsNewerThan(major) {
+			majors = append(majors, pgMajorOption{Major: mr.Major, Default: mr.Default})
+		}
 	}
 
 	var pending *pg.PendingFinalization
-	if st, err := s.upgrades.Load(ctx); err == nil {
-		pending = st.Pending
+	st, err := s.upgrades.Load(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
 	}
+	pending = st.Pending
 
 	writeData(w, http.StatusOK, pgVersionResponse{
 		Running:             running,
@@ -122,6 +136,24 @@ func (s *Server) handleMinorUpgrade(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	_, current, running, err := s.pg.CurrentVersion(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !running {
+		writeError(w, core.ConflictError("PostgreSQL must be running to apply a minor update"))
+		return
+	}
+	available, _, err := s.pg.MinorUpdateAvailable(ctx, current)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !available {
+		writeError(w, core.ConflictError("no minor PostgreSQL update is available"))
+		return
+	}
 
 	if !s.upgradeMu.TryLock() {
 		writeError(w, errUpgradeInProgress())
@@ -134,12 +166,20 @@ func (s *Server) handleMinorUpgrade(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if st, err := s.upgrades.Load(ctx); err == nil && st.Pending != nil {
+	st, err := s.upgrades.Load(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if st.Pending != nil {
 		writeError(w, errUpgradePending())
 		return
 	}
 
-	s.beginUpgradeOp(pg.OpMinor, 0, 0, "starting minor upgrade")
+	if err := s.beginUpgradeOp(pg.OpMinor, current, current, "starting minor upgrade"); err != nil {
+		writeError(w, err)
+		return
+	}
 	s.audit(ctx, "pg_minor_upgrade", "postgresql", "success", "minor upgrade started", "")
 
 	release = false
@@ -188,7 +228,11 @@ func (s *Server) handleMajorPreflight(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.upgradeMu.Unlock()
 
-	_, current, running, _ := s.pg.CurrentVersion(ctx)
+	_, current, running, err := s.pg.CurrentVersion(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if !running {
 		writeError(w, core.InternalError("PostgreSQL must be running to plan a major upgrade"))
 		return
@@ -197,7 +241,12 @@ func (s *Server) handleMajorPreflight(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if st, err := s.upgrades.Load(ctx); err == nil && st.Pending != nil {
+	st, err := s.upgrades.Load(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if st.Pending != nil {
 		writeError(w, errUpgradePending())
 		return
 	}
@@ -212,9 +261,12 @@ func (s *Server) handleMajorPreflight(w http.ResponseWriter, r *http.Request) {
 	blocking := res.Checks.HasFail()
 	// Record the preflight outcome so the start endpoint can enforce the
 	// "no major start without a clean (no-fail) preflight" guard.
-	s.mutateUpgrade(func(st *pg.UpgradeState) {
+	if err := s.mutateUpgrade(func(st *pg.UpgradeState) {
 		st.LastPreflight = &pg.PreflightMemo{TargetMajor: req.TargetMajor, HasFail: blocking, At: time.Now().UTC()}
-	})
+	}); err != nil {
+		writeError(w, err)
+		return
+	}
 	s.audit(ctx, "pg_major_preflight", fmt.Sprintf("%d->%d", current, req.TargetMajor), "success", "preflight completed", "")
 
 	writeData(w, http.StatusOK, preflightResponse{
@@ -260,7 +312,11 @@ func (s *Server) handleMajorUpgradeStart(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	_, current, running, _ := s.pg.CurrentVersion(ctx)
+	_, current, running, err := s.pg.CurrentVersion(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if !running {
 		writeError(w, core.InternalError("PostgreSQL must be running to start a major upgrade"))
 		return
@@ -308,7 +364,10 @@ func (s *Server) handleMajorUpgradeStart(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	s.beginUpgradeOp(pg.OpMajor, current, req.TargetMajor, "starting major upgrade")
+	if err := s.beginUpgradeOp(pg.OpMajor, current, req.TargetMajor, "starting major upgrade"); err != nil {
+		writeError(w, err)
+		return
+	}
 	s.audit(ctx, "pg_major_upgrade", fmt.Sprintf("%d->%d", current, req.TargetMajor), "success", "major upgrade started", "")
 
 	release = false
@@ -361,9 +420,23 @@ func (s *Server) handleUpgradeFinalize(w http.ResponseWriter, r *http.Request) {
 			"finalize requires confirming the old major (%d) to drop its cluster", st.Pending.FromMajor))
 		return
 	}
+	_, runningMajor, running, err := s.pg.CurrentVersion(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !running || runningMajor != st.Pending.ToMajor {
+		writeError(w, core.ConflictError(
+			"refusing to delete PostgreSQL %d while PostgreSQL %d is not the confirmed live cluster",
+			st.Pending.FromMajor, st.Pending.ToMajor))
+		return
+	}
 
 	oldMajor := st.Pending.FromMajor
-	s.beginUpgradeOp(pg.OpFinalize, oldMajor, st.Pending.ToMajor, "finalizing upgrade")
+	if err := s.beginUpgradeOp(pg.OpFinalize, oldMajor, st.Pending.ToMajor, "finalizing upgrade"); err != nil {
+		writeError(w, err)
+		return
+	}
 	s.audit(ctx, "pg_upgrade_finalize", fmt.Sprintf("drop %d", oldMajor), "success", "finalize started", "")
 
 	release = false
@@ -375,7 +448,7 @@ func (s *Server) handleUpgradeFinalize(w http.ResponseWriter, r *http.Request) {
 // --- POST /api/pg/upgrade/rollback ---
 
 type rollbackRequest struct {
-	Confirm bool `json:"confirm"`
+	ConfirmVersion int `json:"confirm_version"`
 }
 
 // handleUpgradeRollback returns the box to the old major. The SPA's confirm
@@ -389,12 +462,6 @@ func (s *Server) handleUpgradeRollback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if !req.Confirm {
-		writeError(w, core.ValidationError("a rollback must be confirmed").
-			WithHint("rollback discards any writes made on the new major since the upgrade; set confirm=true to proceed"))
-		return
-	}
-
 	if !s.upgradeMu.TryLock() {
 		writeError(w, errUpgradeInProgress())
 		return
@@ -415,9 +482,19 @@ func (s *Server) handleUpgradeRollback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, core.ConflictError("no upgrade is awaiting finalization to roll back"))
 		return
 	}
+	if req.ConfirmVersion != st.Pending.ToMajor {
+		writeError(w, core.NewSafetyError(
+			"rollback upgrade",
+			[]string{fmt.Sprintf("confirm_version=%d", st.Pending.ToMajor)},
+			"rollback requires confirming the live major (%d) whose post-upgrade writes will be discarded", st.Pending.ToMajor))
+		return
+	}
 
 	fromMajor, toMajor, oldPort := st.Pending.FromMajor, st.Pending.ToMajor, st.OldClusterPort
-	s.beginUpgradeOp(pg.OpRollback, fromMajor, toMajor, "rolling back to the old major")
+	if err := s.beginUpgradeOp(pg.OpRollback, fromMajor, toMajor, "rolling back to the old major"); err != nil {
+		writeError(w, err)
+		return
+	}
 	s.audit(ctx, "pg_upgrade_rollback", fmt.Sprintf("%d<-%d", fromMajor, toMajor), "success", "rollback started", "")
 
 	release = false
@@ -431,7 +508,7 @@ func (s *Server) handleUpgradeRollback(w http.ResponseWriter, r *http.Request) {
 // runMinorUpgrade is the background worker for a minor upgrade. It owns the
 // global lock until it returns. The phase trail is persisted so the UI can poll.
 func (s *Server) runMinorUpgrade(takeBackup bool) {
-	ctx, cancel := workerContext()
+	ctx, cancel := upgradeWorkerContext()
 	defer cancel()
 	defer s.upgradeMu.Unlock()
 
@@ -463,7 +540,7 @@ func (s *Server) runMinorUpgrade(takeBackup bool) {
 // smoke test, then land in pending-finalization. On any failure the old cluster
 // is preserved by design and the operation is recorded failed.
 func (s *Server) runMajorUpgrade(fromMajor, toMajor int) {
-	ctx, cancel := workerContext()
+	ctx, cancel := upgradeWorkerContext()
 	defer cancel()
 	defer s.upgradeMu.Unlock()
 
@@ -477,8 +554,17 @@ func (s *Server) runMajorUpgrade(fromMajor, toMajor int) {
 
 	// 2. pg_upgradecluster (copy). The old cluster is preserved on any failure.
 	s.upgradePhase("upgrade", "running pg_upgradecluster (this is the downtime window)")
-	up, err := s.pg.UpgradeCluster(ctx, fromMajor)
+	up, err := s.pg.UpgradeCluster(ctx, fromMajor, toMajor)
 	if err != nil {
+		// A non-empty step means pg_upgradecluster itself succeeded and only the
+		// rollback metadata read failed. Persist the two-cluster state before
+		// surfacing the failure so finalize/recovery remains visible after restart.
+		if len(up.Steps) > 0 {
+			if persistErr := s.persistPendingUpgrade(fromMajor, toMajor, up, time.Now().UTC()); persistErr != nil {
+				err = core.InternalError("upgrade completed but neither rollback metadata nor recovery state could be persisted").
+					WithDetail("metadata_error", err.Error()).Wrap(persistErr)
+			}
+		}
 		s.failUpgradeOp(err)
 		return
 	}
@@ -492,15 +578,19 @@ func (s *Server) runMajorUpgrade(fromMajor, toMajor int) {
 	// stranded with two clusters and no UI. ReclaimableBytes is filled in below
 	// once the upgrade verifies.
 	upgradedAt := time.Now().UTC()
-	s.mutateUpgrade(func(st *pg.UpgradeState) {
-		st.Pending = &pg.PendingFinalization{
-			FromMajor:  fromMajor,
-			ToMajor:    toMajor,
-			UpgradedAt: upgradedAt,
+	if err := s.persistPendingUpgrade(fromMajor, toMajor, up, upgradedAt); err != nil {
+		// Continuing while the rollback coordinates are not durable would strand
+		// the operator after a panel restart. Revert immediately, before any
+		// post-upgrade app writes can accumulate.
+		_, rollbackErr := s.pg.RollbackUpgrade(ctx, fromMajor, toMajor, up.OldPort)
+		if rollbackErr != nil {
+			s.failUpgradeOp(core.InternalError("could not persist upgrade recovery state and automatic rollback failed").
+				WithDetail("state_error", err.Error()).WithDetail("rollback_error", rollbackErr.Error()))
+			return
 		}
-		st.OldClusterPort = up.OldPort
-		st.OldDataDir = up.OldDataDir
-	})
+		s.failUpgradeOp(core.InternalError("could not persist upgrade recovery state; the upgrade was automatically rolled back").Wrap(err))
+		return
+	}
 
 	// The new cluster is now live on the original port; reconnect the pools to it.
 	s.pg.Close()
@@ -510,7 +600,11 @@ func (s *Server) runMajorUpgrade(fromMajor, toMajor int) {
 
 	// 3. Re-apply panel-managed config (socket auth, archiving, tuning).
 	s.upgradePhase("reconfigure", "re-applying panel-managed configuration")
-	cfg, _ := config.Load(ctx, s.store)
+	cfg, cfgErr := config.Load(ctx, s.store)
+	if cfgErr != nil {
+		s.failUpgradeOp(cfgErr)
+		return
+	}
 	if steps, rerr := s.pg.ReapplyManagedConfig(ctx, cfg.Stanza); rerr != nil {
 		s.failUpgradeOp(rerr)
 		return
@@ -557,7 +651,7 @@ func (s *Server) runMajorUpgrade(fromMajor, toMajor int) {
 
 // runFinalize drops the old cluster and clears the pending state.
 func (s *Server) runFinalize(oldMajor int) {
-	ctx, cancel := workerContext()
+	ctx, cancel := upgradeWorkerContext()
 	defer cancel()
 	defer s.upgradeMu.Unlock()
 
@@ -568,13 +662,16 @@ func (s *Server) runFinalize(oldMajor int) {
 		return
 	}
 	s.appendUpgradeLog(steps...)
-	s.clearPending()
+	if err := s.clearPending(); err != nil {
+		s.failUpgradeOp(core.InternalError("old cluster was dropped but finalization state could not be cleared; retry finalize").Wrap(err))
+		return
+	}
 	s.succeedUpgradeOp("old cluster dropped; disk reclaimed")
 }
 
 // runRollback returns the box to the old major and clears the pending state.
 func (s *Server) runRollback(fromMajor, toMajor int, oldPort string) {
-	ctx, cancel := workerContext()
+	ctx, cancel := upgradeWorkerContext()
 	defer cancel()
 	defer s.upgradeMu.Unlock()
 
@@ -592,7 +689,10 @@ func (s *Server) runRollback(fromMajor, toMajor int, oldPort string) {
 		s.log.Warn("could not reconnect to the rolled-back cluster", "err", cerr)
 	}
 
-	s.clearPending()
+	if err := s.clearPending(); err != nil {
+		s.failUpgradeOp(core.InternalError("old cluster was restored but rollback state could not be cleared; retry rollback").Wrap(err))
+		return
+	}
 	s.succeedUpgradeOp(fmt.Sprintf("rolled back to PostgreSQL %d", fromMajor))
 }
 
@@ -613,13 +713,19 @@ func (s *Server) upgradeBackup(ctx context.Context) error {
 	return nil
 }
 
+const upgradeJobTimeout = 24 * time.Hour
+
+func upgradeWorkerContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), upgradeJobTimeout)
+}
+
 // --- operation-state helpers (durable, mutex-serialized) ---
 
 // beginUpgradeOp synchronously records a fresh running operation so the 202
 // response and the first poll both see it before the goroutine advances it.
-func (s *Server) beginUpgradeOp(kind string, from, target int, msg string) {
+func (s *Server) beginUpgradeOp(kind string, from, target int, msg string) error {
 	now := time.Now().UTC()
-	s.mutateUpgrade(func(st *pg.UpgradeState) {
+	return s.mutateUpgrade(func(st *pg.UpgradeState) {
 		st.Operation = &pg.OperationState{
 			Kind:        kind,
 			Status:      pg.OpStatusRunning,
@@ -630,6 +736,18 @@ func (s *Server) beginUpgradeOp(kind string, from, target int, msg string) {
 			StartedAt:   now,
 			Log:         []string{},
 		}
+	})
+}
+
+func (s *Server) persistPendingUpgrade(fromMajor, toMajor int, up pg.UpgradeClusterResult, upgradedAt time.Time) error {
+	return s.mutateUpgrade(func(st *pg.UpgradeState) {
+		st.Pending = &pg.PendingFinalization{
+			FromMajor:  fromMajor,
+			ToMajor:    toMajor,
+			UpgradedAt: upgradedAt,
+		}
+		st.OldClusterPort = up.OldPort
+		st.OldDataDir = up.OldDataDir
 	})
 }
 
@@ -679,8 +797,8 @@ func (s *Server) succeedUpgradeOp(msg string) {
 
 // clearPending wipes the pending-finalization + rollback metadata + preflight
 // memo, used after a finalize or rollback resolves the two clusters down to one.
-func (s *Server) clearPending() {
-	s.mutateUpgrade(func(st *pg.UpgradeState) {
+func (s *Server) clearPending() error {
+	return s.mutateUpgrade(func(st *pg.UpgradeState) {
 		st.Pending = nil
 		st.OldClusterPort = ""
 		st.OldDataDir = ""
@@ -690,12 +808,14 @@ func (s *Server) clearPending() {
 
 // mutateUpgrade applies fn to the durable upgrade state on a detached context so
 // a terminal write is not lost to a cancelled worker context.
-func (s *Server) mutateUpgrade(fn func(*pg.UpgradeState)) {
+func (s *Server) mutateUpgrade(fn func(*pg.UpgradeState)) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := s.upgrades.Mutate(ctx, fn); err != nil {
 		s.log.Warn("could not persist upgrade state", "err", err)
+		return err
 	}
+	return nil
 }
 
 // writeUpgradeStatus loads and writes the current status document with the given

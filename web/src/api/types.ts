@@ -725,28 +725,28 @@ export interface PreflightResult {
 /** Which upgrade an operation is performing, for progress labelling. */
 export type UpgradeKind = "minor" | "major" | "finalize" | "rollback";
 
-/** Lifecycle of a single upgrade operation. Matches the backend's
- *  OperationState.Status (internal/pg/upgradestate.go): success, not "succeeded". */
-export type UpgradeOpStatus = "running" | "success" | "failed";
-
 /** A long-running upgrade operation, mirroring the backup/migration async model.
  *  Polled via GET /api/pg/upgrade/status; the mutating POSTs return the same
  *  envelope so the UI can switch straight to progress. */
-export interface UpgradeOperation {
+interface UpgradeOperationBase {
   kind: UpgradeKind;
-  /** Target major (the running major for a minor upgrade / finalize / rollback). */
+  from_major?: number;
   target_major: number;
-  status: UpgradeOpStatus;
   /** Human-readable current step, e.g. "Running pg_upgradecluster…". */
   phase: string;
+  message: string;
   /** Captured command output so far, oldest first (already redacted). The backend
    *  omits this field while empty (omitempty), so treat it as optional. */
   log?: string[];
-  /** Populated when status === "failed". */
-  error: string;
   started_at: string;
-  finished_at?: string | null;
 }
+
+/** Lifecycle of a single upgrade operation. The status discriminates terminal
+ * payloads so a failed operation always carries an error. */
+export type UpgradeOperation =
+  | (UpgradeOperationBase & { status: "running"; error?: never; finished_at?: null })
+  | (UpgradeOperationBase & { status: "success"; error?: never; finished_at: string })
+  | (UpgradeOperationBase & { status: "failed"; error: string; finished_at: string });
 
 /** GET /api/pg/upgrade/status — the current operation + pending-finalization
  *  state, used to drive live progress and to resume the UI after a reload. Both
@@ -781,9 +781,10 @@ export interface FinalizeRequest {
   confirm_version: number;
 }
 
-/** POST /api/pg/upgrade/rollback body (§6). */
+/** POST /api/pg/upgrade/rollback body (§6). `confirm_version` must equal the
+ * live/new major whose post-upgrade writes will be discarded. */
 export interface RollbackRequest {
-  confirm: boolean;
+  confirm_version: number;
 }
 
 /** Finer step within a status, surfaced for progress. Empty in terminal states. */

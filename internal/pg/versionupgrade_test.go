@@ -2,11 +2,14 @@ package pg
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/venkatesh-sekar/indiepg/internal/core"
+	"github.com/venkatesh-sekar/indiepg/internal/exec"
 )
 
 func TestVersionCatalog(t *testing.T) {
@@ -32,6 +35,64 @@ func TestParseAptPolicy(t *testing.T) {
 	require.Equal(t, "16.2-1.pgdg120+2", installed)
 	require.Equal(t, "16.4-1.pgdg120+1", candidate)
 	require.Equal(t, "16.4", upstreamVersion(candidate))
+}
+
+func TestMinorUpdateAvailableUsesDebianVersionOrdering(t *testing.T) {
+	runner := exec.NewFakeRunner()
+	runner.On("apt-cache policy postgresql-16", exec.FakeResponse{Stdout: `Installed: 16.4-1.pgdg120+2
+Candidate: 16.3-1.pgdg120+3`})
+	runner.On("dpkg --compare-versions", exec.FakeResponse{ExitCode: 1, Err: errors.New("comparison is false")})
+	m := New(Options{Runner: runner})
+
+	available, target, err := m.MinorUpdateAvailable(context.Background(), 16)
+	require.NoError(t, err)
+	require.False(t, available, "an older pinned candidate is not an update")
+	require.Empty(t, target)
+
+	runner.On("apt-cache policy postgresql-16", exec.FakeResponse{Stdout: `Installed: 1:16.4-1.pgdg120+2
+Candidate: 1:16.4-1.pgdg120+3`})
+	runner.On("dpkg --compare-versions", exec.FakeResponse{})
+	available, target, err = m.MinorUpdateAvailable(context.Background(), 16)
+	require.NoError(t, err)
+	require.True(t, available, "a newer Debian revision still carries fixes")
+	require.Equal(t, "16.4", target)
+}
+
+func TestResolveInstallMajorRejectsUnsupported(t *testing.T) {
+	m := New(Options{PGMajor: 999})
+	_, err := m.resolveInstallMajor()
+	require.Error(t, err)
+	require.Equal(t, core.CodeValidation, core.CodeOf(err))
+}
+
+func TestUpgradeClusterPinsRequestedTarget(t *testing.T) {
+	runner := exec.NewFakeRunner()
+	runner.On("pg_lsclusters --no-header", exec.FakeResponse{Stdout: "16 main 5433 down postgres /var/lib/postgresql/16/main /var/log/postgresql/old.log\n17 main 5432 online postgres /var/lib/postgresql/17/main /var/log/postgresql/new.log\n"})
+	m := New(Options{Runner: runner})
+
+	got, err := m.UpgradeCluster(context.Background(), 16, 17)
+	require.NoError(t, err)
+	require.Equal(t, "5433", got.OldPort)
+	require.Equal(t, "/var/lib/postgresql/16/main", got.OldDataDir)
+
+	var command string
+	for _, call := range runner.Calls() {
+		if call.Name == "pg_upgradecluster" {
+			command = call.Name + " " + strings.Join(call.Args, " ")
+		}
+	}
+	require.Equal(t, "pg_upgradecluster --method=upgrade -v 17 16 main", command)
+}
+
+func TestRollbackRejectsUnexpectedClusterStateBeforeChangingFiles(t *testing.T) {
+	runner := exec.NewFakeRunner()
+	runner.On("pg_lsclusters --no-header", exec.FakeResponse{Stdout: "16 main 5433 online postgres /var/lib/postgresql/16/main old.log\n17 main 5432 online postgres /var/lib/postgresql/17/main new.log\n"})
+	m := New(Options{Runner: runner})
+
+	_, err := m.RollbackUpgrade(context.Background(), 16, 17, "5433")
+	require.Error(t, err)
+	require.Equal(t, core.CodeConflict, core.CodeOf(err))
+	require.Len(t, runner.Calls(), 1, "validation must happen before stop or config writes")
 }
 
 func TestParseOSReleaseCodename(t *testing.T) {

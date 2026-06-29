@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/core"
 	"github.com/venkatesh-sekar/indiepg/internal/exec"
@@ -28,6 +29,12 @@ import (
 
 // pgUpgradeBinDir is where a major's server binaries live on Debian/PGDG.
 func pgUpgradeBinDir(major int) string { return fmt.Sprintf("/usr/lib/postgresql/%d/bin", major) }
+
+// A copy-mode upgrade and the post-upgrade analyze can legitimately take much
+// longer than ordinary provisioning commands on a large cluster. The worker
+// context remains the outer cancellation bound; these per-command limits stop
+// the generic ten-minute command timeout from killing a healthy upgrade.
+const majorUpgradeCommandTimeout = 24 * time.Hour
 
 // clusterConfPath is the Debian cluster's postgresql.conf for a (major, "main").
 func clusterConfPath(major int) string {
@@ -92,23 +99,13 @@ func parseMajorToken(tok string) int {
 	return n
 }
 
-// clusterFor returns the "main" cluster for a major (falling back to the first
-// cluster of that major), and whether one was found.
-func clusterFor(clusters []pgCluster, major int) (pgCluster, bool) {
-	var first pgCluster
-	found := false
+func mainClusterFor(clusters []pgCluster, major int) (pgCluster, bool) {
 	for _, c := range clusters {
-		if c.Major != major {
-			continue
-		}
-		if c.Name == "main" {
+		if c.Major == major && c.Name == "main" {
 			return c, true
 		}
-		if !found {
-			first, found = c, true
-		}
 	}
-	return first, found
+	return pgCluster{}, false
 }
 
 // CurrentVersion reports whether Postgres is up and, when it is, the full
@@ -116,7 +113,10 @@ func clusterFor(clusters []pgCluster, major int) (pgCluster, bool) {
 // running=false with empty/zero version fields (a queryable answer, not an
 // error).
 func (m *Manager) CurrentVersion(ctx context.Context) (full string, major int, running bool, err error) {
-	running, _ = m.IsRunning(ctx)
+	running, err = m.IsRunning(ctx)
+	if err != nil {
+		return "", 0, false, err
+	}
 	if !running {
 		return "", 0, false, nil
 	}
@@ -134,24 +134,36 @@ func (m *Manager) CurrentVersion(ctx context.Context) (full string, major int, r
 // MinorUpdateAvailable reports whether a newer minor of the installed major is
 // available from apt, comparing the package's Installed vs Candidate via
 // `apt-cache policy` (no network — it reads the already-refreshed local index).
-// It is best-effort: any failure reports "no update available" rather than
-// failing the version endpoint.
+// Debian package versions are compared with dpkg's ordering rules rather than
+// string inequality: the candidate can be a lower pinned version, and epochs /
+// distro revisions are not semantic versions.
 func (m *Manager) MinorUpdateAvailable(ctx context.Context, major int) (available bool, target string, err error) {
 	if m.runner == nil {
-		return false, "", nil
+		return false, "", core.InternalError("pg: MinorUpdateAvailable requires a Runner")
 	}
 	pkg := fmt.Sprintf("postgresql-%d", major)
 	res, runErr := m.runner.Run(ctx, exec.RunSpec{
 		Name: "apt-cache", Args: []string{"policy", pkg}, Timeout: commandTimeout,
 	})
 	if runErr != nil {
-		return false, "", nil
+		return false, "", core.ExecError("pg: reading apt policy for %s", pkg).Wrap(runErr)
 	}
 	installed, candidate := parseAptPolicy(res.Stdout)
 	if installed == "" || installed == "(none)" || candidate == "" || candidate == "(none)" {
 		return false, "", nil
 	}
-	if installed == candidate {
+	res, compareErr := m.runner.Run(ctx, exec.RunSpec{
+		Name: "dpkg", Args: []string{"--compare-versions", installed, "lt", candidate}, Timeout: commandTimeout,
+	})
+	if compareErr != nil {
+		// dpkg uses exit 1 for a valid false comparison. Any other failure means
+		// the version endpoint could not determine update availability reliably.
+		if res.ExitCode == 1 {
+			return false, "", nil
+		}
+		return false, "", core.ExecError("pg: comparing installed and candidate versions for %s", pkg).Wrap(compareErr)
+	}
+	if res.ExitCode == 1 {
 		return false, "", nil
 	}
 	return true, upstreamVersion(candidate), nil
@@ -174,6 +186,9 @@ func parseAptPolicy(out string) (installed, candidate string) {
 // upstreamVersion reduces a Debian package version ("16.4-1.pgdg120+2") to its
 // upstream part ("16.4") for display.
 func upstreamVersion(deb string) string {
+	if i := strings.IndexByte(deb, ':'); i >= 0 {
+		deb = deb[i+1:]
+	}
 	if i := strings.IndexByte(deb, '-'); i >= 0 {
 		return deb[:i]
 	}
@@ -219,7 +234,10 @@ func (m *Manager) MinorUpgrade(ctx context.Context) (core.Result, error) {
 	}
 	steps = append(steps, "systemctl restart "+serviceName)
 
-	full, _ := m.ServerVersion(ctx)
+	full, err := m.ServerVersion(ctx)
+	if err != nil {
+		return core.Result{}, core.InternalError("pg: minor upgrade completed but the running version could not be read").Wrap(err)
+	}
 	return core.Ok("minor upgrade complete").
 		WithData("version", full).
 		WithStatements(steps...), nil
@@ -240,15 +258,15 @@ type UpgradeClusterResult struct {
 // cluster stopped but intact. It then reads back where the old cluster was
 // parked. It does NOT itself take the mandatory backup — the caller does, before
 // calling this — and on any failure the old cluster is preserved by design.
-func (m *Manager) UpgradeCluster(ctx context.Context, fromMajor int) (UpgradeClusterResult, error) {
+func (m *Manager) UpgradeCluster(ctx context.Context, fromMajor, toMajor int) (UpgradeClusterResult, error) {
 	if m.runner == nil {
 		return UpgradeClusterResult{}, core.InternalError("pg: UpgradeCluster requires a Runner")
 	}
 
 	res, err := m.runner.Run(ctx, exec.RunSpec{
 		Name:    "pg_upgradecluster",
-		Args:    []string{"--method=upgrade", strconv.Itoa(fromMajor), "main"},
-		Timeout: commandTimeout,
+		Args:    []string{"--method=upgrade", "-v", strconv.Itoa(toMajor), strconv.Itoa(fromMajor), "main"},
+		Timeout: majorUpgradeCommandTimeout,
 	})
 	if err != nil {
 		return UpgradeClusterResult{}, core.ExecError("pg: pg_upgradecluster %d main failed", fromMajor).
@@ -256,17 +274,20 @@ func (m *Manager) UpgradeCluster(ctx context.Context, fromMajor int) (UpgradeClu
 			WithHint("the old cluster is preserved and untouched; review the error and retry").Wrap(err)
 	}
 
-	out := UpgradeClusterResult{Steps: []string{aptStep(res, fmt.Sprintf("pg_upgradecluster --method=upgrade %d main", fromMajor))}}
+	out := UpgradeClusterResult{Steps: []string{aptStep(res, fmt.Sprintf("pg_upgradecluster --method=upgrade -v %d %d main", toMajor, fromMajor))}}
 
 	// Read back where the old cluster was parked (its data dir is unchanged; its
 	// port was moved off the live port by pg_upgradecluster).
 	clusters, lerr := m.listClusters(ctx)
-	if lerr == nil {
-		if old, ok := clusterFor(clusters, fromMajor); ok {
-			out.OldPort = old.Port
-			out.OldDataDir = old.DataDir
-		}
+	if lerr != nil {
+		return out, core.InternalError("pg: upgrade completed but old-cluster metadata could not be read").Wrap(lerr)
 	}
+	old, ok := mainClusterFor(clusters, fromMajor)
+	if !ok || old.Port == "" || old.DataDir == "" {
+		return out, core.InternalError("pg: upgrade completed but PostgreSQL %d/main was not found for rollback", fromMajor)
+	}
+	out.OldPort = old.Port
+	out.OldDataDir = old.DataDir
 	return out, nil
 }
 
@@ -329,7 +350,7 @@ func (m *Manager) VacuumAnalyzeAll(ctx context.Context) (string, error) {
 	}
 	if _, err := m.runner.Run(ctx, exec.RunSpec{
 		Name: "vacuumdb", AsUser: "postgres",
-		Args: []string{"--all", "--analyze-in-stages"}, Timeout: commandTimeout,
+		Args: []string{"--all", "--analyze-in-stages"}, Timeout: majorUpgradeCommandTimeout,
 	}); err != nil {
 		return "", core.ExecError("pg: vacuumdb --all --analyze-in-stages failed").Wrap(err)
 	}
@@ -397,6 +418,13 @@ func (m *Manager) FinalizeUpgrade(ctx context.Context, oldMajor int) ([]string, 
 	if m.runner == nil {
 		return nil, core.InternalError("pg: FinalizeUpgrade requires a Runner")
 	}
+	clusters, err := m.listClusters(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := mainClusterFor(clusters, oldMajor); !ok {
+		return []string{fmt.Sprintf("PostgreSQL %d/main already absent", oldMajor)}, nil
+	}
 	res, err := m.runner.Run(ctx, exec.RunSpec{
 		Name: "pg_dropcluster", Args: []string{"--stop", strconv.Itoa(oldMajor), "main"}, Timeout: commandTimeout,
 	})
@@ -418,26 +446,84 @@ func (m *Manager) RollbackUpgrade(ctx context.Context, fromMajor, toMajor int, o
 		return nil, core.InternalError("pg: RollbackUpgrade requires a Runner")
 	}
 	if oldPort == "" {
-		oldPort = "5433" // defensive default for the parked new cluster
+		return nil, core.InternalError("pg: rollback metadata does not contain the old cluster port")
 	}
 	steps := make([]string, 0, 4)
+
+	clusters, err := m.listClusters(ctx)
+	if err != nil {
+		return nil, err
+	}
+	old, oldOK := mainClusterFor(clusters, fromMajor)
+	newCluster, newOK := mainClusterFor(clusters, toMajor)
+	if !oldOK || !newOK {
+		return nil, core.ConflictError("rollback requires both PostgreSQL %d/main and %d/main clusters", fromMajor, toMajor)
+	}
+	// Idempotent retry after the port swap and start completed but clearing the
+	// durable pending state failed.
+	if old.Port == "5432" && old.Status == "online" && newCluster.Port == oldPort && newCluster.Status != "online" {
+		return []string{fmt.Sprintf("PostgreSQL %d/main is already restored on port 5432", fromMajor)}, nil
+	}
+	if old.Port != oldPort || old.Status == "online" || newCluster.Port != "5432" || newCluster.Status != "online" {
+		return nil, core.ConflictError(
+			"cluster state changed outside indiepg; refusing rollback (old %d/main: port %s status %s; new %d/main: port %s status %s)",
+			fromMajor, old.Port, old.Status, toMajor, newCluster.Port, newCluster.Status).
+			WithHint("restore the expected two-cluster state before retrying; no files were changed")
+	}
+
+	oldConfig, err := snapshotClusterConfig(fromMajor)
+	if err != nil {
+		return nil, err
+	}
+	newConfig, err := snapshotClusterConfig(toMajor)
+	if err != nil {
+		return nil, err
+	}
+	recoverNew := func(cause error) error {
+		// The old start may have succeeded even if its caller observed a timeout.
+		// Stop it before restoring the new cluster to the live port.
+		_, _ = m.runner.Run(context.WithoutCancel(ctx), exec.RunSpec{
+			Name: "pg_ctlcluster", Args: []string{strconv.Itoa(fromMajor), "main", "stop", "--force"}, Timeout: commandTimeout,
+		})
+		restoreErr := restoreClusterConfig(oldConfig)
+		if err := restoreClusterConfig(newConfig); restoreErr == nil {
+			restoreErr = err
+		}
+		_, startErr := m.runner.Run(context.WithoutCancel(ctx), exec.RunSpec{
+			Name: "pg_ctlcluster", Args: []string{strconv.Itoa(toMajor), "main", "start"}, Timeout: commandTimeout,
+		})
+		if startErr != nil {
+			if current, listErr := m.listClusters(context.WithoutCancel(ctx)); listErr == nil {
+				if c, ok := mainClusterFor(current, toMajor); ok && c.Port == "5432" && c.Status == "online" {
+					startErr = nil
+				}
+			}
+		}
+		if restoreErr != nil || startErr != nil {
+			return core.InternalError("pg: rollback failed and restoring the new cluster also failed; manual recovery is required").
+				WithDetail("rollback_error", cause.Error()).
+				WithDetail("config_restore_error", errorString(restoreErr)).
+				WithDetail("new_cluster_start_error", errorString(startErr))
+		}
+		return cause
+	}
 
 	// 1. Stop the new cluster so it releases the live port.
 	if _, err := m.runner.Run(ctx, exec.RunSpec{
 		Name: "pg_ctlcluster", Args: []string{strconv.Itoa(toMajor), "main", "stop", "--force"}, Timeout: commandTimeout,
 	}); err != nil {
-		return steps, core.ExecError("pg: stopping the new cluster (%d) for rollback failed", toMajor).Wrap(err)
+		return steps, recoverNew(core.ExecError("pg: stopping the new cluster (%d) for rollback failed", toMajor).Wrap(err))
 	}
 	steps = append(steps, fmt.Sprintf("pg_ctlcluster %d main stop", toMajor))
 
 	// 2. Park the new cluster on the old cluster's moved port and move the old
 	// cluster back onto the live port.
 	if err := m.setClusterPort(ctx, toMajor, oldPort); err != nil {
-		return steps, err
+		return steps, recoverNew(err)
 	}
 	steps = append(steps, fmt.Sprintf("set cluster %d main port = %s", toMajor, oldPort))
 	if err := m.setClusterPort(ctx, fromMajor, "5432"); err != nil {
-		return steps, err
+		return steps, recoverNew(err)
 	}
 	steps = append(steps, fmt.Sprintf("set cluster %d main port = 5432", fromMajor))
 
@@ -445,11 +531,41 @@ func (m *Manager) RollbackUpgrade(ctx context.Context, fromMajor, toMajor int, o
 	if _, err := m.runner.Run(ctx, exec.RunSpec{
 		Name: "pg_ctlcluster", Args: []string{strconv.Itoa(fromMajor), "main", "start"}, Timeout: commandTimeout,
 	}); err != nil {
-		return steps, core.ExecError("pg: starting the old cluster (%d) after rollback failed", fromMajor).Wrap(err)
+		return steps, recoverNew(core.ExecError("pg: starting the old cluster (%d) after rollback failed", fromMajor).Wrap(err))
 	}
 	steps = append(steps, fmt.Sprintf("pg_ctlcluster %d main start", fromMajor))
 
 	return steps, nil
+}
+
+type clusterConfigSnapshot struct {
+	path string
+	data []byte
+	info os.FileInfo
+}
+
+func snapshotClusterConfig(major int) (clusterConfigSnapshot, error) {
+	path := clusterConfPath(major)
+	info, err := os.Stat(path)
+	if err != nil {
+		return clusterConfigSnapshot{}, core.InternalError("pg: stat %s", path).Wrap(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return clusterConfigSnapshot{}, core.InternalError("pg: read %s", path).Wrap(err)
+	}
+	return clusterConfigSnapshot{path: path, data: data, info: info}, nil
+}
+
+func restoreClusterConfig(s clusterConfigSnapshot) error {
+	return writePreserving(s.path, s.data, s.info)
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // portLineRe matches the `port = NNNN` directive in a cluster's

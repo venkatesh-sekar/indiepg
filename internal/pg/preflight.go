@@ -84,14 +84,23 @@ func (m *Manager) InstallPreflight(ctx context.Context, major int) (CheckSet, er
 	if m.runner == nil {
 		return nil, core.InternalError("pg: InstallPreflight requires a Runner")
 	}
+	if !IsSupported(major) {
+		return nil, core.ValidationError("PostgreSQL %d is not a supported version", major)
+	}
 	checks := make(CheckSet, 0, 5)
 
 	// 1. Existing cluster present — refuse to clobber data.
-	clusters, _ := m.listClusters(ctx)
-	if len(clusters) > 0 {
+	clusters, dataEntries, err := m.existingInstallClusters(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(clusters) > 0 || len(dataEntries) > 0 {
 		names := make([]string, 0, len(clusters))
 		for _, c := range clusters {
 			names = append(names, fmt.Sprintf("%d/%s", c.Major, c.Name))
+		}
+		for _, name := range dataEntries {
+			names = append(names, "/var/lib/postgresql/"+name)
 		}
 		checks = append(checks, fail("existing_cluster", "No existing PostgreSQL cluster",
 			"found existing cluster(s): "+strings.Join(names, ", "),
@@ -101,7 +110,11 @@ func (m *Manager) InstallPreflight(ctx context.Context, major int) (CheckSet, er
 	}
 
 	// 2. Port 5432 free.
-	if m.portListening(ctx, "5432") {
+	listening, err := m.portListening(ctx, "5432")
+	if err != nil {
+		return nil, err
+	}
+	if listening {
 		checks = append(checks, fail("port_5432", "Port 5432 available",
 			"a process is already listening on port 5432",
 			"stop whatever is bound to 5432 (often an existing Postgres) before installing"))
@@ -138,7 +151,10 @@ func (m *Manager) InstallPreflight(ctx context.Context, major int) (CheckSet, er
 	}
 
 	// 5. Minimum free disk for install.
-	if free, err := freeBytes("/var/lib"); err == nil {
+	if free, err := freeBytes("/var/lib"); err != nil {
+		checks = append(checks, fail("install_disk", "Sufficient free disk",
+			"could not determine free disk under /var/lib", err.Error()))
+	} else {
 		if free < minInstallFreeBytes {
 			checks = append(checks, fail("install_disk", "Sufficient free disk",
 				fmt.Sprintf("only %s free under /var/lib (need at least %s)", humanBytes(free), humanBytes(minInstallFreeBytes)),
@@ -150,6 +166,30 @@ func (m *Manager) InstallPreflight(ctx context.Context, major int) (CheckSet, er
 	}
 
 	return checks, nil
+}
+
+// existingInstallClusters works before postgresql-common is installed. A fresh
+// host has no pg_lsclusters binary yet, so treating "command not found" as a
+// preflight error would make every first install impossible. When the tool is
+// unavailable, non-empty entries under the conventional data root still fail
+// closed instead of assuming the host is clean.
+func (m *Manager) existingInstallClusters(ctx context.Context) ([]pgCluster, []string, error) {
+	if fileExists("/usr/bin/pg_lsclusters") {
+		clusters, err := m.listClusters(ctx)
+		return clusters, nil, err
+	}
+	entries, err := os.ReadDir("/var/lib/postgresql")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, core.InternalError("pg: reading /var/lib/postgresql during install preflight").Wrap(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return nil, names, nil
 }
 
 // MajorPreflight is the result of a major-upgrade pre-flight: the structured
@@ -191,7 +231,10 @@ func (m *Manager) MajorUpgradePreflight(ctx context.Context, fromMajor, toMajor 
 	})
 
 	// Discover installed extensions across all databases for parity + the preview.
-	exts, _ := m.installedExtensions(ctx)
+	exts, err := m.installedExtensions(ctx)
+	if err != nil {
+		return MajorPreflight{}, err
+	}
 	out.Extensions = exts
 
 	// Best-effort install of each extension's versioned package for the new major.
@@ -222,15 +265,21 @@ func (m *Manager) MajorUpgradePreflight(ctx context.Context, fromMajor, toMajor 
 
 	// Check: disk headroom on the PGDATA filesystem (copy + 20%).
 	dataDir, ddErr := m.DataDirectory(ctx)
-	if ddErr == nil {
-		size, _ := m.DirSizeBytes(ctx, dataDir)
+	if ddErr != nil {
+		return MajorPreflight{}, ddErr
+	}
+	{
+		size, sizeErr := m.DirSizeBytes(ctx, dataDir)
+		if sizeErr != nil {
+			return MajorPreflight{}, sizeErr
+		}
 		free, freeErr := freeBytes(dataDir)
 		required := int64(float64(size) * diskMargin)
 		out.DiskRequiredBytes = required
 		out.DiskFreeBytes = free
 		switch {
 		case freeErr != nil:
-			out.Checks = append(out.Checks, warn("disk", "Sufficient free disk",
+			out.Checks = append(out.Checks, fail("disk", "Sufficient free disk",
 				"could not read free space on the data directory filesystem", freeErr.Error()))
 		case free >= required:
 			out.Checks = append(out.Checks, pass("disk", "Sufficient free disk",
@@ -240,6 +289,22 @@ func (m *Manager) MajorUpgradePreflight(ctx context.Context, fromMajor, toMajor 
 				fmt.Sprintf("need ~%s (data %s + 20%%) but only %s is free", humanBytes(required), humanBytes(size), humanBytes(free)),
 				"free disk on the data directory volume, or use --link mode (future) when on the same filesystem"))
 		}
+	}
+
+	// pg_upgradecluster's own check catches missing target packages and package
+	// parity that a control-file scan cannot see. Pin the requested target: when
+	// -v is omitted, pg_upgradecluster silently chooses the newest installed
+	// major, which may differ from the operator's selection.
+	if res, err := m.runner.Run(ctx, exec.RunSpec{
+		Name:    "pg_upgradecluster",
+		Args:    []string{"--check", "-v", strconv.Itoa(toMajor), strconv.Itoa(fromMajor), "main"},
+		Timeout: commandTimeout,
+	}); err != nil {
+		out.Checks = append(out.Checks, fail("pg_upgrade_check", "pg_upgrade compatibility check",
+			"pg_upgradecluster found an upgrade blocker", firstLine(res.Stderr)))
+	} else {
+		out.Checks = append(out.Checks, pass("pg_upgrade_check", "pg_upgrade compatibility check",
+			"pg_upgradecluster found all required packages"))
 	}
 
 	// Check: extension parity — every installed extension must have a control file
@@ -268,7 +333,10 @@ func (m *Manager) MajorUpgradePreflight(ctx context.Context, fromMajor, toMajor 
 	}
 
 	// Check: no prepared transactions (pg_upgrade refuses them).
-	if n, err := m.scalarCount(ctx, "SELECT count(*) FROM pg_prepared_xacts"); err == nil && n > 0 {
+	if n, err := m.scalarCount(ctx, "SELECT count(*) FROM pg_prepared_xacts"); err != nil {
+		out.Checks = append(out.Checks, fail("prepared_xacts", "No prepared transactions",
+			"could not verify whether prepared transactions are open", err.Error()))
+	} else if n > 0 {
 		out.Checks = append(out.Checks, fail("prepared_xacts", "No prepared transactions",
 			fmt.Sprintf("%d prepared transaction(s) are open; pg_upgrade cannot proceed", n),
 			"COMMIT or ROLLBACK PREPARED every entry in pg_prepared_xacts, then retry"))
@@ -277,7 +345,10 @@ func (m *Manager) MajorUpgradePreflight(ctx context.Context, fromMajor, toMajor 
 	}
 
 	// Check: no logical replication slots (not carried by pg_upgrade).
-	if n, err := m.scalarCount(ctx, "SELECT count(*) FROM pg_replication_slots WHERE slot_type = 'logical'"); err == nil && n > 0 {
+	if n, err := m.scalarCount(ctx, "SELECT count(*) FROM pg_replication_slots WHERE slot_type = 'logical'"); err != nil {
+		out.Checks = append(out.Checks, fail("replication_slots", "No logical replication slots",
+			"could not verify whether logical replication slots exist", err.Error()))
+	} else if n > 0 {
 		out.Checks = append(out.Checks, fail("replication_slots", "No logical replication slots",
 			fmt.Sprintf("%d logical replication slot(s) exist; pg_upgrade does not carry them", n),
 			"drop the logical slots (pg_drop_replication_slot) before upgrading, then re-create after"))
@@ -348,8 +419,7 @@ func (m *Manager) installedExtensions(ctx context.Context) ([]string, error) {
 	for _, db := range dbs {
 		out, err := m.runPsql(ctx, db, "SELECT extname FROM pg_extension WHERE extname <> 'plpgsql'")
 		if err != nil {
-			// A database we cannot read should not abort the whole scan.
-			continue
+			return nil, core.InternalError("pg: listing extensions in database %q", db).Wrap(err)
 		}
 		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 			if line = strings.TrimSpace(line); line != "" {
@@ -365,27 +435,26 @@ func (m *Manager) installedExtensions(ctx context.Context) ([]string, error) {
 	return exts, nil
 }
 
-// portListening best-effort reports whether anything is listening on the given
-// TCP port, via `ss`. A failure to run ss (not installed) reports false rather
-// than blocking — the definitive guard for an install is the existing-cluster
-// check above.
-func (m *Manager) portListening(ctx context.Context, port string) bool {
+// portListening reports whether anything is listening on the given TCP port via
+// `ss`. Probe failures are returned so install preflight fails closed rather
+// than declaring an unverified port safe.
+func (m *Manager) portListening(ctx context.Context, port string) (bool, error) {
 	res, err := m.runner.Run(ctx, exec.RunSpec{
 		Name: "ss", Args: []string{"-H", "-ltn"}, Timeout: commandTimeout,
 	})
 	if err != nil {
-		return false
+		return false, core.ExecError("pg: checking whether port %s is in use", port).Wrap(err)
 	}
 	needle := ":" + port
 	for _, line := range strings.Split(res.Stdout, "\n") {
 		fields := strings.Fields(line)
 		for _, f := range fields {
 			if strings.HasSuffix(f, needle) {
-				return true
+				return true, nil
 			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 // DirSizeBytes returns the on-disk size of a directory via `du -sb`, run as the

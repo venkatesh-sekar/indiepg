@@ -135,7 +135,26 @@ func (m *Manager) Provision(ctx context.Context) (core.Result, error) {
 	}
 
 	// Resolve which major to install (explicit --pg-version or catalog default).
-	major := m.resolveInstallMajor()
+	major, err := m.resolveInstallMajor()
+	if err != nil {
+		return core.Result{}, err
+	}
+	checks, err := m.InstallPreflight(ctx, major)
+	if err != nil {
+		return core.Result{}, err
+	}
+	if checks.HasFail() {
+		var blockers []string
+		for _, check := range checks {
+			if check.Status == CheckFail {
+				blockers = append(blockers, check.Message)
+			}
+		}
+		return core.Result{}, core.NewSafetyError(
+			"install PostgreSQL",
+			blockers,
+			"PostgreSQL installation preflight failed; refusing to modify this host")
+	}
 
 	// 1. Set up the PGDG apt repository (signing key + sources + index refresh).
 	// Only PGDG ships every supported major side-by-side, which is what makes

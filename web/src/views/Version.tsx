@@ -61,7 +61,9 @@ export function Version() {
   const running = op?.status === "running";
   // Prefer the live status feed for pending state; fall back to the version
   // snapshot so the banner still shows on first paint before status arrives.
-  const pending = status.data?.pending_finalization ?? version.data?.pending_finalization ?? null;
+  const pending = status.data
+    ? status.data.pending_finalization
+    : (version.data?.pending_finalization ?? null);
 
   const [wizardTarget, setWizardTarget] = useState<number | null>(null);
   const [minorOpen, setMinorOpen] = useState(false);
@@ -541,8 +543,6 @@ function CheckBadge({ status }: { status: CheckStatus }) {
       return <Badge tone="warn">! warn</Badge>;
     case "fail":
       return <Badge tone="danger">✕ fail</Badge>;
-    default:
-      return <Badge>{status}</Badge>;
   }
 }
 
@@ -848,7 +848,7 @@ function RollbackDialog({
     setBusy(true);
     setError(null);
     try {
-      await api.rollbackUpgrade();
+      await api.rollbackUpgrade(pending.to_major);
       toast.success(`Rolling back to PostgreSQL ${pending.from_major}…`);
       onDone();
     } catch (err) {
@@ -963,9 +963,7 @@ function successMessage(op: UpgradeOperation): string {
     case "finalize":
       return "Finalized — the old cluster's disk has been reclaimed.";
     case "rollback":
-      return `Rolled back to PostgreSQL ${op.target_major}.`;
-    default:
-      return "Done.";
+      return `Rolled back to PostgreSQL ${op.from_major ?? "the previous major"}.`;
   }
 }
 

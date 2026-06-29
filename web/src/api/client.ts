@@ -435,10 +435,10 @@ export const api = {
   },
   // Roll back to the old major. DISCARDS any writes made against the new major
   // since the upgrade. Clears the pending-finalization state.
-  rollbackUpgrade(): Promise<UpgradeStatus> {
+  rollbackUpgrade(confirmVersion: number): Promise<UpgradeStatus> {
     return request<UpgradeStatus>("/pg/upgrade/rollback", {
       method: "POST",
-      body: { confirm: true },
+      body: { confirm_version: confirmVersion },
     });
   },
 };

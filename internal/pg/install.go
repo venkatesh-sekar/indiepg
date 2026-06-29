@@ -222,9 +222,14 @@ Pin-Priority: 1001
 // resolveInstallMajor returns the major to install: the explicitly requested one
 // (from Options.PGMajor, set via `indiepg install --pg-version`) or the catalog
 // default when none was requested.
-func (m *Manager) resolveInstallMajor() int {
-	if m.installMajor > 0 {
-		return m.installMajor
+func (m *Manager) resolveInstallMajor() (int, error) {
+	major := m.installMajor
+	if major == 0 {
+		major = DefaultMajor()
 	}
-	return DefaultMajor()
+	if !IsSupported(major) {
+		return 0, core.ValidationError("PostgreSQL %d is not a supported version", major).
+			WithHint("choose a supported major from the version catalog")
+	}
+	return major, nil
 }
