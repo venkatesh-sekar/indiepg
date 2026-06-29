@@ -208,6 +208,66 @@ export interface DropRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Extensions (internal/pg, internal/server/handlers_extensions)
+// ---------------------------------------------------------------------------
+
+/** How much work installing an extension takes, decided server-side from the
+ *  catalog plus on-disk presence:
+ *  - "ready"         — files on disk; a plain CREATE EXTENSION.
+ *  - "needs_package" — curated but not on disk; the panel apt-get installs it.
+ *  - "needs_restart" — needs shared_preload_libraries; install + restart Postgres. */
+export type ExtensionTier = "ready" | "needs_package" | "needs_restart";
+
+/** One installed extension — pg_extension joined to pg_available_extensions. */
+export interface InstalledExtension {
+  name: string;
+  installed_version: string;
+  default_version: string;
+  /** The on-disk default differs from the installed version (an UPDATE would move it forward). */
+  update_available: boolean;
+}
+
+/** One extension available to add, with the tier badge that tells the UI how
+ *  much work the install is (and whether it restarts Postgres). */
+export interface AvailableExtension {
+  name: string;
+  description: string;
+  /** "" for a needs_package catalog entry whose files aren't on disk yet. */
+  default_version: string;
+  tier: ExtensionTier;
+  requires_preload: boolean;
+  /** True when the extension is part of the curated catalog. */
+  in_catalog: boolean;
+  /** Resolved OS package for a catalog entry that may need an apt install
+   *  (e.g. "postgresql-17-pgvector"), so the Add dialog can preview the real
+   *  command. "" for ready/free-form entries. */
+  package: string;
+}
+
+/** GET /api/extensions?database= — installed + available for one target database.
+ *  Both arrays are always present (never null). */
+export interface ExtensionList {
+  database: string;
+  installed: InstalledExtension[];
+  available: AvailableExtension[];
+}
+
+/** POST /api/extensions — install one extension into a database. `confirm`
+ *  carries the typed extension name a Tier 3 (needs_restart) install requires;
+ *  send "" for the other tiers. The success body is a {@link Result} whose
+ *  `data.tier` is the tier that ran and whose `statements` list every command /
+ *  SQL executed, in order (already password-redacted). */
+export interface InstallExtensionRequest {
+  database: string;
+  name: string;
+  confirm: string;
+  /** Set by the "add by name" field. A free-form install is SQL-only — the
+   *  server never apt-installs a package or edits shared_preload_libraries off a
+   *  typed name. Catalog Add buttons omit it (defaults to false). */
+  freeform?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Backups (internal/backup)
 // ---------------------------------------------------------------------------
 

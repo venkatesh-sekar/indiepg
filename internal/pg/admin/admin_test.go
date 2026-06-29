@@ -284,6 +284,14 @@ func TestCreateExtension(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, `CREATE EXTENSION IF NOT EXISTS "pg_trgm";`, got)
 	})
+	t.Run("hyphenated contrib name accepted", func(t *testing.T) {
+		// Extension names map to on-disk control files, so hyphens are legal
+		// (uuid-ossp). ValidateExtensionName permits them where ValidateIdentifier
+		// would not.
+		got, err := CreateExtension("uuid-ossp")
+		require.NoError(t, err)
+		require.Equal(t, `CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`, got)
+	})
 	t.Run("invalid name rejected", func(t *testing.T) {
 		_, err := CreateExtension("bad name")
 		require.Error(t, err)
@@ -303,7 +311,7 @@ func TestAlterExtensionUpdate(t *testing.T) {
 		require.Equal(t, `ALTER EXTENSION "postgis" UPDATE;`, got)
 	})
 	t.Run("invalid name rejected", func(t *testing.T) {
-		_, err := AlterExtensionUpdate("bad-name")
+		_, err := AlterExtensionUpdate("bad name")
 		require.Error(t, err)
 		require.Equal(t, core.CodeValidation, core.CodeOf(err))
 	})
@@ -329,9 +337,14 @@ func TestDropExtension(t *testing.T) {
 		require.Equal(t, core.CodeSafety, core.CodeOf(err))
 	})
 	t.Run("invalid name is validation error before safety", func(t *testing.T) {
-		_, err := DropExtension("bad-name", "bad-name")
+		_, err := DropExtension("bad name", "bad name")
 		require.Error(t, err)
 		require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	})
+	t.Run("hyphenated contrib name accepted", func(t *testing.T) {
+		got, err := DropExtension("uuid-ossp", "uuid-ossp")
+		require.NoError(t, err)
+		require.Equal(t, `DROP EXTENSION "uuid-ossp";`, got)
 	})
 	t.Run("no CASCADE in v1", func(t *testing.T) {
 		got, err := DropExtension("hstore", "hstore")

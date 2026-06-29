@@ -70,6 +70,13 @@ func (s *Server) buildRouter() http.Handler {
 			pr.Post("/databases/new-app", s.handleNewApp)
 			pr.Delete("/databases/{name}", s.handleDropDatabase)
 
+			// Extensions (per-database): list installed + available, install
+			// (tiered: plain / apt package / preload+restart), update, and drop.
+			pr.Get("/extensions", s.handleListExtensions)
+			pr.Post("/extensions", s.handleInstallExtension)
+			pr.Post("/extensions/{name}/update", s.handleUpdateExtension)
+			pr.Delete("/extensions/{name}", s.handleDropExtension)
+
 			// Roles & grants.
 			pr.Get("/roles", s.handleListRoles)
 			pr.Post("/roles", s.handleCreateRole)

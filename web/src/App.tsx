@@ -11,6 +11,7 @@ import { Login } from "@/views/Login";
 import { Dashboard } from "@/views/Dashboard";
 import { Query } from "@/views/Query";
 import { RolesDatabases } from "@/views/RolesDatabases";
+import { Extensions } from "@/views/Extensions";
 import { Backups } from "@/views/Backups";
 import { Alerts } from "@/views/Alerts";
 import { Migrate } from "@/views/Migrate";
@@ -31,6 +32,7 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="query" element={<Query />} />
           <Route path="roles" element={<RolesDatabases />} />
+          <Route path="extensions" element={<Extensions />} />
           <Route path="backups" element={<Backups />} />
           <Route path="alerts" element={<Alerts />} />
           <Route path="migrate" element={<Migrate />} />

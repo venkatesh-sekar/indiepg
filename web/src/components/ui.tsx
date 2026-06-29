@@ -216,7 +216,10 @@ function labelForCode(code: string): string {
     case "validation":
       return "Please check your input";
     case "safety":
-      return "Confirmation required";
+      // Covers both a missing/mismatched typed confirmation and a rolled-back
+      // restart, so "Operation blocked" reads correctly for both rather than
+      // implying the user must type something more.
+      return "Operation blocked";
     case "ownership":
       return "This resource is owned by another panel";
     case "not_found":

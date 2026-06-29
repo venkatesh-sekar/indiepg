@@ -78,6 +78,41 @@ func IsValidIdentifier(value string) bool {
 	return ValidateIdentifier(value, "identifier") == nil
 }
 
+// ValidateExtensionName validates a PostgreSQL extension name. Unlike a bare SQL
+// identifier (ValidateIdentifier), an extension name maps to an on-disk control
+// file name and may legally contain hyphens — the canonical example is the
+// contrib module "uuid-ossp". The rules are otherwise the same as
+// ValidateIdentifier: 1..63 chars, start with a letter or underscore, and
+// thereafter only ASCII letters, digits, underscores, and hyphens.
+//
+// Reserved words are NOT rejected: extension names live in their own namespace
+// (pg_available_extensions), not the identifier namespace. As with
+// ValidateIdentifier this is a usability/defense gate; the name must STILL be
+// passed through QuoteIdent before reaching SQL.
+func ValidateExtensionName(value string) error {
+	if value == "" {
+		return ValidationError("extension name cannot be empty").
+			WithHint("provide a valid name")
+	}
+	if len(value) > MaxIdentifierLength {
+		return ValidationError("extension name exceeds maximum length (%d > %d)", len(value), MaxIdentifierLength)
+	}
+	for i, r := range value {
+		first := i == 0
+		switch {
+		case r == '_':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case !first && r >= '0' && r <= '9':
+		case !first && r == '-':
+		default:
+			return ValidationError("invalid extension name %q", value).
+				WithHint("must start with a letter or underscore and contain only letters, digits, underscores, and hyphens")
+		}
+	}
+	return nil
+}
+
 // QuoteIdent returns value as a safely double-quoted SQL identifier, doubling
 // any embedded double quotes. It always wraps in quotes so the result is valid
 // even for mixed-case or otherwise non-bare identifiers.

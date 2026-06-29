@@ -24,6 +24,8 @@ import type {
   DropRequest,
   ErrorCode,
   ExportSessionRequest,
+  ExtensionList,
+  InstallExtensionRequest,
   GrantRequest,
   InstanceInfo,
   LoginResult,
@@ -240,6 +242,35 @@ export const api = {
   },
   dropDatabase(name: string, req: DropRequest): Promise<Result> {
     return request<Result>(`/databases/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+      body: req,
+    });
+  },
+
+  // extensions -------------------------------------------------------------
+  // List is read-only; `database` defaults to the maintenance DB server-side.
+  listExtensions(database?: string): Promise<ExtensionList> {
+    const q = database ? `?database=${encodeURIComponent(database)}` : "";
+    return request<ExtensionList>(`/extensions${q}`);
+  },
+  // Install picks the tier server-side. A Tier 3 (needs_restart) install needs
+  // req.confirm === req.name; the others ignore it. The Result's `statements`
+  // list every command that actually ran.
+  installExtension(req: InstallExtensionRequest): Promise<Result> {
+    return request<Result>("/extensions", { method: "POST", body: req });
+  },
+  // Update upgrades an installed extension to its default version (ALTER
+  // EXTENSION ... UPDATE). Non-destructive; no confirmation, no restart.
+  updateExtension(name: string, database: string): Promise<Result> {
+    const q = database ? `?database=${encodeURIComponent(database)}` : "";
+    return request<Result>(`/extensions/${encodeURIComponent(name)}/update${q}`, {
+      method: "POST",
+    });
+  },
+  // Drop requires req.confirm === name (typed-name confirmation); no CASCADE.
+  dropExtension(name: string, database: string, req: DropRequest): Promise<Result> {
+    const q = database ? `?database=${encodeURIComponent(database)}` : "";
+    return request<Result>(`/extensions/${encodeURIComponent(name)}${q}`, {
       method: "DELETE",
       body: req,
     });

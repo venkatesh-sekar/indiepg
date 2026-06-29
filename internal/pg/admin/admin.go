@@ -375,7 +375,7 @@ func DropDatabase(database, confirmTyped string) (string, error) {
 // target database. The name is validated as an identifier and quoted; the
 // IF NOT EXISTS clause makes re-adding an already-installed extension a no-op.
 func CreateExtension(name string) (string, error) {
-	if err := core.ValidateIdentifier(name, "extension"); err != nil {
+	if err := core.ValidateExtensionName(name); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("CREATE EXTENSION IF NOT EXISTS %s;", core.QuoteIdent(name)), nil
@@ -384,7 +384,7 @@ func CreateExtension(name string) (string, error) {
 // AlterExtensionUpdate builds an ALTER EXTENSION ... UPDATE statement, which
 // upgrades an installed extension to the default available version.
 func AlterExtensionUpdate(name string) (string, error) {
-	if err := core.ValidateIdentifier(name, "extension"); err != nil {
+	if err := core.ValidateExtensionName(name); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("ALTER EXTENSION %s UPDATE;", core.QuoteIdent(name)), nil
@@ -395,7 +395,7 @@ func AlterExtensionUpdate(name string) (string, error) {
 // exactly equals name. No CASCADE is emitted: a dependency error from Postgres
 // is surfaced to the operator to resolve explicitly.
 func DropExtension(name, confirmTyped string) (string, error) {
-	if err := core.ValidateIdentifier(name, "extension"); err != nil {
+	if err := core.ValidateExtensionName(name); err != nil {
 		return "", err
 	}
 	if serr := core.RequireConfirmation("drop extension", name, confirmTyped); serr != nil {
