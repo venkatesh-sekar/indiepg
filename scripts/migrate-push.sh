@@ -185,8 +185,11 @@ if [ -z "$CONTAINER" ] && [ -z "${PGPASSWORD:-}" ]; then
 		# aborts (130 = SIGINT) before the temp-file EXIT trap below is even armed.
 		trap 'stty echo </dev/tty 2>/dev/null || true; exit 130' INT TERM
 		stty -echo </dev/tty 2>/dev/null || true
-		# shellcheck disable=SC2162
-		read PGPASSWORD </dev/tty || true
+		# IFS= and -r are REQUIRED for correctness: a bare `read PGPASSWORD` strips
+		# leading/trailing IFS whitespace and lets a backslash escape the next char,
+		# silently corrupting an otherwise valid password. `IFS= read -r` reads the
+		# line verbatim.
+		IFS= read -r PGPASSWORD </dev/tty || true
 		stty echo </dev/tty 2>/dev/null || true
 		trap - INT TERM
 		printf '\n' >/dev/tty
@@ -241,8 +244,14 @@ WORK_DIR="${INDIEPG_TMPDIR:-${TMPDIR:-/tmp}}"
 [ -w "$WORK_DIR" ] || die "temp directory '$WORK_DIR' is not writable — set INDIEPG_TMPDIR to a writable, disk-backed directory with room for the dump"
 DUMP_FILE="$(mktemp "$WORK_DIR/indiepg-dump.XXXXXX")" || die "could not create a temp file in '$WORK_DIR'"
 META_FILE="$(mktemp "$WORK_DIR/indiepg-meta.XXXXXX")" || die "could not create a temp file in '$WORK_DIR'"
-chmod 0600 "$DUMP_FILE" "$META_FILE" 2>/dev/null || true
-trap 'rm -f "$DUMP_FILE" "$META_FILE"' EXIT INT TERM
+# A reusable 0600 curl config file: each upload writes its presigned URL HERE (via
+# `curl --config`) instead of passing it as an argv argument, so the upload URLs —
+# bucket-write bearer tokens — never appear in `ps`/​/proc/<pid>/cmdline to other
+# local users (the same anti-`ps` protection PGPASSWORD gets). Owner-only and removed
+# on exit alongside the dump/meta temp files.
+CURL_CFG="$(mktemp "$WORK_DIR/indiepg-curlcfg.XXXXXX")" || die "could not create a temp file in '$WORK_DIR'"
+chmod 0600 "$DUMP_FILE" "$META_FILE" "$CURL_CFG" 2>/dev/null || true
+trap 'rm -f "$DUMP_FILE" "$META_FILE" "$CURL_CFG"' EXIT INT TERM
 say "staging the dump under '$WORK_DIR' (needs free disk room for the whole dump; set INDIEPG_TMPDIR if /tmp is small or RAM-backed)"
 
 # --- 1. dump --------------------------------------------------------------
@@ -335,10 +344,16 @@ printf '{"sha256":"%s","byte_size":%s,"created_at":"%s",%s}' \
 # gateways reject; no extra signed headers, so the presigned signature holds. The
 # full presigned URL is a secret, so failures print a generic message, never the URL.
 upload() {
-	# $1 = url, $2 = file, $3 = label. Capture curl's stderr (discard stdout) so a
-	# failure message can be shown with any presigned URL redacted out of it. The
-	# `&& return 0` keeps set -e from aborting on the expected non-zero on failure.
-	_err="$(curl -fsS -H 'Expect:' --upload-file "$2" "$1" 2>&1 >/dev/null)" && return 0
+	# $1 = url, $2 = file, $3 = label. The presigned URL is a bucket-write bearer
+	# token, so it is fed to curl through the 0600 $CURL_CFG file (`url = "..."`) —
+	# NEVER as an argv argument, where `ps`/​/proc/<pid>/cmdline would expose it to
+	# other local users (who could then overwrite the dump/meta). The file path in
+	# --upload-file is not sensitive, so it stays on the command line. Capture curl's
+	# stderr (discard stdout) so a failure message can be shown with any presigned URL
+	# redacted out of it. The `&& return 0` keeps set -e from aborting on the expected
+	# non-zero on failure.
+	printf 'url = "%s"\n' "$1" > "$CURL_CFG"
+	_err="$(curl -fsS -H 'Expect:' --config "$CURL_CFG" --upload-file "$2" 2>&1 >/dev/null)" && return 0
 	printf '%s' "$_err" | sed 's#https\{0,1\}://[^ ]*#<presigned-url>#g' | head -n1 >&2
 	die "failed to upload the $3 — the link may have expired, or the panel's S3 credentials/bucket are misconfigured or unreachable; check the error above, then generate a new drop-off link in the panel"
 }
