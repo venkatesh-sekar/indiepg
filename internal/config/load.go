@@ -38,6 +38,7 @@ const (
 	keyS3AccessKey  = "backup_s3_access_key"
 	keyS3SecretKey  = "backup_s3_secret_key"
 	keyS3UseSSL     = "backup_s3_use_ssl"
+	keyS3URIStyle   = "backup_s3_uri_style"
 	keyS3CipherPass = "backup_s3_cipher_pass"
 
 	keySchedFull        = "sched_full_backup"
@@ -95,6 +96,7 @@ func Save(ctx context.Context, st Store, cfg Config) error {
 		keyS3SecretKey:      cfg.Backup.SecretKey,
 		keyS3CipherPass:     cfg.Backup.CipherPass,
 		keyS3UseSSL:         strconv.FormatBool(cfg.Backup.UseSSL),
+		keyS3URIStyle:       cfg.Backup.URIStyle,
 		keySchedFull:        cfg.Schedules.FullBackup,
 		keySchedIncremental: cfg.Schedules.IncrementalBackup,
 		keySchedRestoreTest: cfg.Schedules.RestoreTest,
@@ -145,6 +147,7 @@ func applyMap(cfg *Config, kv map[string]string) {
 	setStr(kv, keyS3AccessKey, &cfg.Backup.AccessKey)
 	setStr(kv, keyS3SecretKey, &cfg.Backup.SecretKey)
 	setStr(kv, keyS3CipherPass, &cfg.Backup.CipherPass)
+	setStr(kv, keyS3URIStyle, &cfg.Backup.URIStyle)
 	setBool(kv, keyS3UseSSL, &cfg.Backup.UseSSL)
 
 	setStr(kv, keySchedFull, &cfg.Schedules.FullBackup)
@@ -179,6 +182,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := os.LookupEnv("INDIEPG_S3_SECRET_KEY"); ok {
 		cfg.Backup.SecretKey = v
+	}
+	if v, ok := os.LookupEnv("INDIEPG_S3_URI_STYLE"); ok {
+		cfg.Backup.URIStyle = v
 	}
 	if v, ok := os.LookupEnv("INDIEPG_S3_CIPHER_PASS"); ok {
 		cfg.Backup.CipherPass = v

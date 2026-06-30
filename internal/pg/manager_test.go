@@ -96,8 +96,10 @@ func TestProvision_HappyPath(t *testing.T) {
 
 	require.Contains(t, all, "apt-get update")
 	// Versioned PGDG install (default catalog major) replaces the generic
-	// `postgresql` metapackage.
-	require.Contains(t, all, fmt.Sprintf("apt-get install -y postgresql-%d postgresql-%d-contrib pgbackrest", DefaultMajor(), DefaultMajor()))
+	// `postgresql` metapackage. The contrib modules ship bundled in the server
+	// package on Debian/Ubuntu, so no separate (and non-existent) -contrib package
+	// is requested — a literal "postgresql-<major>-contrib" would make apt abort.
+	require.Contains(t, all, fmt.Sprintf("apt-get install -y postgresql-%d pgbackrest", DefaultMajor()))
 	require.Contains(t, all, "systemctl enable --now postgresql")
 	// roles + extension are created via psql run as the postgres OS user.
 	require.Contains(t, all, "sudo -u postgres psql")

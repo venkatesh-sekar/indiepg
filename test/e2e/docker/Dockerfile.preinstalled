@@ -1,0 +1,21 @@
+# indiepg-e2e-preinstalled — base + a REAL `indiepg install` already run, so the
+# non-install scenarios start from a provisioned cluster + enabled panel unit in
+# seconds.
+#
+# WHY THIS IS BUILT BY A SCRIPT, NOT A PLAIN `docker build`:
+#   `indiepg install` provisions Postgres with `systemctl enable --now postgresql`
+#   and creates roles over the live socket — it needs systemd running as PID 1 and
+#   a live postmaster. Neither exists during `docker build` (there is no init).
+#   So the provisioned state is produced by booting the base image with systemd,
+#   running `indiepg install` inside it, and `docker commit`-ing the result. That
+#   orchestration lives in build-preinstalled.sh (invoked by `make e2e-images`).
+#
+# This Dockerfile documents the lineage and lets `docker build` produce a usable
+# (un-provisioned) stand-in tagged indiepg-e2e-preinstalled-stage that the build
+# script boots and commits onto indiepg-e2e-preinstalled:latest.
+FROM indiepg-e2e-base:latest
+
+LABEL io.indiepg.e2e.role="preinstalled-stage" \
+      io.indiepg.e2e.note="provisioned state is layered on via docker commit; see build-preinstalled.sh"
+
+CMD ["/sbin/init"]

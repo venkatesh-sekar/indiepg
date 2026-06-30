@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/core"
@@ -49,10 +50,25 @@ type S3Target struct {
 	AccessKey string `json:"access_key"` // access key id
 	SecretKey string `json:"-"`          // secret access key (never serialized)
 	UseSSL    bool   `json:"use_ssl"`    // TLS to the endpoint
+	// URIStyle selects S3 request addressing: "host" (default — bucket.endpoint,
+	// for AWS S3, Backblaze B2, Cloudflare R2) or "path" (endpoint/bucket, required
+	// by MinIO and other self-hosted S3 like Ceph RGW / SeaweedFS, which have no
+	// per-bucket DNS). Empty means "host". It drives BOTH the pgBackRest
+	// repo1-s3-uri-style option and the minio-go bucket-lookup mode so they always
+	// agree on how the bucket is addressed.
+	URIStyle string `json:"uri_style"`
 	// CipherPass, when set, enables aes-256-cbc repository encryption. It is a
 	// secret (never serialized) and must be preserved to restore the repo — losing
 	// it makes every encrypted backup unrecoverable.
 	CipherPass string `json:"-"`
+}
+
+// PathStyle reports whether this target uses path-style S3 addressing
+// (uri_style="path"). It is the single predicate both the pgBackRest config
+// renderer and the minio-go client builder consult, so they can never disagree
+// about how to reach the bucket.
+func (t S3Target) PathStyle() bool {
+	return strings.EqualFold(strings.TrimSpace(t.URIStyle), "path")
 }
 
 // String renders the target with its two secrets (SecretKey, CipherPass)

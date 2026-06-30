@@ -1,0 +1,136 @@
+# syntax=docker/dockerfile:1
+#
+# indiepg-e2e-base — a systemd Debian box that a REAL `indiepg install` can
+# provision from scratch. Postgres is NOT pre-installed; the pinned PGDG packages
+# for two adjacent majors are only DOWNLOADED into the apt cache so the runtime
+# `indiepg install` performs a real, deterministic, (mostly) offline provision.
+#
+# Determinism: base image pinned by digest, PGDG packages pinned to exact
+# versions and pre-cached, an apt preferences pin forcing those versions at
+# install time. Pass `--build-arg LIVE_APT=1` to skip the pin (drift testing).
+#
+# This image boots /sbin/init (systemd) as PID 1. It MUST be run with:
+#   --privileged --cgroupns=host --tmpfs /run --tmpfs /run/lock --tmpfs /tmp \
+#   -v /sys/fs/cgroup:/sys/fs/cgroup:rw
+# (see compose.yaml, which encodes exactly that).
+
+FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
+
+# Pinned PGDG package versions (bookworm). Two adjacent majors are cached so the
+# major-upgrade scenario has its target already local. Bump these when PGDG moves
+# and rebuild; LIVE_APT=1 ignores them.
+ARG PG_MAJOR_DEFAULT=17
+ARG PG_MAJOR_PREV=16
+ARG PG17_VERSION=17.10-1.pgdg12+1
+ARG PG16_VERSION=16.14-1.pgdg12+1
+ARG PGBACKREST_VERSION=2.58.0-1.pgdg12+1
+ARG LIVE_APT=0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    container=docker \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8
+
+# 1. Base OS tooling indiepg's provisioner shells out to:
+#    systemd/systemd-sysv -> /sbin/init + systemctl; sudo -> exec.AsUser("postgres");
+#    curl/ca-certificates/gnupg -> PGDG key + repo; iproute2 -> `ss` (port preflight);
+#    locales -> a real UTF-8 locale for initdb; procps -> diagnostics.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      systemd systemd-sysv \
+      sudo curl ca-certificates gnupg locales iproute2 procps less \
+ && sed -i 's/^# *\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen \
+ && locale-gen \
+ && rm -rf /var/lib/apt/lists/*
+
+# 2. PGDG apt repo (same key/sources indiepg's installer writes; pre-seeding it
+#    lets us pre-cache the packages, and the installer's idempotent re-write is a
+#    harmless no-op).
+RUN install -d /usr/share/postgresql-common/pgdg \
+ && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+ && . /etc/os-release \
+ && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list
+
+# 3. Determinism pin: force the exact PG/pgbackrest versions at install time so a
+#    later PGDG minor bump cannot change what `indiepg install` lays down (the
+#    cached .debs satisfy these even if the index later drops them). Skipped under
+#    LIVE_APT=1.
+RUN if [ "$LIVE_APT" != "1" ]; then \
+      printf '%s\n' \
+        "# indiepg-e2e: pin exact PGDG versions for deterministic provisioning." \
+        "# (contrib ships bundled inside postgresql-<major>; there is no -contrib pkg)" \
+        "Package: postgresql-${PG_MAJOR_DEFAULT}" \
+        "Pin: version ${PG17_VERSION}" \
+        "Pin-Priority: 1001" \
+        "" \
+        "Package: postgresql-${PG_MAJOR_PREV}" \
+        "Pin: version ${PG16_VERSION}" \
+        "Pin-Priority: 1001" \
+        "" \
+        "Package: pgbackrest" \
+        "Pin: version ${PGBACKREST_VERSION}" \
+        "Pin-Priority: 1001" \
+        > /etc/apt/preferences.d/99-e2e-pin.pref ; \
+    fi
+
+# 4. Pre-CACHE (download, do NOT install) the pinned packages + their full
+#    dependency closure for BOTH majors, so the runtime `indiepg install` resolves
+#    from the local cache. We deliberately do not `apt-get clean`.
+RUN apt-get update \
+ && if [ "$LIVE_APT" = "1" ]; then \
+      apt-get install -y --download-only \
+        postgresql-${PG_MAJOR_DEFAULT} \
+        postgresql-${PG_MAJOR_PREV} \
+        pgbackrest ; \
+    else \
+      apt-get install -y --download-only \
+        postgresql-${PG_MAJOR_DEFAULT}=${PG17_VERSION} \
+        postgresql-${PG_MAJOR_PREV}=${PG16_VERSION} \
+        pgbackrest=${PGBACKREST_VERSION} ; \
+    fi \
+ && rm -rf /var/lib/apt/lists/*
+
+# 5. The freshly-built panel binary (built on the host into this dir by the
+#    Makefile/build script; CGO-disabled static, no runtime deps).
+COPY indiepg /usr/local/bin/indiepg
+RUN chmod 0755 /usr/local/bin/indiepg
+
+# 5b. Trust the e2e MinIO TLS CA. pgBackRest's S3 transport is HTTPS-only (plain
+#     HTTP fails the TLS handshake), so the harness runs MinIO with a self-signed
+#     cert (SAN=minio) and installs its CA here. With the CA trusted, both the
+#     pgBackRest S3 client and the panel's minio-go client speak ordinary verified
+#     TLS — no skip-verify hacks — exactly as they would against a real S3 with a
+#     public CA. These are throwaway TEST fixtures, never production secrets.
+COPY certs/ca.crt /usr/local/share/ca-certificates/indiepg-e2e-minio-ca.crt
+RUN update-ca-certificates
+
+# 6. e2e-only systemd drop-in: at SERVE time make the panel reach the host by
+#    binding 0.0.0.0 (force-public via env) so the harness can drive it over a
+#    published port. The drop-in is merged whenever the `indiepg` unit is loaded —
+#    including the unit `indiepg install` writes at test time — so it applies to
+#    both the install-from-scratch and preinstalled images without touching the
+#    panel's own (private-by-default) install behaviour. `indiepg install` itself
+#    still validates the default private bind; only `indiepg serve` flips to
+#    0.0.0.0 from these env overrides.
+RUN install -d /etc/systemd/system/indiepg.service.d \
+ && printf '%s\n' \
+      "[Service]" \
+      "Environment=INDIEPG_BIND_ADDR=0.0.0.0:8443" \
+      "Environment=INDIEPG_FORCE_PUBLIC_BIND=1" \
+      > /etc/systemd/system/indiepg.service.d/10-e2e-bind.conf
+
+# 7. systemd hygiene for containers: drop units that are noise/failure in a
+#    container and would slow boot or clutter `systemctl is-system-running`.
+RUN systemctl mask \
+      systemd-udevd.service systemd-udevd-control.socket systemd-udevd-kernel.socket \
+      systemd-udev-trigger.service \
+      systemd-firstboot.service \
+      systemd-resolved.service \
+      getty.target console-getty.service \
+      systemd-logind.service \
+      || true
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

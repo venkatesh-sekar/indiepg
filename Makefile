@@ -16,7 +16,20 @@ GOFLAGS     ?=
 
 .DEFAULT_GOAL := build
 
-.PHONY: build test vet tidy web run reset clean fmt fmt-check verify verify-web
+# ---- e2e (Docker-based backend integration harness; see test/e2e) ----
+E2E_DIR                 := test/e2e
+E2E_DOCKER              := $(E2E_DIR)/docker
+E2E_BASE_IMAGE          := indiepg-e2e-base:latest
+E2E_PREINSTALLED_IMAGE  := indiepg-e2e-preinstalled:latest
+# DOCKER_CONTEXT is forced to the live daemon (the active desktop-linux context
+# points at a dead socket in the dev environment). Override on the CLI if needed.
+E2E_DOCKER_CONTEXT      ?= default
+# SCENARIO=TestName runs just that scenario; empty runs the whole suite.
+SCENARIO                ?=
+E2E_RUN                 := $(if $(SCENARIO),-run $(SCENARIO),)
+
+.PHONY: build test vet tidy web run reset clean fmt fmt-check verify verify-web \
+        e2e e2e-images e2e-base e2e-preinstalled e2e-clean
 
 ## build: compile the static binary (CGO disabled, pure-Go deps only)
 build:
@@ -57,6 +70,29 @@ verify: fmt-check vet test build
 ## verify-web: run the web verify gate (needs Node) — fresh install, typecheck, build, test
 verify-web:
 	cd $(WEB_DIR) && npm ci && npm run typecheck && npm run build && npm test
+
+## e2e-base: build the systemd base image with the freshly-built panel binary
+e2e-base: build
+	cp -f $(BINARY) $(E2E_DOCKER)/indiepg
+	DOCKER_CONTEXT=$(E2E_DOCKER_CONTEXT) docker build -f $(E2E_DOCKER)/Dockerfile.base -t $(E2E_BASE_IMAGE) $(E2E_DOCKER)
+
+## e2e-preinstalled: build the provisioned image (boots base, runs install, commits)
+e2e-preinstalled: e2e-base
+	DOCKER_CONTEXT=$(E2E_DOCKER_CONTEXT) bash $(E2E_DOCKER)/build-preinstalled.sh
+
+## e2e-images: build both e2e images (base + preinstalled)
+e2e-images: e2e-preinstalled
+
+## e2e: build the images and run the e2e suite. Run one scenario with
+##      `make e2e SCENARIO=TestBackupFull`. The build tag keeps these out of
+##      `go test ./...`, so the per-push gate is unaffected.
+e2e: e2e-images
+	DOCKER_CONTEXT=$(E2E_DOCKER_CONTEXT) $(GO) test -tags e2e ./$(E2E_DIR)/... -count=1 -timeout 30m -v $(E2E_RUN)
+
+## e2e-clean: remove the e2e images and the staged binary
+e2e-clean:
+	-DOCKER_CONTEXT=$(E2E_DOCKER_CONTEXT) docker rmi $(E2E_PREINSTALLED_IMAGE) $(E2E_BASE_IMAGE)
+	-rm -f $(E2E_DOCKER)/indiepg
 
 ## tidy: tidy and verify the module graph
 tidy:

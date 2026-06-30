@@ -203,6 +203,9 @@ type backupTargetUpdate struct {
 	AccessKey *string `json:"access_key,omitempty"`
 	SecretKey *string `json:"secret_key,omitempty"`
 	UseSSL    *bool   `json:"use_ssl,omitempty"`
+	// URIStyle is "host" (default) or "path" (MinIO / self-hosted S3). It is not a
+	// secret and round-trips through the API like the other structural locators.
+	URIStyle *string `json:"uri_style,omitempty"`
 	// CipherPass enables repo encryption; write-only, like SecretKey.
 	CipherPass *string `json:"cipher_pass,omitempty"`
 }
@@ -351,6 +354,7 @@ func applyConfigUpdate(cfg *config.Config, req updateConfigRequest) {
 		setIf(&cfg.Backup.Prefix, b.Prefix)
 		setIf(&cfg.Backup.AccessKey, b.AccessKey)
 		setIfBool(&cfg.Backup.UseSSL, b.UseSSL)
+		setIf(&cfg.Backup.URIStyle, b.URIStyle)
 		// Write-only secrets: only overwrite when a non-empty value is given, so a
 		// round-tripped (redacted) form never clears the stored value.
 		if b.SecretKey != nil && *b.SecretKey != "" {
@@ -382,7 +386,8 @@ func s3TargetChanged(a, b config.S3Target) bool {
 		a.Bucket != b.Bucket ||
 		a.AccessKey != b.AccessKey ||
 		a.SecretKey != b.SecretKey ||
-		a.UseSSL != b.UseSSL
+		a.UseSSL != b.UseSSL ||
+		a.PathStyle() != b.PathStyle()
 }
 
 func setIf(dst *string, src *string) {

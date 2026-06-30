@@ -263,6 +263,7 @@ func (s *Server) ensureBackupConfigured(ctx context.Context, cfg config.Config) 
 		AccessKey:     cfg.Backup.AccessKey,
 		SecretKey:     cfg.Backup.SecretKey,
 		UseSSL:        cfg.Backup.UseSSL,
+		URIStyle:      cfg.Backup.URIStyle,
 		RetentionDays: cfg.RetentionDays,
 		CipherPass:    cfg.Backup.CipherPass,
 		PGDataDir:     dataDir,
@@ -326,6 +327,7 @@ func backupOwnerFor(ctx context.Context, st *store.Store, cfg config.Config, log
 		AccessKey: cfg.Backup.AccessKey,
 		SecretKey: cfg.Backup.SecretKey,
 		UseSSL:    cfg.Backup.UseSSL,
+		PathStyle: cfg.Backup.PathStyle(),
 	})
 	if err != nil {
 		log.Warn("backup ownership guard unavailable: could not build S3 client", "err", err)
@@ -353,6 +355,7 @@ func migrateServiceFor(cfg config.Config, runner exec.Runner, log *core.Logger) 
 		AccessKey: cfg.Backup.AccessKey,
 		SecretKey: cfg.Backup.SecretKey,
 		UseSSL:    cfg.Backup.UseSSL,
+		PathStyle: cfg.Backup.PathStyle(),
 	})
 	if err != nil {
 		log.Warn("ssh-less migration unavailable: could not build S3 client", "err", err)
@@ -380,6 +383,7 @@ func dropTransportFor(cfg config.Config, log *core.Logger) migrate.DropTransport
 		AccessKey: cfg.Backup.AccessKey,
 		SecretKey: cfg.Backup.SecretKey,
 		UseSSL:    cfg.Backup.UseSSL,
+		PathStyle: cfg.Backup.PathStyle(),
 	})
 	if err != nil {
 		log.Warn("drop-off migration unavailable: could not build S3 client", "err", err)

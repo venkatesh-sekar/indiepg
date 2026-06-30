@@ -38,13 +38,19 @@ const (
 )
 
 // versionedPackages is the set of packages a versioned install lays down for a
-// given major: the versioned server and its contrib bundle, plus pgbackrest
-// (kept here, not installed lazily, because the backup feature shells out to the
-// `pgbackrest` binary — see manager.go's original aptPackages note).
+// given major: the versioned server (which BUNDLES the contrib modules on
+// Debian/Ubuntu — pg_stat_statements, citext, hstore, pgcrypto, … all ship
+// inside postgresql-<major> since PG 10; it merely Provides the virtual
+// "postgresql-contrib-<major>", there is NO installable "postgresql-<major>-contrib"
+// package on PGDG/Debian), plus pgbackrest (kept here, not installed lazily,
+// because the backup feature shells out to the `pgbackrest` binary).
+//
+// Requesting a literal "postgresql-<major>-contrib" makes `apt-get install` abort
+// with "Unable to locate package", which would fail every fresh install — so the
+// contrib bundle is obtained through the server package alone.
 func versionedPackages(major int) []string {
 	return []string{
 		fmt.Sprintf("postgresql-%d", major),
-		fmt.Sprintf("postgresql-%d-contrib", major),
 		"pgbackrest",
 	}
 }
