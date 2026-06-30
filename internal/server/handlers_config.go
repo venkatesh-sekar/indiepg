@@ -229,6 +229,18 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Serialize the ENTIRE config update — Load -> overlay -> validate -> save ->
+	// transport swap — under the drop-off lifecycle lock, which a drop-off mint also
+	// holds. EVERY config save must be mutually exclusive with both a mint AND any
+	// other config save, not just the S3-changing path: a concurrent non-S3 save could
+	// otherwise Load the OLD S3 target, then Save it back AFTER another request changed
+	// S3 (or after a mint slipped in), silently reverting the target and orphaning that
+	// mint's sessions. Holding the lock across the whole critical section makes the
+	// uncleaned-session check, the Save, and the transport swap one atomic step.
+	// Config saves are rare, so briefly serializing mints is immaterial.
+	s.dropLifecycleMu.Lock()
+	defer s.dropLifecycleMu.Unlock()
+
 	cfg, err := config.Load(ctx, s.store)
 	if err != nil {
 		writeError(w, err)
@@ -253,16 +265,11 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// 'expired' proves the objects are gone. Make the operator finish, cancel, or let
 	// the open sessions expire first.
 	//
-	// The whole CHECK -> save -> transport SWAP runs under dropLifecycleMu, which a
+	// The whole handler already runs under dropLifecycleMu (acquired above), which a
 	// concurrent mint also holds for its read-transport -> insert sequence, so a mint
-	// cannot slip a session in between the check and the swap (and so point its URLs at
-	// the old bucket). The lock is taken only on the target-changing path and held for
-	// the rest of the handler — config saves are rare, so briefly serializing mints is
-	// immaterial.
+	// cannot slip a session in between this check and the transport swap below (and so
+	// point its URLs at the old bucket).
 	if s3TargetChanged(prevBackup, cfg.Backup) {
-		s.dropLifecycleMu.Lock()
-		defer s.dropLifecycleMu.Unlock()
-
 		if uncleaned, cerr := s.store.CountUncleanedDropoffs(ctx); cerr != nil {
 			writeError(w, cerr)
 			return

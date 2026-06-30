@@ -168,6 +168,92 @@ func TestDropMeta_SourceRowCountsKeyParity(t *testing.T) {
 	require.Equal(t, map[string]int64{"public.users": 3, "billing.invoices": 7}, got)
 }
 
+// TestCompareRowCountsByTable_dotNamesDoNotCollide pins finding #5 at the unit level:
+// two DISTINCT (schema, name) pairs that flatten to the same "a.b.c" string must be
+// compared independently, so a real mismatch on one is never masked by the other.
+func TestCompareRowCountsByTable_dotNamesDoNotCollide(t *testing.T) {
+	src := map[TableKey]int64{{Schema: "a", Name: "b.c"}: 100, {Schema: "a.b", Name: "c"}: 200}
+	tgt := map[TableKey]int64{{Schema: "a", Name: "b.c"}: 50, {Schema: "a.b", Name: "c"}: 200}
+	diffs := compareRowCountsByTable(src, tgt)
+	require.Len(t, diffs, 1, "the per-pair comparison must catch the a/b.c mismatch")
+	require.Equal(t, "a.b.c", diffs[0].Table)
+	require.Equal(t, int64(100), diffs[0].Source)
+	require.Equal(t, int64(50), diffs[0].Target)
+}
+
+// TestImportFromDrop_dotNameCollisionDoesNotFalsePass pins finding #5 end to end: the
+// source claims two tables whose (schema, name) pairs flatten to the same string but
+// hold different counts; the restored target under-restores the first. A flattened-key
+// comparison would collapse them and could falsely report success — the structured
+// (schema, name) comparison must instead FAIL verification.
+func TestImportFromDrop_dotNameCollisionDoesNotFalsePass(t *testing.T) {
+	tr := newFakeDrop()
+	dump := []byte("PGDMP-collision")
+	meta := DropMeta{
+		SchemaVersion: DropMetaSchemaVersion,
+		SourceDB:      "appdb",
+		SHA256:        sha256Hex(dump),
+		ByteSize:      int64(len(dump)),
+		Tables: []DropTable{
+			{Schema: "a", Name: "b.c", Rows: 100},
+			{Schema: "a.b", Name: "c", Rows: 200},
+		},
+	}
+	raw, err := json.Marshal(meta)
+	require.NoError(t, err)
+	tr.put(DropDumpKey("ABCDEF"), dump)
+	tr.put(DropMetaKey("ABCDEF"), raw)
+
+	// The target under-restored a/b.c (50 != claimed 100); a.b/c matches.
+	eng := &fakeEngine{
+		exists: true,
+		rowCountsByTable: map[string]map[TableKey]int64{
+			"tgt:appdb": {
+				{Schema: "a", Name: "b.c"}: 50,
+				{Schema: "a.b", Name: "c"}: 200,
+			},
+		},
+	}
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, nil, nil)
+	err = o.ImportFromDrop(context.Background(), tr, dropSpec("ABCDEF"), rec)
+	require.Error(t, err, "a real per-table mismatch hidden by a dot-name collision must NOT pass")
+	require.Contains(t, err.Error(), "verification failed")
+	require.False(t, rec.succeeded)
+	require.Empty(t, tr.deletes, "a verification failure keeps the S3 objects")
+}
+
+// TestImportFromDrop_duplicateTablePairRejected pins the second half of finding #5:
+// metadata that lists the SAME (schema, name) pair twice is rejected up front, so one
+// claimed count can never silently overwrite the other and hide a mismatch.
+func TestImportFromDrop_duplicateTablePairRejected(t *testing.T) {
+	tr := newFakeDrop()
+	dump := []byte("PGDMP-dup")
+	meta := DropMeta{
+		SchemaVersion: DropMetaSchemaVersion,
+		SHA256:        sha256Hex(dump),
+		ByteSize:      int64(len(dump)),
+		Tables: []DropTable{
+			{Schema: "public", Name: "users", Rows: 1},
+			{Schema: "public", Name: "users", Rows: 2}, // same pair listed twice
+		},
+	}
+	raw, err := json.Marshal(meta)
+	require.NoError(t, err)
+	tr.put(DropDumpKey("ABCDEF"), dump)
+	tr.put(DropMetaKey("ABCDEF"), raw)
+
+	eng := &fakeEngine{exists: true}
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, nil, nil)
+	err = o.ImportFromDrop(context.Background(), tr, dropSpec("ABCDEF"), rec)
+	require.Error(t, err)
+	require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	require.Contains(t, err.Error(), "more than once")
+	require.Empty(t, eng.restores, "must not restore metadata with a duplicate table pair")
+	require.Empty(t, tr.deletes)
+}
+
 func TestImportFromDrop_happyPath(t *testing.T) {
 	tr := newFakeDrop()
 	dump := []byte("PGDMP-dropoff-happy")

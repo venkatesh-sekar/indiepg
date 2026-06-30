@@ -422,6 +422,82 @@ func TestStartDropoffWhenUploadedRecordsMigration(t *testing.T) {
 	require.Equal(t, int64(len(dump)), drec.ByteSize)
 }
 
+// TestStartDropoffRejectedWhenTargetBusy pins finding #3: a Start must be REFUSED
+// when another import worker is already restoring into the same local target
+// database, so two imports never race DROP/CREATE/pg_restore/cleanup into it. The
+// refused Start must leave the session re-startable (not flipped to importing or
+// linked), and releasing the target must admit a subsequent Start.
+func TestStartDropoffRejectedWhenTargetBusy(t *testing.T) {
+	srv, fake, token := withDrops(t)
+
+	rec := authedRequest(t, srv, http.MethodPost, "/api/migrate/drops", token, map[string]any{
+		"target_database": "appdb",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	var env struct {
+		Data createDropoffResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env))
+	code := env.Data.Code
+	fake.put(migrate.DropDumpKey(code), []byte("PGDMP-busy"))
+	fake.put(migrate.DropMetaKey(code), []byte(`{"sha256":"x"}`))
+
+	// Simulate another import worker already restoring into the same target.
+	require.True(t, srv.claimImportTarget("appdb"))
+
+	rec = authedRequest(t, srv, http.MethodPost, "/api/migrate/drops/"+code+"/start", token, nil)
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+	var ae apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeConflict, ae.Code)
+	require.Contains(t, strings.ToLower(ae.Message), "importing into")
+
+	// The session must NOT have been flipped to importing or linked to a migration.
+	drec, err := srv.store.GetDropoffByCode(context.Background(), code)
+	require.NoError(t, err)
+	require.Nil(t, drec.MigrationID, "a busy-target refusal must not link a migration")
+	require.NotEqual(t, string(migrate.DropImporting), drec.Status)
+
+	// Releasing the target admits a subsequent Start.
+	srv.releaseImportTarget("appdb")
+	rec = authedRequest(t, srv, http.MethodPost, "/api/migrate/drops/"+code+"/start", token, nil)
+	require.Equal(t, http.StatusAccepted, rec.Code, "body: %s", rec.Body.String())
+}
+
+// TestStartMigrateRejectedWhenTargetBusy pins the cross-mode half of finding #3: a
+// direct single-db import into a target that another worker is already restoring into
+// is rejected too, proving the admission gate is shared across migration modes (not
+// just between two drop-off codes).
+func TestStartMigrateRejectedWhenTargetBusy(t *testing.T) {
+	srv, _ := newTestServer(t)
+	token := login(t, srv, testPassword)
+
+	// Simulate an import (e.g. a drop-off or ssh-less) already restoring into "appdb".
+	require.True(t, srv.claimImportTarget("appdb"))
+
+	rec := authedRequest(t, srv, http.MethodPost, "/api/migrate/single-db", token, map[string]any{
+		"source": map[string]any{
+			"host": "10.0.0.9", "port": "5432", "user": "app", "database": "src",
+		},
+		"target_database": "appdb",
+	})
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+	var ae apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeConflict, ae.Code)
+	require.Contains(t, strings.ToLower(ae.Message), "importing into")
+
+	// Releasing the target admits the direct import.
+	srv.releaseImportTarget("appdb")
+	rec = authedRequest(t, srv, http.MethodPost, "/api/migrate/single-db", token, map[string]any{
+		"source": map[string]any{
+			"host": "10.0.0.9", "port": "5432", "user": "app", "database": "src",
+		},
+		"target_database": "appdb",
+	})
+	require.Equal(t, http.StatusAccepted, rec.Code, "body: %s", rec.Body.String())
+}
+
 // TestCancelDropoffDeletesObjects verifies cancel removes the data at rest and
 // marks the session failed.
 func TestCancelDropoffDeletesObjects(t *testing.T) {

@@ -19,9 +19,12 @@ var _ migrate.DropTransport = (*backup.S3ObjectStore)(nil)
 // it survives the HTTP response but a stalled transfer cannot wedge it forever.
 // The Orchestrator records migration progress via the recorder; this wrapper also
 // updates the dropoff_sessions status terminally.
-func (s *Server) runDropImportWorker(id int64, code string) {
+func (s *Server) runDropImportWorker(id int64, code, targetDB string) {
 	ctx, cancel := workerContext()
 	defer cancel()
+	// Release the process-local target claim handleStartDropoff acquired, so the next
+	// import into this local target is admitted once this worker exits.
+	defer s.releaseImportTarget(targetDB)
 	rec := newStoreRecorder(s.store, id)
 
 	// Capture the transport ONCE for the whole import: a config save cannot swap it

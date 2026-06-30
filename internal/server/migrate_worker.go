@@ -180,6 +180,9 @@ func marshalCounts(m map[string]int64) string {
 func (s *Server) runDirectJob(id int64, job migrate.Job) {
 	ctx, cancel := workerContext()
 	defer cancel()
+	// Release the process-local target claim startDirectJob acquired, so the next
+	// import into this local target is admitted once this worker exits.
+	defer s.releaseImportTarget(importTargetKey(job))
 	rec := newStoreRecorder(s.store, id)
 
 	// Resolve the local target here (it needs a live Postgres for the port) so a
@@ -226,9 +229,11 @@ func (s *Server) runExportJob(id int64, sess *migrate.MigrationSession, src migr
 // the shared session document until the source has finished exporting (or the
 // session fails/expires), then downloads, restores, and verifies the dump into
 // the local Postgres. It requires the S3-backed Service.
-func (s *Server) runImportWorker(id int64, code string) {
+func (s *Server) runImportWorker(id int64, code, targetDB string) {
 	ctx, cancel := workerContext()
 	defer cancel()
+	// Release the process-local target claim handleCreateMigrationSession acquired.
+	defer s.releaseImportTarget(targetDB)
 	rec := newStoreRecorder(s.store, id)
 
 	tgt, err := s.localTargetConn(ctx)

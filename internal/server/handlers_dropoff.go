@@ -379,6 +379,25 @@ func (s *Server) handleStartDropoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Process-local admission gate: refuse to start a SECOND import into a target that
+	// another worker is already restoring into — a different drop-off code, or a
+	// single-db / ssh-less / cluster import — which would race DROP/CREATE/pg_restore
+	// and cleanup into the same local database. The per-code ClaimDropoffForImport
+	// below only guards THIS code; this guards the target across codes and modes.
+	// Claimed before that flip (so a busy-target refusal leaves the session
+	// re-startable), released by the worker when it exits.
+	if !s.claimImportTarget(rec.TargetDatabase) {
+		s.audit(ctx, "migrate_dropoff_start", code, "failure", "target busy", core.CodeOf(errImportTargetBusy(rec.TargetDatabase)))
+		writeError(w, errImportTargetBusy(rec.TargetDatabase))
+		return
+	}
+	targetClaimHeld := true
+	defer func() {
+		if targetClaimHeld {
+			s.releaseImportTarget(rec.TargetDatabase)
+		}
+	}()
+
 	// Atomically claim the start. Two concurrent POSTs (a double-click, two tabs,
 	// a retried request, direct API use) both pass the status/stat checks above,
 	// but only ONE wins this conditional flip to 'importing' — without it both
@@ -424,7 +443,8 @@ func (s *Server) handleStartDropoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.runDropImportWorker(id, code)
+	go s.runDropImportWorker(id, code, rec.TargetDatabase)
+	targetClaimHeld = false // the worker now owns the claim
 
 	s.audit(ctx, "migrate_dropoff_start", code, "success",
 		migrationSummaryFor(migrate.ModeDropOff, "drop-off "+code), "")
@@ -587,7 +607,16 @@ func dropoffMigrationRecord(code, targetDB string, overwrite bool) store.Migrati
 // it. Best-effort: any store error only logs (the request is already failing, and a
 // restart sweep is the backstop). The cause is the same store error surfaced to the
 // caller and carries no source secrets.
+//
+// The terminal write runs on a context DETACHED from the request's cancellation and
+// re-bounded (context.WithoutCancel + a short timeout), matching the recorder's
+// Fail/Succeed: the very failure that triggers this cleanup can be the request
+// context being cancelled, and reusing that cancelled context would make
+// GetMigration/UpdateMigration a no-op — leaving the row a phantom 'importing' until
+// the next restart's SweepRunningMigrations reclaims it.
 func (s *Server) failMigrationRow(ctx context.Context, id int64, cause error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	mrec, err := s.store.GetMigration(ctx, id)
 	if err != nil {
 		s.log.Warn("could not load migration to mark failed after drop-off link failure", "id", id, "err", err)

@@ -191,8 +191,25 @@ type PgEngine interface {
 	// Restore runs pg_restore of dumpPath into targetDatabase.
 	Restore(ctx context.Context, conn ConnInfo, dumpPath, targetDatabase string, opts RestoreOpts) error
 	// RowCounts returns a "schema.table" -> count map for every user BASE TABLE
-	// in the database.
+	// in the database. The flattened key is convenient for display/storage but is
+	// AMBIGUOUS when a schema or table name contains a dot (schema "a"/table "b.c"
+	// collides with schema "a.b"/table "c"); callers that must compare counts
+	// table-by-table without that collision use RowCountsByTable instead.
 	RowCounts(ctx context.Context, conn ConnInfo, database string) (map[string]int64, error)
+	// RowCountsByTable is RowCounts keyed by the unambiguous (schema, name) pair, so
+	// two tables whose names flatten to the same "schema.name" string never collapse
+	// onto each other. The drop-off verification uses it so a real per-table mismatch
+	// can never be masked by a name collision.
+	RowCountsByTable(ctx context.Context, conn ConnInfo, database string) (map[TableKey]int64, error)
+}
+
+// TableKey identifies a table by its (schema, name) pair WITHOUT flattening it to a
+// "schema.name" string, so a legal name containing a dot cannot collide with a
+// different pair (schema "a"/table "b.c" vs schema "a.b"/table "c" both flatten to
+// "a.b.c"). It is the comparison key for the drop-off row-count verification.
+type TableKey struct {
+	Schema string
+	Name   string
 }
 
 // engine is the production PgEngine over an exec.Runner.
@@ -546,10 +563,29 @@ func restoreStderrFatal(stderr string) bool {
 	return strings.Contains(lower, "error:") || strings.Contains(lower, "fatal:")
 }
 
-// RowCounts returns a "schema.table" -> row count map for every user BASE TABLE
-// in the database. It first lists the tables, then runs one count query that
-// UNIONs a count per table so a single round trip yields every count.
+// RowCounts returns a "schema.table" -> row count map for every user BASE TABLE in
+// the database. It delegates to RowCountsByTable and flattens the result; the flat
+// key is kept for display/storage (History row counts, the ssh-less session
+// document) where its potential collision is harmless. Callers that VERIFY counts
+// table-by-table use RowCountsByTable directly so a name collision cannot mask a
+// real mismatch.
 func (e *engine) RowCounts(ctx context.Context, conn ConnInfo, database string) (map[string]int64, error) {
+	byTable, err := e.RowCountsByTable(ctx, conn, database)
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int64, len(byTable))
+	for k, n := range byTable {
+		counts[k.Schema+"."+k.Name] = n
+	}
+	return counts, nil
+}
+
+// RowCountsByTable returns a (schema, name) -> row count map for every user BASE
+// TABLE in the database. It first lists the tables, then counts each one. Keying by
+// the structured TableKey rather than a flattened "schema.name" string is what makes
+// the comparison collision-proof for names that contain dots.
+func (e *engine) RowCountsByTable(ctx context.Context, conn ConnInfo, database string) (map[TableKey]int64, error) {
 	if err := core.ValidateIdentifier(database, "database"); err != nil {
 		return nil, err
 	}
@@ -562,7 +598,7 @@ func (e *engine) RowCounts(ctx context.Context, conn ConnInfo, database string) 
 		return nil, err
 	}
 
-	counts := make(map[string]int64)
+	counts := make(map[TableKey]int64)
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -574,12 +610,11 @@ func (e *engine) RowCounts(ctx context.Context, conn ConnInfo, database string) 
 		}
 		schema := strings.TrimSpace(fields[0])
 		table := strings.TrimSpace(fields[1])
-		key := schema + "." + table
 		n, err := e.countRows(ctx, conn, database, schema, table)
 		if err != nil {
 			return nil, err
 		}
-		counts[key] = n
+		counts[TableKey{Schema: schema, Name: table}] = n
 	}
 	return counts, nil
 }

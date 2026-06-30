@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/venkatesh-sekar/indiepg/internal/core"
@@ -117,10 +118,12 @@ type DropTransport interface {
 	DeleteObject(ctx context.Context, key string) error
 }
 
-// DropTable is one table's source row count in meta.json. Schema+Name MUST be
-// the same set engine.RowCounts enumerates (information_schema BASE TABLE outside
-// pg_catalog/information_schema), keyed schema.name, or CompareRowCounts
-// false-fails forever.
+// DropTable is one table's source row count in meta.json. Schema+Name MUST name
+// the same set engine.RowCountsByTable enumerates (information_schema BASE TABLE
+// outside pg_catalog/information_schema), or verification false-fails forever. The
+// verification compares on the (schema, name) PAIR via RowCountsByTable, so a name
+// containing a dot does not collide with a different pair (schema "a"/table "b.c"
+// vs schema "a.b"/table "c").
 type DropTable struct {
 	Schema string `json:"schema"`
 	Name   string `json:"name"`
@@ -140,15 +143,65 @@ type DropMeta struct {
 	TotalRows     int64       `json:"total_rows"`
 }
 
-// SourceRowCounts projects the meta tables into the "schema.table" -> count map
-// shape CompareRowCounts and engine.RowCounts use. Keyed EXACTLY schema+"."+name
-// to match engine.RowCounts (engine.go).
+// SourceRowCounts projects the meta tables into the flattened "schema.table" ->
+// count map used only for the success RECORD (History/display); it shares
+// engine.RowCounts's flattening and is NOT used for verification, which compares on
+// the unambiguous (schema, name) pair via sourceRowCountsByTable.
 func (m DropMeta) SourceRowCounts() map[string]int64 {
 	out := make(map[string]int64, len(m.Tables))
 	for _, t := range m.Tables {
 		out[t.Schema+"."+t.Name] = t.Rows
 	}
 	return out
+}
+
+// sourceRowCountsByTable projects the meta tables into the unambiguous (schema,
+// name) -> count map the drop-off verification compares against the target's
+// engine.RowCountsByTable. parseDropMeta has already rejected any duplicate
+// (schema, name) pair, so no claimed count is silently overwritten here.
+func (m DropMeta) sourceRowCountsByTable() map[TableKey]int64 {
+	out := make(map[TableKey]int64, len(m.Tables))
+	for _, t := range m.Tables {
+		out[TableKey{Schema: t.Schema, Name: t.Name}] = t.Rows
+	}
+	return out
+}
+
+// flattenRowCounts collapses a structured (schema, name) -> count map into the
+// flattened "schema.name" -> count shape the success record/History store. It is
+// only used after verification has matched every pair, so a (pathological) dot-name
+// collision here cannot hide a mismatch — both colliding tables hold equal counts.
+func flattenRowCounts(counts map[TableKey]int64) map[string]int64 {
+	out := make(map[string]int64, len(counts))
+	for k, n := range counts {
+		out[k.Schema+"."+k.Name] = n
+	}
+	return out
+}
+
+// compareRowCountsByTable returns every table whose source and target counts differ,
+// comparing on the unambiguous (schema, name) pair so a name that flattens to the
+// same "schema.name" string as a different pair can never mask a real mismatch (the
+// bug a flattened-key comparison has). The RowCountDiff.Table is the flattened name,
+// used only for the human-readable mismatch summary. Sorted for stable output.
+func compareRowCountsByTable(source, target map[TableKey]int64) []RowCountDiff {
+	seen := make(map[TableKey]struct{}, len(source)+len(target))
+	for k := range source {
+		seen[k] = struct{}{}
+	}
+	for k := range target {
+		seen[k] = struct{}{}
+	}
+	var diffs []RowCountDiff
+	for k := range seen {
+		s := source[k]
+		t := target[k]
+		if s != t {
+			diffs = append(diffs, RowCountDiff{Table: k.Schema + "." + k.Name, Source: s, Target: t})
+		}
+	}
+	sort.Slice(diffs, func(i, j int) bool { return diffs[i].Table < diffs[j].Table })
+	return diffs
 }
 
 // parseDropMeta unmarshals and minimally validates a meta.json document.
@@ -170,6 +223,20 @@ func parseDropMeta(data []byte) (DropMeta, error) {
 	if m.SHA256 == "" {
 		return DropMeta{}, core.ValidationError("drop-off metadata is missing a checksum").
 			WithHint("re-run the push command on the source")
+	}
+	// Reject a duplicate (schema, name) pair: the verification compares per pair, so a
+	// repeated pair would mean one claimed count silently overwrites the other and a
+	// real mismatch on the shadowed table could pass unnoticed. A conforming producer
+	// lists each BASE TABLE exactly once.
+	seen := make(map[TableKey]struct{}, len(m.Tables))
+	for _, t := range m.Tables {
+		k := TableKey{Schema: t.Schema, Name: t.Name}
+		if _, dup := seen[k]; dup {
+			return DropMeta{}, core.ValidationError(
+				"drop-off metadata lists table %q in schema %q more than once", t.Name, t.Schema).
+				WithHint("the metadata is malformed; re-run the push command on the source")
+		}
+		seen[k] = struct{}{}
 	}
 	return m, nil
 }
@@ -372,14 +439,23 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 	}
 
 	o.stage(ctx, rec, StatusImporting, PhaseVerifying)
-	srcCounts := meta.SourceRowCounts()
-	tgtCounts, err := o.engine.RowCounts(ctx, job.Target, job.TargetDatabase)
+	// Verify on the unambiguous (schema, name) pair, NOT the flattened "schema.name"
+	// string: a name containing a dot (schema "a"/table "b.c" vs schema "a.b"/table
+	// "c") would otherwise collapse two distinct tables onto one key and let a real
+	// per-table mismatch be overwritten and pass. parseDropMeta has already rejected
+	// duplicate pairs in the claimed counts.
+	srcByTable := meta.sourceRowCountsByTable()
+	tgtByTable, err := o.engine.RowCountsByTable(ctx, job.Target, job.TargetDatabase)
 	if err != nil {
 		return verifyFail(err)
 	}
-	if diffs := CompareRowCounts(srcCounts, tgtCounts); len(diffs) > 0 {
+	if diffs := compareRowCountsByTable(srcByTable, tgtByTable); len(diffs) > 0 {
 		return verifyFail(rowMismatchError(diffs))
 	}
+	// The verified counts are recorded in the flattened shape for History/display,
+	// where the (harmless on a verified match) collision is acceptable.
+	srcCounts := meta.SourceRowCounts()
+	tgtCounts := flattenRowCounts(tgtByTable)
 
 	// --- success: record completion FIRST, then reclaim the DB at rest ---
 	// Persist success BEFORE deleting the S3 objects: a transient recorder error

@@ -99,6 +99,17 @@ type Server struct {
 	// distinct from dropsMu (which only guards the transport pointer read/write).
 	dropLifecycleMu sync.Mutex
 
+	// importTargetsMu guards inFlightImportTargets, the set of local target databases
+	// (plus a whole-cluster sentinel) that a migration import worker is currently
+	// restoring into. This single panel process owns the local Postgres, so it is a
+	// PROCESS-LOCAL admission gate: a target a worker is already restoring into must
+	// reject a SECOND concurrent Start — another drop-off code, or a single-db /
+	// ssh-less / cluster import — that would otherwise race DROP/CREATE/pg_restore and
+	// cleanup into the same database. A target is claimed at Start and released when
+	// the worker exits.
+	importTargetsMu       sync.Mutex
+	inFlightImportTargets map[string]struct{}
+
 	// upgrades persists the version-upgrade feature's durable state (the in-
 	// flight operation + the pending-finalization record), backed by the config
 	// key/value table so it survives a panel restart. upgradeMu is the single
@@ -395,6 +406,46 @@ func (s *Server) setDropTransport(tr migrate.DropTransport) {
 	s.dropsMu.Lock()
 	s.drops = tr
 	s.dropsMu.Unlock()
+}
+
+// clusterImportTarget is the reserved admission-gate key for a whole-cluster import,
+// which has no single target database name. A real database can never be named this
+// (a NUL byte is not a legal identifier), so it cannot collide with a per-database
+// claim; two concurrent cluster imports (which would race dropping every database)
+// are mutually excluded by claiming it.
+const clusterImportTarget = "\x00whole-cluster"
+
+// claimImportTarget reserves a local target database for an import worker, returning
+// false when another worker is already restoring into it. The caller MUST call
+// releaseImportTarget(target) when the worker exits (or on any Start error after a
+// successful claim). It is the process-local guard against two imports racing into
+// the same database; see inFlightImportTargets.
+func (s *Server) claimImportTarget(target string) bool {
+	s.importTargetsMu.Lock()
+	defer s.importTargetsMu.Unlock()
+	if s.inFlightImportTargets == nil {
+		s.inFlightImportTargets = make(map[string]struct{})
+	}
+	if _, busy := s.inFlightImportTargets[target]; busy {
+		return false
+	}
+	s.inFlightImportTargets[target] = struct{}{}
+	return true
+}
+
+// releaseImportTarget frees a target claimed by claimImportTarget. A delete of an
+// absent key (nil map included) is a safe no-op.
+func (s *Server) releaseImportTarget(target string) {
+	s.importTargetsMu.Lock()
+	defer s.importTargetsMu.Unlock()
+	delete(s.inFlightImportTargets, target)
+}
+
+// errImportTargetBusy is the typed conflict returned when a Start would restore into
+// a local database another import is already restoring into.
+func errImportTargetBusy(target string) error {
+	return core.ConflictError("a migration is already importing into %q on this panel", target).
+		WithHint("wait for the in-progress import to finish or fail before starting another into the same database")
 }
 
 // newServer is the unexported builder used by New and by tests to inject a

@@ -196,17 +196,45 @@ func (s *Server) handleMigrateCluster(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusAccepted, migrateStartedResponse{ID: id, Status: string(migrate.StatusImporting)})
 }
 
+// importTargetKey is the admission-gate key for a direct job: the single target
+// database for single-db, or the whole-cluster sentinel for a cluster import (which
+// targets every database and has no single name).
+func importTargetKey(job migrate.Job) string {
+	if job.Mode == migrate.ModeCluster {
+		return clusterImportTarget
+	}
+	return job.TargetDatabase
+}
+
 // startDirectJob inserts the local migration record and spawns the direct-pull
 // worker on a background context. It returns the record id. The Source.Redacted()
 // summary is the only source detail persisted — never the password.
+//
+// It first claims the target database in the process-local admission gate so a
+// second import into the same local target (any mode) is rejected rather than racing
+// the restore; the spawned worker releases the claim when it exits.
 func (s *Server) startDirectJob(ctx context.Context, job migrate.Job) (int64, error) {
+	target := importTargetKey(job)
+	if !s.claimImportTarget(target) {
+		return 0, errImportTargetBusy(directTargetLabel(job))
+	}
 	rec := storeMigrationRecord(job)
 	id, err := s.store.InsertMigration(ctx, rec)
 	if err != nil {
+		s.releaseImportTarget(target)
 		return 0, err
 	}
 	go s.runDirectJob(id, job)
 	return id, nil
+}
+
+// directTargetLabel is the human-readable target for a busy-target conflict message:
+// the database name for single-db, or "the cluster" when no single name applies.
+func directTargetLabel(job migrate.Job) string {
+	if job.Mode == migrate.ModeCluster {
+		return "the cluster"
+	}
+	return job.TargetDatabase
 }
 
 // handleListMigrations returns the migration history, newest first. Read-only;
@@ -267,6 +295,21 @@ func (s *Server) handleCreateMigrationSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Claim the local target before spawning the import worker: a target another
+	// import is already restoring into must reject this one rather than race the
+	// restore. The worker releases the claim when it exits (after import or TTL).
+	if !s.claimImportTarget(sess.Database) {
+		s.audit(ctx, "migrate_session_create", sess.Database, "failure", "target busy", core.CodeOf(errImportTargetBusy(sess.Database)))
+		writeError(w, errImportTargetBusy(sess.Database))
+		return
+	}
+	targetClaimHeld := true
+	defer func() {
+		if targetClaimHeld {
+			s.releaseImportTarget(sess.Database)
+		}
+	}()
+
 	rec := sessionMigrationRecord(sess.Code, sess.Database)
 	id, err := s.store.InsertMigration(ctx, rec)
 	if err != nil {
@@ -277,7 +320,8 @@ func (s *Server) handleCreateMigrationSession(w http.ResponseWriter, r *http.Req
 
 	// The target side waits for the source to export, then imports. It resolves
 	// the local target Postgres itself so the request returns immediately.
-	go s.runImportWorker(id, sess.Code)
+	go s.runImportWorker(id, sess.Code, sess.Database)
+	targetClaimHeld = false // the worker now owns the claim
 
 	s.audit(ctx, "migrate_session_create", sess.Code, "success", "ssh-less target session created", "")
 	writeData(w, http.StatusCreated, sess)

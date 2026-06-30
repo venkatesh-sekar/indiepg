@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/minio/minio-go/v7"
 	"github.com/stretchr/testify/require"
 	"github.com/venkatesh-sekar/indiepg/internal/core"
 )
@@ -84,25 +83,6 @@ func TestPresignPut_clampsTTL(t *testing.T) {
 	url, err = s.PresignPut(ctx, "k2", 30*24*time.Hour)
 	require.NoError(t, err)
 	require.Contains(t, url, "X-Amz-Signature=")
-}
-
-// TestSelectVersionIDs pins the pure version-selection logic behind the durable
-// (versioned-bucket) delete: a version listing is taken with a Prefix, so it also
-// yields keys that merely START with the target key — those must be left alone — and
-// delete markers ARE removable versions that must be purged so the key leaves no
-// trace.
-func TestSelectVersionIDs(t *testing.T) {
-	key := "pg-migrations/dropoff/ABCDEF/dump"
-	infos := []minio.ObjectInfo{
-		{Key: key, VersionID: "v1"},
-		{Key: key, VersionID: "dm1", IsDeleteMarker: true}, // a delete marker is still a version to purge
-		{Key: key, VersionID: "v2"},
-		{Key: key + "-sibling", VersionID: "vX"}, // prefix match for a DIFFERENT key: never touched
-		{Key: "other/object", VersionID: "vY"},
-	}
-	got := selectVersionIDs(key, infos)
-	require.Equal(t, []string{"v1", "dm1", "v2"}, got,
-		"every exact-key version (incl. delete markers) is purged; a sibling/other key is left alone")
 }
 
 // versionsXML renders a ListObjectVersions response carrying three data versions and
@@ -243,6 +223,95 @@ func TestDeleteObjectPlainDeleteOnUnversionedBucket(t *testing.T) {
 	require.Equal(t, 1, plainDeletes, "a non-versioned bucket uses a single plain delete")
 }
 
+// TestDeleteObjectFailsClosedWhenVersioningUnreadable pins finding #1: if the bucket's
+// versioning state cannot be READ (e.g. a policy without s3:GetBucketVersioning),
+// DeleteObject must NOT fall back to a marker-only plain delete — a versioned bucket
+// would then silently retain the dump's data versions. It must instead surface the
+// lookup error (fail closed) so the mint-time probe rejects the bucket and a sweep
+// retries, never recording an un-erased dump as reclaimed.
+func TestDeleteObjectFailsClosedWhenVersioningUnreadable(t *testing.T) {
+	const key = "pg-migrations/dropoff/ABCDEF/dump"
+
+	var (
+		mu           sync.Mutex
+		plainDeletes int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch {
+		case q.Has("versioning"):
+			// Deny the versioning lookup, modelling a minimal policy.
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>AccessDenied</Message></Error>`)
+		case r.Method == http.MethodDelete && q.Get("versionId") == "":
+			mu.Lock()
+			plainDeletes++
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	s := newStubStore(t, srv.URL)
+	err := s.DeleteObject(context.Background(), key)
+	require.Error(t, err, "an unreadable versioning state must fail the delete, not fall back to a plain delete")
+	require.Equal(t, core.CodeInternal, core.CodeOf(err))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Zero(t, plainDeletes, "must NOT issue a marker-only plain delete when versioning cannot be determined")
+}
+
+// TestDeleteObjectPurgesAllVersionsOnSuspendedBucket pins finding #1: a bucket whose
+// versioning is SUSPENDED still retains the data versions written while it was
+// enabled, so a plain delete would leave the dump at rest. DeleteObject must treat
+// suspended the same as enabled and purge every version by VersionID.
+func TestDeleteObjectPurgesAllVersionsOnSuspendedBucket(t *testing.T) {
+	const key = "pg-migrations/dropoff/ABCDEF/dump"
+
+	var (
+		mu              sync.Mutex
+		deletedVersions []string
+		plainDeletes    int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch {
+		case q.Has("versioning"):
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration><Status>Suspended</Status></VersioningConfiguration>`)
+		case q.Has("versions"):
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = io.WriteString(w, versionsXML(key))
+		case r.Method == http.MethodDelete:
+			vid := q.Get("versionId")
+			mu.Lock()
+			if vid == "" {
+				plainDeletes++
+			} else {
+				deletedVersions = append(deletedVersions, vid)
+			}
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	s := newStubStore(t, srv.URL)
+	require.NoError(t, s.DeleteObject(context.Background(), key))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Zero(t, plainDeletes, "a suspended-versioning bucket must never use a marker-only plain delete")
+	require.ElementsMatch(t, []string{"v1", "v2", "dm1", "v3"}, deletedVersions,
+		"every exact-key version is removed by VersionID; the prefix-sibling is untouched")
+}
+
 // TestProbePutReachable pins the FULL-lifecycle reachability probe (finding #5):
 // the probe must exercise exactly the object operations the PANEL later needs — PUT,
 // then stat (HEAD), then read (GET), then delete — and fail the mint if ANY of them
@@ -287,6 +356,15 @@ func TestProbePutReachable(t *testing.T) {
 				}
 				ok := st == http.StatusOK || st == http.StatusNoContent
 				switch {
+				case r.URL.Query().Has("versioning"):
+					// The durable delete first reads the bucket's versioning state; report
+					// non-versioned so the probe's cleanup is a plain delete (a denied DELETE
+					// still fails the probe below). This op is only reached after HEAD/GET have
+					// already succeeded, so it never collides with the stat/read-denied case.
+					w.Header().Set("Content-Type", "application/xml")
+					w.WriteHeader(http.StatusOK)
+					_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration></VersioningConfiguration>`)
+					return
 				case r.Method == http.MethodPut && ok:
 					w.Header().Set("ETag", `"probe-etag"`)
 					w.WriteHeader(http.StatusOK)

@@ -35,13 +35,15 @@ type S3ObjectStore struct {
 	client *minio.Client
 	bucket string
 
-	// versioned caches the bucket's S3 versioning state (nil until first read). On a
-	// VERSIONED bucket a plain RemoveObject only writes a delete marker and leaves
-	// every prior version — including a full database dump — stored indefinitely, so
-	// DeleteObject must purge ALL versions of a key instead. Versioning is a
-	// bucket-level property that does not change under the panel, so the lookup
-	// (GetBucketVersioning) is done once and cached behind verMu; DeleteObject runs on
-	// the cleanup/sweep paths where an extra round trip per call would be wasteful.
+	// versioned caches the bucket's S3 versioning state, but ONLY a positive result
+	// (nil means "not known to be versioned"). On a VERSIONED (or version-suspended)
+	// bucket a plain RemoveObject only writes a delete marker and leaves every prior
+	// version — including a full database dump — stored indefinitely, so DeleteObject
+	// must purge ALL versions of a key instead. We never turn versioning ON or OFF, so
+	// once observed Enabled/Suspended a bucket stays that way for us and the positive
+	// answer is cached behind verMu to spare a round trip per delete on the sweep path.
+	// A NEGATIVE answer is deliberately NOT cached: versioning can be enabled on a
+	// bucket at any time, so a cached "false" could later become unsafe; we re-check.
 	verMu     sync.Mutex
 	versioned *bool
 }
@@ -174,21 +176,26 @@ func (s *S3ObjectStore) PutObjectIfAbsent(ctx context.Context, key string, data 
 
 // DeleteObject DURABLY removes the object. A missing object is not an error.
 //
-// On a non-versioned bucket this is a plain RemoveObject. On a VERSIONED bucket a
-// plain RemoveObject only writes a delete marker and leaves the object's data
-// versions — a full database dump, in the drop-off case — at rest forever; the sweep
-// would then record the session 'expired' as if the data were reclaimed. So when the
-// bucket has versioning enabled, every version of the key is purged instead (list +
-// RemoveObject per VersionID). If a version cannot be removed (Object Lock /
-// retention), that surfaces as an error so the caller does not falsely believe the
-// data is gone — and the mint-time probe (ProbePutReachable) catches such a bucket up
-// front. If the bucket's versioning state cannot even be read (e.g. a minimal policy
-// without s3:GetBucketVersioning), the common non-versioned case is assumed and a
-// plain delete is used; the probe is the place a truly-versioned bucket is rejected.
+// On a non-versioned bucket this is a plain RemoveObject. On a VERSIONED (or
+// version-suspended) bucket a plain RemoveObject only writes a delete marker and
+// leaves the object's data versions — a full database dump, in the drop-off case —
+// at rest forever; the sweep would then record the session 'expired' as if the data
+// were reclaimed. So when the bucket retains versions, every version of the key is
+// purged instead (streamed list + RemoveObject per VersionID). If a version cannot
+// be removed (Object Lock / retention), that surfaces as an error so the caller does
+// not falsely believe the data is gone — and the mint-time probe (ProbePutReachable)
+// catches such a bucket up front.
+//
+// FAIL CLOSED: if the bucket's versioning state cannot even be READ (e.g. a minimal
+// policy without s3:GetBucketVersioning), we do NOT fall back to a plain delete — a
+// plain delete on a bucket that is in fact versioned would silently leave the dump's
+// data versions behind. We surface the lookup error instead, so the mint-time probe
+// rejects such a bucket up front and a cleanup/sweep retries rather than recording an
+// un-erased dump as reclaimed.
 func (s *S3ObjectStore) DeleteObject(ctx context.Context, key string) error {
 	versioned, verr := s.bucketVersioningEnabled(ctx)
 	if verr != nil {
-		versioned = false // could not determine; fall back to a plain delete
+		return verr // cannot prove a plain delete is durable; fail closed
 	}
 	if versioned {
 		return s.purgeAllVersions(ctx, key)
@@ -199,34 +206,45 @@ func (s *S3ObjectStore) DeleteObject(ctx context.Context, key string) error {
 	return nil
 }
 
-// bucketVersioningEnabled reports whether the bucket has S3 versioning enabled,
-// caching the result (see the S3ObjectStore.versioned doc). A read failure is
-// returned to the caller, which decides how to degrade.
+// bucketVersioningEnabled reports whether the bucket retains object versions (S3
+// versioning Enabled OR Suspended), caching only a POSITIVE result (see the
+// S3ObjectStore.versioned doc). A read failure is returned to the caller, which
+// FAILS CLOSED rather than assuming the safe-looking non-versioned case.
 func (s *S3ObjectStore) bucketVersioningEnabled(ctx context.Context) (bool, error) {
 	s.verMu.Lock()
 	defer s.verMu.Unlock()
 	if s.versioned != nil {
-		return *s.versioned, nil
+		return *s.versioned, nil // only ever cached when true
 	}
 	vc, err := s.client.GetBucketVersioning(ctx, s.bucket)
 	if err != nil {
 		return false, core.InternalError("backup: read S3 bucket versioning for %q", s.bucket).Wrap(err)
 	}
-	v := vc.Enabled()
-	s.versioned = &v
+	// BOTH Enabled and Suspended retain prior versions: suspending versioning stops
+	// NEW versions but does NOT delete the ones already at rest, so a plain delete on a
+	// suspended-but-previously-versioned bucket would still leave the dump behind.
+	// Treat suspended as versioned and purge by VersionID.
+	v := vc.Enabled() || vc.Suspended()
+	if v {
+		// Cache ONLY the positive answer: a "false" must be re-checked because
+		// versioning could be enabled on the bucket later.
+		cached := true
+		s.versioned = &cached
+	}
 	return v, nil
 }
 
 // purgeAllVersions removes EVERY version (and delete marker) of key on a versioned
 // bucket, so the object's data is truly erased rather than merely hidden behind a
-// delete marker. It lists the key's versions first (draining the channel fully) and
-// then removes each by VersionID; any removal failure (e.g. an Object-Lock-retained
-// version) is returned so the caller knows the data is NOT gone.
+// delete marker. It STREAMS the version listing and removes each matching version by
+// VersionID as it is listed, NEVER accumulating every version in memory: a holder of
+// the still-valid presigned PUT could create an unbounded number of versions, and
+// buffering them all would exhaust the panel. Any removal failure (e.g. an
+// Object-Lock-retained version) is returned so the caller knows the data is NOT gone.
 func (s *S3ObjectStore) purgeAllVersions(ctx context.Context, key string) error {
 	listCtx, cancel := context.WithCancel(ctx)
 	defer cancel() // ensure the minio list goroutine is released even on early return
 
-	var infos []minio.ObjectInfo
 	for info := range s.client.ListObjects(listCtx, s.bucket, minio.ListObjectsOptions{
 		Prefix:       key,
 		WithVersions: true,
@@ -235,38 +253,25 @@ func (s *S3ObjectStore) purgeAllVersions(ctx context.Context, key string) error 
 		if info.Err != nil {
 			return core.InternalError("backup: list versions of S3 object %q", key).Wrap(info.Err)
 		}
-		infos = append(infos, info)
-	}
-	for _, vid := range selectVersionIDs(key, infos) {
-		// GovernanceBypass lets the panel reclaim its own dump under GOVERNANCE-mode
-		// Object Lock (the only mode that is bypassable); COMPLIANCE-mode retention is
-		// not bypassable and will surface here as an error, failing the cleanup honestly.
+		// A version listing taken with a Prefix also yields keys that merely START with
+		// key (e.g. "dump" matches "dump2"); only the EXACT key's versions are ours.
+		// Delete markers ARE removable versions and must be purged too so no trace is left.
+		if info.Key != key {
+			continue
+		}
+		// Remove THIS version immediately rather than collecting every VersionID first,
+		// keeping memory bounded regardless of how many versions exist. GovernanceBypass
+		// lets the panel reclaim its own dump under GOVERNANCE-mode Object Lock (the only
+		// bypassable mode); COMPLIANCE-mode retention is not bypassable and surfaces here
+		// as an error, failing the cleanup honestly.
 		if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{
-			VersionID:        vid,
+			VersionID:        info.VersionID,
 			GovernanceBypass: true,
 		}); err != nil {
 			return core.InternalError("backup: delete version of S3 object %q", key).Wrap(err)
 		}
 	}
 	return nil
-}
-
-// selectVersionIDs returns the VersionID of every listing entry whose Key EXACTLY
-// equals key. A version listing is taken with a Prefix, which also yields keys that
-// merely START with key (e.g. "dump" would match "dump2"), so the exact-key match is
-// required to never touch a neighbouring object; delete markers are INCLUDED (each is
-// itself a removable version) so the key is left with no trace. Extracted as a pure
-// function so this filtering — the part with the subtle bugs — is unit-testable
-// without a live S3.
-func selectVersionIDs(key string, infos []minio.ObjectInfo) []string {
-	var ids []string
-	for _, in := range infos {
-		if in.Key != key {
-			continue
-		}
-		ids = append(ids, in.VersionID)
-	}
-	return ids
 }
 
 // countDataVersions returns how many NON-delete-marker versions of key remain at
@@ -433,9 +438,10 @@ func (s *S3ObjectStore) ProbePutReachable(ctx context.Context, key string) error
 	// On a VERSIONED bucket, confirm the delete actually ERASED the object rather than
 	// leaving data versions at rest: a full database dump that can never be purged
 	// (versioning + Object Lock / a retention rule) is a real data-retention problem,
-	// so fail the mint NOW instead of silently orphaning it after every import. A
-	// bucket whose versioning state cannot even be read (no s3:GetBucketVersioning) is
-	// assumed non-versioned — the common case — and skips this check.
+	// so fail the mint NOW instead of silently orphaning it after every import. The
+	// explicit DeleteObject above already FAILS CLOSED when the versioning state cannot
+	// be read, so reaching here means the lookup succeeded; a clean non-versioned
+	// bucket simply skips this check.
 	if versioned, verr := s.bucketVersioningEnabled(ctx); verr == nil && versioned {
 		remaining, lerr := s.countDataVersions(ctx, key)
 		if lerr != nil {
