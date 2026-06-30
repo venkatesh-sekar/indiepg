@@ -1539,6 +1539,15 @@ export function DropoffProgress({
         <Callout tone="warn" title="This drop-off link expired">
           The upload links are no longer valid. Start a new drop-off to try again.
         </Callout>
+      ) : status === "canceled" ? (
+        // A remote cancel (another tab, or the expiry sweep) can land while the live
+        // command is still on screen. Hide it and say plainly that the import is
+        // blocked — the upload links themselves can't be revoked, they just expire.
+        <Callout tone="warn" title="Drop-off cancelled">
+          This drop-off was cancelled, so the import is blocked and will never run. The upload links
+          can&apos;t be revoked, but they expire on their own. Start a new drop-off if you still need
+          to migrate.
+        </Callout>
       ) : status === "failed" ? (
         <Callout tone="danger" title="Drop-off failed">
           {drop?.error || "The drop-off could not complete."}
@@ -1627,8 +1636,10 @@ export function DropoffProgress({
         }
       >
         <p>
-          The upload links are invalidated and any uploaded dump is deleted from your bucket. Nothing
-          on this server changes.
+          Cancelling blocks the import: this link can never start a restore, even if a dump is
+          uploaded later. The two upload links can&apos;t be revoked once minted — they simply expire
+          on their own — but the panel deletes any already-uploaded dump from your bucket. Nothing on
+          this server changes.
         </p>
       </Modal>
     </Card>
