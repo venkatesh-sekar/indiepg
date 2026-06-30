@@ -176,23 +176,33 @@ fi
 # script, so a `[ -t 0 ]`/`read` would never fire (and would eat the script). Going
 # through /dev/tty makes the masked prompt actually work under curl|sh.
 if [ -z "$CONTAINER" ] && [ -z "${PGPASSWORD:-}" ]; then
-	if [ -e /dev/tty ]; then
-		printf '%s: Postgres password for %s@%s (blank if none): ' "$REPO_PUSH" "$USER_NAME" "$HOST" >/dev/tty
+	# `[ -e /dev/tty ]` is NOT a reliable test: the device node exists even with no
+	# controlling terminal (e.g. an unattended `curl ... | sh` run under cron/CI), and
+	# OPENING it then fails (ENXIO). Under `set -e` that failed open would abort the
+	# run instead of falling back to peer/PGPASSWORD auth as documented. So actually
+	# try to open the terminal on a dedicated fd (3). The probe runs in a SUBSHELL so a
+	# failed redirection exits only that subshell — never this script — regardless of
+	# `set -e` / POSIX special-builtin semantics; only if the open succeeds do we open
+	# fd 3 for real and prompt.
+	if ( exec 3<>/dev/tty ) 2>/dev/null; then
+		exec 3<>/dev/tty
+		printf '%s: Postgres password for %s@%s (blank if none): ' "$REPO_PUSH" "$USER_NAME" "$HOST" >&3
 		# Restore echo even if interrupted. stty -echo mutes the terminal for the
 		# masked read; a Ctrl-C / SIGTERM delivered while the read is waiting would
 		# otherwise leave the operator's terminal permanently echo-disabled (until a
 		# manual `stty echo` / `reset`). This dedicated trap re-enables echo and then
 		# aborts (130 = SIGINT) before the temp-file EXIT trap below is even armed.
-		trap 'stty echo </dev/tty 2>/dev/null || true; exit 130' INT TERM
-		stty -echo </dev/tty 2>/dev/null || true
+		trap 'stty echo <&3 2>/dev/null || true; exit 130' INT TERM
+		stty -echo <&3 2>/dev/null || true
 		# IFS= and -r are REQUIRED for correctness: a bare `read PGPASSWORD` strips
 		# leading/trailing IFS whitespace and lets a backslash escape the next char,
 		# silently corrupting an otherwise valid password. `IFS= read -r` reads the
 		# line verbatim.
-		IFS= read -r PGPASSWORD </dev/tty || true
-		stty echo </dev/tty 2>/dev/null || true
+		IFS= read -r PGPASSWORD <&3 || true
+		stty echo <&3 2>/dev/null || true
 		trap - INT TERM
-		printf '\n' >/dev/tty
+		printf '\n' >&3
+		exec 3>&-
 		export PGPASSWORD
 	else
 		say "no PGPASSWORD set and no terminal to prompt on; relying on the source's local auth (export PGPASSWORD if the connection fails)"
