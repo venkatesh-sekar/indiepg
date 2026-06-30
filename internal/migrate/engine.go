@@ -186,8 +186,9 @@ type PgEngine interface {
 	DumpGlobals(ctx context.Context, conn ConnInfo, outPath string) error
 	// RestoreGlobals replays a pg_dumpall -g SQL file (roles/grants/tablespaces)
 	// into the target by piping it through psql against the maintenance database.
-	// Roles that already exist produce benign "already exists" notices, so a
-	// non-zero exit is fatal only when stderr carries an "error:"/"fatal:" line.
+	// Globals that already exist on the target (e.g. the bootstrap "postgres" role)
+	// surface as benign `ERROR: ... already exists` lines that are tolerated; any
+	// other error:/fatal: line is fatal.
 	RestoreGlobals(ctx context.Context, conn ConnInfo, path string) error
 	// Restore runs pg_restore of dumpPath into targetDatabase.
 	Restore(ctx context.Context, conn ConnInfo, dumpPath, targetDatabase string, opts RestoreOpts) error
@@ -432,6 +433,13 @@ func (e *engine) Dump(ctx context.Context, conn ConnInfo, database, outPath stri
 	if err != nil {
 		return DumpInfo{}, core.InternalError("pg_dump produced no output file %s", outPath).Wrap(err)
 	}
+	// A LOCAL restore runs pg_restore as the "postgres" OS user, which must be able
+	// to READ this dump (pg_dump writes it owned by whoever ran it — root for a
+	// remote source). Make it world-readable; it lives in a 0711, non-listable
+	// per-job dir and is removed when the job ends.
+	if err := os.Chmod(outPath, 0o644); err != nil {
+		return DumpInfo{}, core.InternalError("cannot make dump %s readable for the postgres restore user", outPath).Wrap(err)
+	}
 	info.SizeBytes = st.Size()
 	sum, err := fileSHA256(outPath)
 	if err != nil {
@@ -461,10 +469,13 @@ func (e *engine) DumpGlobals(ctx context.Context, conn ConnInfo, outPath string)
 
 // RestoreGlobals replays a pg_dumpall -g SQL file into the target by piping it to
 // psql against the maintenance database. The globals file (roles, grants,
-// tablespaces) commonly re-declares roles that already exist on the target, which
-// psql reports as a non-zero exit with benign "already exists" notices; like
-// Restore, this is treated as fatal ONLY when stderr carries an "error:"/"fatal:"
-// line, otherwise it is logged as a warning and considered successful.
+// tablespaces) re-declares globals that already exist on the target — most
+// notably the bootstrap superuser, which surfaces as a hard
+// `ERROR: role "postgres" already exists` (NOT a mere NOTICE). That collision is
+// benign and expected when seeding globals into a cluster that already has its
+// own bootstrap roles, so it is excluded from the fatal check (see
+// globalsStderrFatal); every other error:/fatal: line stays fatal. A tolerated
+// run is logged as a warning and considered successful.
 //
 // The file is read here and streamed to psql via Stdin rather than passed as -f
 // so the run goes through the same connection-arg/Sensitive path as every other
@@ -488,7 +499,7 @@ func (e *engine) RestoreGlobals(ctx context.Context, conn ConnInfo, path string)
 	})
 	stderr := e.scrubText(conn, res.Stderr)
 	if err != nil {
-		if restoreStderrFatal(stderr) {
+		if globalsStderrFatal(stderr) {
 			return core.ExecError("restoring globals into %s failed", conn.Redacted()).
 				WithDetail("stderr", stderr).Wrap(err)
 		}
@@ -498,7 +509,7 @@ func (e *engine) RestoreGlobals(ctx context.Context, conn ConnInfo, path string)
 	// psql without ON_ERROR_STOP exits 0 even when SQL statements fail, so
 	// inspect stderr on the success path to catch fatal errors that did not
 	// affect the exit code (e.g. failed GRANTs, ALTER ROLE, tablespace errors).
-	if restoreStderrFatal(stderr) {
+	if globalsStderrFatal(stderr) {
 		return core.ExecError("restoring globals into %s failed (psql exited 0 but stderr contains errors)", conn.Redacted()).
 			WithDetail("stderr", stderr)
 	}
@@ -574,6 +585,29 @@ func (e *engine) Restore(ctx context.Context, conn ConnInfo, dumpPath, targetDat
 func restoreStderrFatal(stderr string) bool {
 	lower := strings.ToLower(stderr)
 	return strings.Contains(lower, "error:") || strings.Contains(lower, "fatal:")
+}
+
+// globalsStderrFatal is restoreStderrFatal specialised for a pg_dumpall -g replay.
+// A globals replay idempotently re-declares roles/tablespaces that already exist
+// on the target — `ERROR: role "postgres" already exists` is the canonical one,
+// emitted because the target cluster already has its bootstrap superuser. That
+// line carries the "error:" marker but is a benign, expected collision, so any
+// error:/fatal: line whose message is an "already exists" is NOT fatal. Every
+// other error:/fatal: line (a real failure: bad SQL, permission denied, a missing
+// tablespace path) keeps the run fatal. Evaluated line-by-line so a real error on
+// one line is never excused by an "already exists" on another.
+func globalsStderrFatal(stderr string) bool {
+	for _, line := range strings.Split(stderr, "\n") {
+		lower := strings.ToLower(line)
+		if !strings.Contains(lower, "error:") && !strings.Contains(lower, "fatal:") {
+			continue
+		}
+		if strings.Contains(lower, "already exists") {
+			continue // benign idempotent re-declaration of an existing global
+		}
+		return true
+	}
+	return false
 }
 
 // SanitizeRestoreStderr removes the DDL body pg_restore echoes after a "Command was:"

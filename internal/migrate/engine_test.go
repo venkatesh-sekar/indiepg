@@ -430,6 +430,61 @@ func TestRestoreGlobals_realErrorIsFatal(t *testing.T) {
 	require.Equal(t, core.CodeExec, core.CodeOf(err))
 }
 
+// TestRestoreGlobals_roleAlreadyExistsIsNotFatal is the cluster-migration bug:
+// pg_dumpall -g re-declares the bootstrap "postgres" role, which psql reports as
+// a hard `ERROR: role "postgres" already exists` (NOT a NOTICE). That benign,
+// expected collision must be tolerated, not treated as a fatal failure.
+func TestRestoreGlobals_roleAlreadyExistsIsNotFatal(t *testing.T) {
+	e, r := newEngine()
+	path := filepath.Join(t.TempDir(), "globals.sql")
+	require.NoError(t, os.WriteFile(path, []byte("CREATE ROLE postgres;"), 0o600))
+	r.On("psql", exec.FakeResponse{
+		Stderr:   `psql:globals.sql:5: ERROR:  role "postgres" already exists`,
+		ExitCode: 1,
+		Err:      core.ExecError("exit status 1"),
+	})
+	require.NoError(t, e.RestoreGlobals(context.Background(), localConn(), path),
+		`ERROR: role "postgres" already exists is a benign idempotent collision, not a failure`)
+}
+
+// TestRestoreGlobals_realErrorAmongAlreadyExistsStaysFatal proves a genuine error
+// on one line is never excused by an "already exists" on another.
+func TestRestoreGlobals_realErrorAmongAlreadyExistsStaysFatal(t *testing.T) {
+	e, r := newEngine()
+	path := filepath.Join(t.TempDir(), "globals.sql")
+	require.NoError(t, os.WriteFile(path, []byte("CREATE ROLE postgres;"), 0o600))
+	r.On("psql", exec.FakeResponse{
+		Stderr: `psql:globals.sql:5: ERROR:  role "postgres" already exists` + "\n" +
+			`psql:globals.sql:9: ERROR:  permission denied to create role`,
+		ExitCode: 1,
+		Err:      core.ExecError("exit status 1"),
+	})
+	err := e.RestoreGlobals(context.Background(), localConn(), path)
+	require.Error(t, err)
+	require.Equal(t, core.CodeExec, core.CodeOf(err))
+}
+
+func TestGlobalsStderrFatal(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+		fatal  bool
+	}{
+		{"empty", "", false},
+		{"role already exists", `ERROR:  role "postgres" already exists`, false},
+		{"tablespace already exists", `ERROR:  tablespace "ts" already exists`, false},
+		{"notice only", `NOTICE:  role "app" already exists, skipping`, false},
+		{"real error", `error: syntax error at or near "CRATE"`, true},
+		{"real fatal", `FATAL:  password authentication failed`, true},
+		{"mixed: benign then real", "ERROR: role \"postgres\" already exists\nerror: permission denied", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.fatal, globalsStderrFatal(tc.stderr))
+		})
+	}
+}
+
 func TestRestoreGlobals_missingFile(t *testing.T) {
 	e, _ := newEngine()
 	err := e.RestoreGlobals(context.Background(), localConn(), filepath.Join(t.TempDir(), "nope.sql"))

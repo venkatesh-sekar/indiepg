@@ -297,6 +297,12 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// mirroring the backup Manager refresh above. The refusal above guarantees no
 	// active session still depends on the previous transport.
 	s.setDropTransport(dropTransportFor(cfg, s.log))
+	// Rebuild the ssh-less session Service against the saved S3 target as well, so
+	// session migration becomes available the moment S3 is configured — without it,
+	// s.migrate stayed nil (built only at startup) and the ssh-less handshake kept
+	// reporting "requires S3" until a restart, even though backups and drop-off had
+	// already picked up the new target.
+	s.setMigrateService(migrateServiceFor(cfg, s.runner, s.log))
 
 	s.audit(ctx, "update_config", "config", "success", "panel configuration updated", "")
 

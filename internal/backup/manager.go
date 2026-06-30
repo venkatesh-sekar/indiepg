@@ -64,6 +64,23 @@ type Manager struct {
 	scratchRoot  string
 	diskFree     func(path string) (uint64, error)
 	resolvePGBin func(dataDir string) (string, error)
+
+	// cluster stops/starts the live managed cluster around a destructive restore.
+	// pgBackRest refuses to restore over a running cluster (ERROR [038]), so
+	// Restore stops it first and starts it after (PostgreSQL then replays WAL to
+	// the recovery target and promotes). It is nil only for local-only uses (and
+	// in unit tests that exercise Restore without a cluster), where Restore keeps
+	// its legacy behaviour of running the restore directly.
+	cluster ClusterController
+}
+
+// ClusterController stops and starts the live managed Postgres cluster around a
+// destructive restore. It is satisfied structurally by *pg.Manager
+// (StopCluster/StartCluster), wired in by the server so the backup package does
+// not import internal/pg.
+type ClusterController interface {
+	StopCluster(ctx context.Context) error
+	StartCluster(ctx context.Context) error
 }
 
 // config returns the current configuration snapshot under the read lock.
@@ -110,6 +127,11 @@ type Options struct {
 	// throwaway scratch cluster. Empty uses the OS temp dir. Point it at a volume
 	// with headroom; the deep test never writes anywhere else and always cleans up.
 	ScratchRoot string
+	// Cluster stops/starts the live managed cluster around a destructive restore.
+	// Required for a real restore (pgBackRest refuses to restore over a running
+	// cluster); nil is allowed for local-only/test use, where Restore runs the
+	// pgBackRest restore directly without a stop/start.
+	Cluster ClusterController
 }
 
 // New builds a Manager from Options. A nil logger is replaced with a discard
@@ -137,6 +159,7 @@ func New(opts Options) *Manager {
 		scratchRoot:  scratchRoot,
 		diskFree:     defaultDiskFree,
 		resolvePGBin: defaultResolvePGBin,
+		cluster:      opts.Cluster,
 	}
 }
 
@@ -427,8 +450,44 @@ func (m *Manager) Restore(ctx context.Context, target *RecoveryTarget, delta boo
 	if err != nil {
 		return core.Result{}, err
 	}
-	if _, err := m.runner.Run(ctx, spec); err != nil {
-		return core.Result{}, err
+
+	// pgBackRest refuses to restore over a RUNNING cluster (ERROR [038]: unable to
+	// restore while PostgreSQL is running, because postmaster.pid is present). So
+	// stop the managed cluster, run the restore into the now-stopped data dir, then
+	// start it again — on start PostgreSQL replays WAL to the recovery target and
+	// promotes. The safety backup above was taken while the cluster was still up.
+	//
+	// Safety ordering:
+	//   - A failed STOP is a HARD STOP before the restore: the data dir is untouched
+	//     and the cluster is still up, so we surface the error and restore nothing.
+	//   - After the restore (success OR failure) we ALWAYS attempt a START, on a
+	//     context detached from cancellation, so a cancelled request or a failed
+	//     restore can never leave the box with PostgreSQL down.
+	if m.cluster != nil {
+		if serr := m.cluster.StopCluster(ctx); serr != nil {
+			return core.Result{}, core.ExecError(
+				"refusing to restore: could not stop PostgreSQL before the restore; the live cluster was left untouched and is still running").Wrap(serr)
+		}
+	}
+
+	_, runErr := m.runner.Run(ctx, spec)
+
+	if m.cluster != nil {
+		// Detached so a cancelled operation ctx never leaves PostgreSQL down.
+		startCtx := context.WithoutCancel(ctx)
+		if startErr := m.cluster.StartCluster(startCtx); startErr != nil {
+			if runErr != nil {
+				return core.Result{}, core.InternalError(
+					"restore failed AND restarting PostgreSQL afterwards also failed — manual recovery is required").
+					WithDetail("restore_error", runErr.Error()).
+					WithDetail("start_error", startErr.Error())
+			}
+			return core.Result{}, core.ExecError(
+				"restore completed but restarting PostgreSQL (to replay WAL and promote) failed; start the cluster manually").Wrap(startErr)
+		}
+	}
+	if runErr != nil {
+		return core.Result{}, runErr
 	}
 
 	result := core.Ok("restore completed").

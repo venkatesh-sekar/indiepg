@@ -89,10 +89,22 @@ func DeepRestoreCmd(stanza, pg1Path string) exec.RunSpec {
 	}
 }
 
+// scratchStartLog is the file pg_ctl redirects the booted scratch server's
+// stdout/stderr into (via -l), inside the scratch dir so it is cleaned up with it.
+const scratchStartLog = "pg_ctl_start.log"
+
 // pgCtlStartCmd boots the restored scratch cluster on a private unix socket with
 // no TCP listener and archiving off, so it cannot collide with — or write into —
 // the live cluster or repository. pg_ctl -w waits until recovery completes and
 // the server accepts connections (or the timeout trips).
+//
+// -l redirects the booted server's stdout/stderr into a logfile in the scratch
+// dir. This is REQUIRED, not cosmetic: without it the long-lived postmaster
+// inherits the command runner's stdout/stderr pipe and keeps it open after pg_ctl
+// itself exits, so the runner's cmd.Wait() would block reading that pipe until the
+// scratch cluster is later torn down — wedging the whole deep restore-test. With
+// -l the server writes to the file instead, so the pipe closes when pg_ctl returns
+// and the runner advances to the row-count step immediately.
 func pgCtlStartCmd(binDir, dataDir string) exec.RunSpec {
 	// pg_ctl re-shells the -o options string when it invokes postgres, so the
 	// socket-directory path is single-quoted to survive a scratch root that
@@ -107,6 +119,7 @@ func pgCtlStartCmd(binDir, dataDir string) exec.RunSpec {
 		Name: filepath.Join(binDir, "pg_ctl"),
 		Args: []string{
 			"-D", dataDir,
+			"-l", filepath.Join(dataDir, scratchStartLog),
 			"-w",
 			"-t", strconv.Itoa(int(deepBootTimeout / time.Second)),
 			"-o", opts,
@@ -247,6 +260,14 @@ func (m *Manager) RestoreTestDeep(ctx context.Context) (core.Result, error) {
 		return core.Result{}, m.recordDeepFail(ctx, started, sourceLabel, "could not resolve Postgres binaries for the restored cluster: "+err.Error(), err)
 	}
 
+	// 2b. Materialize the postgresql.conf/pg_hba.conf/pg_ident.conf the cluster
+	//     needs to boot. On Debian these live under /etc (outside PGDATA) so the
+	//     PGDATA-only restore never captured them; without this pg_ctl dies with
+	//     "could not access the server configuration file".
+	if err := m.writeScratchClusterConfig(scratch); err != nil {
+		return core.Result{}, m.recordDeepFail(ctx, started, sourceLabel, "could not materialize scratch cluster config before boot: "+err.Error(), err)
+	}
+
 	// 3. Boot the scratch cluster — full WAL replay. A failure here is exactly the
 	//    recovery-time failure that proves the backup is NOT cleanly recoverable.
 	if _, err := m.runner.Run(ctx, pgCtlStartCmd(binDir, scratch)); err != nil {
@@ -326,6 +347,64 @@ func (m *Manager) cleanupScratch(ctx context.Context, binDir *string, scratch st
 	if err := os.RemoveAll(scratch); err != nil {
 		m.log.Error("failed to remove restore-test scratch dir", "dir", scratch, "error", err)
 	}
+}
+
+// scratchPostgresqlConf is the minimal postgresql.conf written into the scratch
+// data dir so pg_ctl can boot a Debian/PGDG-layout cluster restored from a
+// PGDATA-only backup. Every runtime knob (port, listen_addresses,
+// unix_socket_directories, archive_mode) is injected via pg_ctl -o, and recovery
+// settings live in pgBackRest's restored postgresql.auto.conf, so this file needs
+// no directives at all — it only has to EXIST, because on Debian the real
+// postgresql.conf lives under /etc/postgresql/<major>/<cluster>/ (outside PGDATA)
+// and is therefore never captured by a PGDATA-only restore.
+const scratchPostgresqlConf = "# indiepg deep restore-test scratch cluster — minimal config.\n" +
+	"# Runtime overrides (port, listen_addresses, unix_socket_directories,\n" +
+	"# archive_mode) are injected via pg_ctl -o; recovery settings live in the\n" +
+	"# restored postgresql.auto.conf. This file exists only so pg_ctl can boot a\n" +
+	"# Debian-layout cluster whose real postgresql.conf lives under /etc and is\n" +
+	"# thus absent from the restored PGDATA.\n"
+
+// writeScratchClusterConfig materializes the configuration a Debian/PGDG cluster
+// needs to boot from a restored PGDATA. On Debian, postgresql.conf, pg_hba.conf
+// and pg_ident.conf live under /etc/postgresql/<major>/<cluster>/ — NOT inside
+// PGDATA — so pgBackRest (which restores only PGDATA) never captures them and the
+// scratch dir has none; pg_ctl then dies instantly with "could not access the
+// server configuration file". It writes a minimal postgresql.conf, a
+// `local all all trust` pg_hba.conf (so the private-socket row-count query can
+// authenticate without a password), and an empty pg_ident.conf. config_file is
+// deliberately NOT pointed at the live /etc path — the scratch cluster is fully
+// self-contained. Each file is written only if absent, so a self-contained PGDATA
+// (config already inside the data dir) is never clobbered, and is chowned to
+// postgres (best-effort, root-only) to match the restored data dir.
+func (m *Manager) writeScratchClusterConfig(scratch string) error {
+	files := []struct {
+		name string
+		body string
+	}{
+		{"postgresql.conf", scratchPostgresqlConf},
+		{"pg_hba.conf", "local all all trust\n"},
+		{"pg_ident.conf", "# indiepg deep restore-test scratch cluster — no ident maps.\n"},
+	}
+	uid, gid, idErr := pgUserIDs()
+	for _, f := range files {
+		path := filepath.Join(scratch, f.name)
+		if _, err := os.Stat(path); err == nil {
+			continue // already present (self-contained PGDATA): do not clobber.
+		} else if !os.IsNotExist(err) {
+			return core.InternalError("stat scratch cluster config %q", path).Wrap(err)
+		}
+		if err := os.WriteFile(path, []byte(f.body), 0o600); err != nil {
+			return core.InternalError("write scratch cluster config %q", path).Wrap(err)
+		}
+		// Match the restored data dir's ownership so postgres can read the config.
+		// Best-effort: only matters (and only succeeds) when the panel runs as root.
+		if os.Geteuid() == 0 && idErr == nil {
+			if err := os.Chown(path, uid, gid); err != nil {
+				m.log.Warn("could not chown scratch cluster config to postgres", "path", path, "error", err)
+			}
+		}
+	}
+	return nil
 }
 
 // chownScratch best-effort hands the scratch dir to the postgres user so

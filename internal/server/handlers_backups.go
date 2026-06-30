@@ -168,6 +168,14 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// A guarded restore (safety backup + stop the cluster + pgBackRest restore +
+	// start the cluster) legitimately runs far longer than the server's default
+	// WriteTimeout, so clear THIS request's write deadline — otherwise the server
+	// severs the connection mid-restore and the caller sees a bare EOF instead of
+	// the result (safety_backup_label, pitr, …). The restore already runs on a
+	// cancel-detached context below, so a client disconnect never interrupts it.
+	s.extendForLongOperation(w)
+
 	var req restoreRequest
 	if err := decodeJSON(r, &req, maxBodyBytes); err != nil {
 		writeError(w, err)
@@ -202,6 +210,12 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRestoreTest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// The deep path restores into a scratch cluster, boots it (full WAL replay) and
+	// queries it inline, which can outrun the server's default WriteTimeout; clear
+	// this request's write deadline so the caller receives the real result rather
+	// than a truncated connection.
+	s.extendForLongOperation(w)
+
 	deep := r.URL.Query().Get("deep") == "true"
 
 	var (
@@ -221,6 +235,19 @@ func (s *Server) handleRestoreTest(w http.ResponseWriter, r *http.Request) {
 
 	s.audit(ctx, "restore_test", "stanza", "success", "restore-test passed", "")
 	writeData(w, http.StatusOK, res)
+}
+
+// extendForLongOperation clears the calling request's write deadline so a long
+// synchronous operation (a guarded restore, or a deep restore-test) can stream its
+// final JSON result back to the caller even when it runs past the server's default
+// WriteTimeout. Without it the http.Server severs the connection at WriteTimeout and
+// the client sees a bare EOF rather than the operation's typed result. It is
+// best-effort: a controller that cannot set the deadline (an unusual ResponseWriter)
+// is logged, not fatal.
+func (s *Server) extendForLongOperation(w http.ResponseWriter) {
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
+		s.log.Warn("could not clear write deadline for long-running operation", "err", err)
+	}
 }
 
 // buildRecoveryTarget converts the optional request target into a

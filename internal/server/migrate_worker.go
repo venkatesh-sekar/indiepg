@@ -44,14 +44,31 @@ func workerContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), migrationJobTimeout)
 }
 
-// jobWorkDir returns (and creates 0700) the per-job temp directory for migration
-// id. The directory holds the pg_dump output; the Orchestrator removes it on
-// return. Creating it here (not in the Orchestrator) keeps the base dir constant
-// and lets the startup sweep clear the whole tree.
+// jobWorkDir returns (and creates) the per-job temp directory for migration id.
+// The directory holds the pg_dump output; the Orchestrator removes it on return.
+// Creating it here (not in the Orchestrator) keeps the base dir constant and lets
+// the startup sweep clear the whole tree.
+//
+// The directory chain is made 0711 (traverse, NOT list). A LOCAL restore runs
+// pg_restore as the "postgres" OS user, which must descend INTO this dir to read
+// the staged dump. Its ancestors default to 0700 — in particular the state dir
+// /var/lib/indiepg is created 0700 to protect the 0600 SQLite file beside it —
+// which blocks postgres entirely ("Permission denied"). 0711 lets postgres
+// traverse to a known dump path without being able to enumerate the directory,
+// and the 0600 state DB stays unreadable (the file mode, not the dir mode, guards
+// it). The dump files themselves are written world-readable (0644) where pg_dump
+// emits them (see engine.Dump) / where a downloaded dump is staged. MkdirAll does
+// NOT relax dirs that already exist, so chmod every component of the chain
+// explicitly.
 func jobWorkDir(id int64) (string, error) {
 	dir := filepath.Join(migrateWorkBaseDir, strconv.FormatInt(id, 10))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o711); err != nil {
 		return "", core.InternalError("cannot create migration work dir %s", dir).Wrap(err)
+	}
+	for _, d := range []string{filepath.Dir(migrateWorkBaseDir), migrateWorkBaseDir, dir} {
+		if err := os.Chmod(d, 0o711); err != nil {
+			return "", core.InternalError("cannot make migration work dir %s traversable for the postgres restore user", d).Wrap(err)
+		}
 	}
 	return dir, nil
 }
@@ -244,7 +261,8 @@ func (s *Server) runDirectJob(id int64, job migrate.Job) {
 		_ = rec.Fail(ctx, err)
 		return
 	}
-	orch := migrate.NewOrchestrator(s.migrateEngine, s.migrate, nil, workDir, s.log)
+	// Direct pull needs no S3 Service; snapshot it once anyway for a consistent read.
+	orch := migrate.NewOrchestrator(s.migrateEngine, s.migrateService(), nil, workDir, s.log)
 	if derr := orch.Direct(ctx, job, rec); derr != nil {
 		s.log.Warn("direct migration failed", "id", id, "err", derr)
 	}
@@ -259,12 +277,20 @@ func (s *Server) runExportJob(id int64, sess *migrate.MigrationSession, src migr
 	defer cancel()
 	rec := newStoreRecorder(s.store, id)
 
+	// Snapshot the S3-backed Service once for a consistent read against a possible
+	// concurrent config save. The caller verified it was non-nil at session start.
+	svc := s.migrateService()
+	if svc == nil {
+		_ = rec.Fail(ctx, errSSHLessRequiresS3())
+		return
+	}
+
 	workDir, err := jobWorkDir(id)
 	if err != nil {
 		_ = rec.Fail(ctx, err)
 		return
 	}
-	orch := migrate.NewOrchestrator(s.migrateEngine, s.migrate, s.migrate.ObjectStore(), workDir, s.log)
+	orch := migrate.NewOrchestrator(s.migrateEngine, svc, svc.ObjectStore(), workDir, s.log)
 	if eerr := orch.ExportToSession(ctx, sess, src, rec); eerr != nil {
 		s.log.Warn("ssh-less export failed", "id", id, "code", sess.Code, "err", eerr)
 	}
@@ -280,6 +306,14 @@ func (s *Server) runImportWorker(id int64, code, targetDB string) {
 	// Release the process-local target claim handleCreateMigrationSession acquired.
 	defer s.releaseImportTarget(targetDB)
 	rec := newStoreRecorder(s.store, id)
+
+	// Snapshot the S3-backed Service once so the whole poll/import runs against one
+	// consistent transport even if a config save swaps it mid-flight.
+	svc := s.migrateService()
+	if svc == nil {
+		_ = rec.Fail(ctx, errSSHLessRequiresS3())
+		return
+	}
 
 	tgt, err := s.localTargetConn(ctx)
 	if err != nil {
@@ -297,7 +331,7 @@ func (s *Server) runImportWorker(id int64, code, targetDB string) {
 			_ = rec.Fail(ctx, core.InternalError("timed out waiting for source to export session %s", code))
 			return
 		}
-		sess, err := s.migrate.GetSession(ctx, code)
+		sess, err := svc.GetSession(ctx, code)
 		if err != nil {
 			_ = rec.Fail(ctx, err)
 			return
@@ -309,7 +343,7 @@ func (s *Server) runImportWorker(id int64, code, targetDB string) {
 				_ = rec.Fail(ctx, werr)
 				return
 			}
-			orch := migrate.NewOrchestrator(s.migrateEngine, s.migrate, s.migrate.ObjectStore(), workDir, s.log)
+			orch := migrate.NewOrchestrator(s.migrateEngine, svc, svc.ObjectStore(), workDir, s.log)
 			if ierr := orch.ImportFromSession(ctx, sess, tgt, rec); ierr != nil {
 				s.log.Warn("ssh-less import failed", "id", id, "code", code, "err", ierr)
 			}

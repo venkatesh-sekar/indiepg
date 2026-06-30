@@ -19,12 +19,12 @@ import (
 // the dump object lands under pg-migrations/sessions/<code>/ in MinIO, and the
 // imported database verifies with exact row parity (read directly via env.PG).
 //
-// This mode REQUIRES S3 to be configured. NOTE: the panel only builds its ssh-less
-// session Service (s.migrate) at startup from the persisted config — a live
-// PUT /api/config does NOT rebuild it (it refreshes only the backup manager and
-// the drop-off transport). So after ConfigureS3 the panel is restarted so the
-// session Service comes up against the now-S3-configured config. See the final
-// report for the product-bug note on that asymmetry.
+// This mode REQUIRES S3 to be configured. The panel rebuilds its ssh-less session
+// Service (s.migrate) on a live PUT /api/config — the same self-heal the backup
+// manager and drop-off transport already do — so configuring S3 makes session
+// migration available immediately, with NO restart. (Previously this test had to
+// `systemctl restart indiepg` after ConfigureS3 to work around s.migrate only
+// being built at startup; that asymmetry is the fixed product bug.)
 func TestMigrateS3Session(t *testing.T) {
 	t.Parallel()
 
@@ -45,14 +45,10 @@ func TestMigrateS3Session(t *testing.T) {
 	requireSourceCount(t, src, sessionDB, "accounts", 77)
 	requireSourceCount(t, src, sessionDB, "events", 88)
 
-	// Configure S3 (MinIO), then restart so the session Service is built from the
-	// saved config, then re-authenticate (the restart drops the in-memory token).
+	// Configure S3 (MinIO). The PUT rebuilds the ssh-less session Service in place,
+	// so no restart is needed before creating a session.
 	_, err := env.Panel.ConfigureS3(harness.MinIOS3Config())
 	require.NoError(t, err, "PUT /api/config with the S3 target should succeed")
-	_, err = env.Exec("systemctl", "restart", "indiepg")
-	require.NoError(t, err, "restart panel so the ssh-less session Service is built")
-	env.AwaitReady(120 * time.Second)
-	require.NoError(t, env.Panel.Login(harness.AdminPassword))
 
 	// TARGET role: create the session. This spawns the import worker, which polls
 	// the session over S3 until the source has exported.

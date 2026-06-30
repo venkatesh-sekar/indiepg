@@ -102,6 +102,9 @@ func TestRestoreTestDeep_HappyPath(t *testing.T) {
 			require.Contains(t, boot, "listen_addresses=") // no TCP listener
 			// Socket confined to the EXACT scratch dir (single-quoted, space-safe).
 			require.Contains(t, boot, "unix_socket_directories='"+scratch+"'")
+			// -l redirects the daemon's stdout/stderr to a file so the booted
+			// postmaster does not hold the runner's pipe open and wedge cmd.Wait().
+			require.Contains(t, boot, "-l "+filepath.Join(scratch, "pg_ctl_start.log"))
 		}
 	}
 	require.True(t, sawBoot, "the scratch cluster must have been booted")
@@ -242,6 +245,47 @@ func TestRestoreTestDeep_UnparseableRowCountStillSucceeds(t *testing.T) {
 	require.Equal(t, "success", recs[0].Result)
 	require.Zero(t, recs[0].VerifiedRows)
 	require.Contains(t, recs[0].Detail, "unparseable")
+}
+
+// TestWriteScratchClusterConfig proves the Debian-layout fix: when the restored
+// scratch dir has no postgresql.conf/pg_hba.conf/pg_ident.conf (because on Debian
+// they live under /etc, not PGDATA, so a PGDATA-only restore never captures them),
+// the deep restore-test materializes them before boot — a minimal postgresql.conf,
+// a `local all all trust` pg_hba.conf, and an empty pg_ident.conf — and does NOT
+// point config_file at the live /etc path.
+func TestWriteScratchClusterConfig(t *testing.T) {
+	m, _ := newDeepTestManager(t, exec.NewFakeRunner())
+	scratch := t.TempDir()
+
+	require.NoError(t, m.writeScratchClusterConfig(scratch))
+
+	conf, err := os.ReadFile(filepath.Join(scratch, "postgresql.conf"))
+	require.NoError(t, err)
+	require.NotContains(t, string(conf), "config_file",
+		"the scratch cluster must be self-contained, never pointed at the live /etc config")
+
+	hba, err := os.ReadFile(filepath.Join(scratch, "pg_hba.conf"))
+	require.NoError(t, err)
+	require.Contains(t, string(hba), "local all all trust",
+		"the private-socket row-count query needs trust auth")
+
+	_, err = os.Stat(filepath.Join(scratch, "pg_ident.conf"))
+	require.NoError(t, err, "an empty pg_ident.conf must exist")
+}
+
+// TestWriteScratchClusterConfig_DoesNotClobber proves a self-contained PGDATA
+// (config already present inside the data dir) is left untouched.
+func TestWriteScratchClusterConfig_DoesNotClobber(t *testing.T) {
+	m, _ := newDeepTestManager(t, exec.NewFakeRunner())
+	scratch := t.TempDir()
+	existing := "port = 7777 # operator's own restored config\n"
+	require.NoError(t, os.WriteFile(filepath.Join(scratch, "postgresql.conf"), []byte(existing), 0o600))
+
+	require.NoError(t, m.writeScratchClusterConfig(scratch))
+
+	conf, err := os.ReadFile(filepath.Join(scratch, "postgresql.conf"))
+	require.NoError(t, err)
+	require.Equal(t, existing, string(conf), "an existing postgresql.conf must not be clobbered")
 }
 
 func TestParseRowCount(t *testing.T) {
