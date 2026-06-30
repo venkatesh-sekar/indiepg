@@ -43,6 +43,12 @@ type fakeEngine struct {
 	// rowCounts maps "<conn-tag>:<db>" -> counts so the source and target can be
 	// distinguished. connTag is "src" for non-local, "tgt" for local.
 	rowCounts map[string]map[string]int64
+	// rowCountsByTable is the structured counterpart consulted by RowCountsByTable;
+	// when set for a "<conn-tag>:<db>" it takes precedence, letting a test express
+	// (schema, name) pairs that would collide if flattened (e.g. "a"/"b.c" vs
+	// "a.b"/"c"). When unset, RowCountsByTable derives pairs from rowCounts by
+	// splitting each flat key on its first dot (matching the drop-off meta helper).
+	rowCountsByTable map[string]map[TableKey]int64
 
 	// recorded calls for assertions.
 	dumps          []string // databases dumped
@@ -153,6 +159,30 @@ func (f *fakeEngine) RowCounts(ctx context.Context, conn ConnInfo, database stri
 		return m, nil
 	}
 	return map[string]int64{}, nil
+}
+
+func (f *fakeEngine) RowCountsByTable(ctx context.Context, conn ConnInfo, database string) (map[TableKey]int64, error) {
+	if f.rowCountErr != nil {
+		return nil, f.rowCountErr
+	}
+	key := f.connTag(conn) + ":" + database
+	if f.rowCountsByTable != nil {
+		if m, ok := f.rowCountsByTable[key]; ok {
+			return m, nil
+		}
+	}
+	// Fall back to deriving structured pairs from the flat rowCounts map, splitting
+	// each key on its first dot exactly like the drop-off meta helper (splitKey).
+	out := map[TableKey]int64{}
+	if f.rowCounts != nil {
+		if m, ok := f.rowCounts[key]; ok {
+			for k, n := range m {
+				schema, name := splitKey(k)
+				out[TableKey{Schema: schema, Name: name}] = n
+			}
+		}
+	}
+	return out, nil
 }
 
 func writeFakeDump(path string) error {

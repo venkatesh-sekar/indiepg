@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -191,8 +192,25 @@ type PgEngine interface {
 	// Restore runs pg_restore of dumpPath into targetDatabase.
 	Restore(ctx context.Context, conn ConnInfo, dumpPath, targetDatabase string, opts RestoreOpts) error
 	// RowCounts returns a "schema.table" -> count map for every user BASE TABLE
-	// in the database.
+	// in the database. The flattened key is convenient for display/storage but is
+	// AMBIGUOUS when a schema or table name contains a dot (schema "a"/table "b.c"
+	// collides with schema "a.b"/table "c"); callers that must compare counts
+	// table-by-table without that collision use RowCountsByTable instead.
 	RowCounts(ctx context.Context, conn ConnInfo, database string) (map[string]int64, error)
+	// RowCountsByTable is RowCounts keyed by the unambiguous (schema, name) pair, so
+	// two tables whose names flatten to the same "schema.name" string never collapse
+	// onto each other. The drop-off verification uses it so a real per-table mismatch
+	// can never be masked by a name collision.
+	RowCountsByTable(ctx context.Context, conn ConnInfo, database string) (map[TableKey]int64, error)
+}
+
+// TableKey identifies a table by its (schema, name) pair WITHOUT flattening it to a
+// "schema.name" string, so a legal name containing a dot cannot collide with a
+// different pair (schema "a"/table "b.c" vs schema "a.b"/table "c" both flatten to
+// "a.b.c"). It is the comparison key for the drop-off row-count verification.
+type TableKey struct {
+	Schema string
+	Name   string
 }
 
 // engine is the production PgEngine over an exec.Runner.
@@ -503,7 +521,15 @@ func (e *engine) Restore(ctx context.Context, conn ConnInfo, dumpPath, targetDat
 	if jobs <= 0 {
 		jobs = 4
 	}
-	connArgs, asUser, env, sensitive := conn.connArgs()
+	// The database connection args/env feed conn's sensitivity, but pg_restore is
+	// ALWAYS run Sensitive regardless: on failure it echoes the offending DDL
+	// ("Command was: ...") to stderr, and that DDL can embed secrets (e.g. a password
+	// inside a function/object definition). A LOCAL restore connects with no password,
+	// so without this override the run would be non-sensitive and the runner would fold
+	// the echoed DDL into its own error message and logs. Marking it Sensitive keeps the
+	// argv and the stderr tail out of the runner's error/logs; the DDL body is then also
+	// stripped from anything we persist or log via SanitizeRestoreStderr below.
+	connArgs, asUser, env, _ := conn.connArgs()
 	args := append([]string{}, connArgs...)
 	args = append(args, "-j", strconv.Itoa(jobs), "-d", targetDatabase)
 	if opts.Clean {
@@ -522,10 +548,12 @@ func (e *engine) Restore(ctx context.Context, conn ConnInfo, dumpPath, targetDat
 		AsUser:    asUser,
 		Args:      args,
 		Env:       env,
-		Sensitive: sensitive,
+		Sensitive: true,
 	})
 	if err != nil {
-		stderr := e.scrubText(conn, res.Stderr)
+		// Scrub the password, THEN strip the echoed DDL body before this stderr flows
+		// into the wrapped error, logs, and migration history.
+		stderr := SanitizeRestoreStderr(e.scrubText(conn, res.Stderr))
 		if restoreStderrFatal(stderr) {
 			return core.ExecError("pg_restore into %s failed", core.QuoteIdent(targetDatabase)).
 				WithDetail("stderr", stderr).Wrap(err)
@@ -540,46 +568,111 @@ func (e *engine) Restore(ctx context.Context, conn ConnInfo, dumpPath, targetDat
 }
 
 // restoreStderrFatal reports whether pg_restore stderr contains a genuine error
-// (an "error:" or "fatal:" line) versus benign warnings.
+// (an "error:" or "fatal:" line) versus benign warnings. It runs on the sanitized
+// stderr, whose pg_restore diagnostic lines (which carry the error:/fatal: markers)
+// are preserved — only the echoed DDL command body is stripped.
 func restoreStderrFatal(stderr string) bool {
 	lower := strings.ToLower(stderr)
 	return strings.Contains(lower, "error:") || strings.Contains(lower, "fatal:")
 }
 
-// RowCounts returns a "schema.table" -> row count map for every user BASE TABLE
-// in the database. It first lists the tables, then runs one count query that
-// UNIONs a count per table so a single round trip yields every count.
-func (e *engine) RowCounts(ctx context.Context, conn ConnInfo, database string) (map[string]int64, error) {
-	if err := core.ValidateIdentifier(database, "database"); err != nil {
-		return nil, err
+// SanitizeRestoreStderr removes the DDL body pg_restore echoes after a "Command was:"
+// line. pg_restore prints the failing SQL command verbatim, which can embed secrets
+// (a password inside a CREATE FUNCTION body, say); that stderr otherwise flows into
+// wrapped errors, logs, migration history, and the drop-off API. The pg_restore
+// diagnostic lines (the actual error reason and the error:/fatal: markers) are kept;
+// only the echoed command text — from "Command was:" until the next "pg_restore:"
+// diagnostic or end of output — is dropped, since the DDL can span multiple lines.
+//
+// It is exported so the server's migration recorder can re-apply it (idempotently) to
+// any stderr diagnostic it persists into the migration error text, keeping the DDL-body
+// stripping in one place.
+func SanitizeRestoreStderr(stderr string) string {
+	lines := strings.Split(stderr, "\n")
+	out := make([]string, 0, len(lines))
+	skipping := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if skipping {
+			// A fresh pg_restore diagnostic line ends the echoed DDL body.
+			if strings.HasPrefix(trimmed, "pg_restore:") {
+				skipping = false
+			} else {
+				continue // drop the echoed DDL line
+			}
+		}
+		if idx := strings.Index(line, "Command was:"); idx >= 0 {
+			out = append(out, line[:idx]+"Command was: [redacted]")
+			skipping = true
+			continue
+		}
+		out = append(out, line)
 	}
-	const listSQL = "SELECT table_schema, table_name FROM information_schema.tables " +
-		"WHERE table_type = 'BASE TABLE' " +
-		"AND table_schema NOT IN ('pg_catalog','information_schema') " +
-		"ORDER BY table_schema, table_name"
-	out, err := e.psql(ctx, conn, database, listSQL)
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// RowCounts returns a "schema.table" -> row count map for every user BASE TABLE in
+// the database. It delegates to RowCountsByTable and flattens the result; the flat
+// key is kept for display/storage (History row counts, the ssh-less session
+// document) where its potential collision is harmless. Callers that VERIFY counts
+// table-by-table use RowCountsByTable directly so a name collision cannot mask a
+// real mismatch.
+func (e *engine) RowCounts(ctx context.Context, conn ConnInfo, database string) (map[string]int64, error) {
+	byTable, err := e.RowCountsByTable(ctx, conn, database)
 	if err != nil {
 		return nil, err
 	}
+	counts := make(map[string]int64, len(byTable))
+	for k, n := range byTable {
+		counts[k.Schema+"."+k.Name] = n
+	}
+	return counts, nil
+}
 
-	counts := make(map[string]int64)
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		fields := strings.Split(line, "|")
-		if len(fields) < 2 {
-			return nil, core.InternalError("malformed information_schema row %q", line)
-		}
-		schema := strings.TrimSpace(fields[0])
-		table := strings.TrimSpace(fields[1])
-		key := schema + "." + table
-		n, err := e.countRows(ctx, conn, database, schema, table)
+// RowCountsByTable returns a (schema, name) -> row count map for every user BASE
+// TABLE in the database. It first lists the tables, then counts each one. Keying by
+// the structured TableKey rather than a flattened "schema.name" string is what makes
+// the comparison collision-proof for names that contain dots.
+func (e *engine) RowCountsByTable(ctx context.Context, conn ConnInfo, database string) (map[TableKey]int64, error) {
+	if err := core.ValidateIdentifier(database, "database"); err != nil {
+		return nil, err
+	}
+	// Return the table listing as JSON, NOT pipe-delimited/whitespace-trimmed text:
+	// PostgreSQL escapes the identifiers and Go decodes the EXACT schema/name strings,
+	// so a name containing a '|', a newline, or leading/trailing spaces survives intact.
+	// This keeps the (schema, name) keys byte-identical to meta.json, which
+	// migrate-push.sh builds the SAME way (json_build_object('schema',…,'name',…)) — a
+	// flattened text parse here would corrupt those identifiers and break parity. coalesce
+	// guarantees a "[]" for an empty database; json_agg honours the ORDER BY for stable
+	// counting order.
+	const listSQL = "SELECT coalesce(json_agg(json_build_object('schema', table_schema, 'name', table_name) " +
+		"ORDER BY table_schema, table_name), '[]'::json) " +
+		"FROM information_schema.tables " +
+		"WHERE table_type = 'BASE TABLE' " +
+		"AND table_schema NOT IN ('pg_catalog','information_schema')"
+	out, err := e.psqlScalar(ctx, conn, database, listSQL)
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		out = "[]" // defensive: an empty scalar is an empty listing
+	}
+
+	var listed []struct {
+		Schema string `json:"schema"`
+		Name   string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(out), &listed); err != nil {
+		return nil, core.InternalError("malformed table listing from %s", conn.Redacted()).Wrap(err)
+	}
+
+	counts := make(map[TableKey]int64, len(listed))
+	for _, t := range listed {
+		n, err := e.countRows(ctx, conn, database, t.Schema, t.Name)
 		if err != nil {
 			return nil, err
 		}
-		counts[key] = n
+		counts[TableKey{Schema: t.Schema, Name: t.Name}] = n
 	}
 	return counts, nil
 }

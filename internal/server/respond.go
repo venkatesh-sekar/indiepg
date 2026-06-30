@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -157,6 +158,28 @@ func decodeJSON(r *http.Request, dst any, maxBytes int64) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
+		return core.ValidationError("invalid JSON body").Wrap(err)
+	}
+	return nil
+}
+
+// decodeJSONOptional is decodeJSON for endpoints whose body is OPTIONAL: an empty
+// body (zero bytes) leaves dst at its zero value and is NOT an error, while a
+// present body is decoded and validated exactly like decodeJSON. It is used by
+// POSTs that carry an optional confirmation token (drop-off Start) so a bodyless
+// call — a retry, an idempotent client — still works, while an overwrite Start can
+// supply the typed-name confirm.
+func decodeJSONOptional(r *http.Request, dst any, maxBytes int64) error {
+	if r.Body == nil {
+		return nil
+	}
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil // empty body: leave dst at its zero value
+		}
 		return core.ValidationError("invalid JSON body").Wrap(err)
 	}
 	return nil

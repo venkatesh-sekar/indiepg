@@ -547,7 +547,7 @@ export interface TestChannelRequest {
 // Migration (internal/migrate)
 // ---------------------------------------------------------------------------
 
-export type MigrationMode = "single-db" | "cluster" | "ssh-less";
+export type MigrationMode = "single-db" | "cluster" | "ssh-less" | "drop-off";
 
 export type MigrationStatus =
   | "waiting_for_export"
@@ -640,6 +640,72 @@ export interface ExportSessionRequest {
 export interface MigrationStarted {
   id: number;
   status: MigrationStatus;
+}
+
+// ---------------------------------------------------------------------------
+// Drop-off link migration (internal/migrate dropoff, internal/server handlers_dropoff)
+//
+// Move ONE database from a source the panel can't reach (NAT/firewall, no
+// inbound, no panel installed) but which can reach the public internet + S3.
+// The panel mints two presigned S3 PUT URLs and a paste-able push command; the
+// source runs `curl … | sh` to upload the dump + a meta.json manifest; then the
+// panel imports from S3, verifies the SHA-256 and row counts, and cleans up.
+// ---------------------------------------------------------------------------
+
+/** Lifecycle state of a drop-off session (mirrors migrate.DropStatus). The
+ *  source's upload is complete and verifiable once `uploaded` (meta.json, written
+ *  last by the push script, is present); only then may the import Start. */
+export type DropoffStatus =
+  | "waiting_for_upload"
+  | "uploaded"
+  | "importing"
+  | "completed"
+  | "failed"
+  // Operator-cancelled: terminal and NOT retryable (distinct from `failed`, whose
+  // kept dump can be re-imported). The presigned PUT URLs can't be revoked, so a
+  // cancelled session must never be restartable.
+  | "canceled"
+  | "expired";
+
+/** POST /api/migrate/drops — mint a drop-off link for ONE target database. A
+ *  destructive overwrite of a non-empty target requires `confirm` === the typed
+ *  target_database (the same typed-name guard as the direct single-db pull). */
+export interface CreateDropoffRequest {
+  target_database: string;
+  overwrite: boolean;
+  /** When overwrite is true, must equal target_database to authorize the drop. */
+  confirm: string;
+}
+
+/** The mint response — returned ONCE. This is the only place the presigned-URL-
+ *  bearing push commands are served; the status endpoint never re-serves them.
+ *  Treat command_docker / command_native as sensitive: each embeds two
+ *  short-lived, PUT-only, single-key bearer URLs (an upload password). */
+export interface CreateDropoffResult {
+  code: string;
+  target_database: string;
+  overwrite: boolean;
+  expires_at: string;
+  /** `curl … | sh` push line using `docker exec` against a container. */
+  command_docker: string;
+  /** Native variant using --host/--port/--user (password via PGPASSWORD/prompt). */
+  command_native: string;
+}
+
+/** GET /api/migrate/drops/{code} — the safe, re-servable status view: no URLs,
+ *  no command. Polled for the upload-readiness badge; once `migration_id` is set
+ *  the UI switches to polling GET /migrate/{id} for live import progress. */
+export interface DropoffSession {
+  code: string;
+  status: DropoffStatus;
+  target_database: string;
+  overwrite: boolean;
+  expires_at: string;
+  /** Set once Start links the import job; drives the hand-off to the job poller. */
+  migration_id?: number | null;
+  /** The uploaded dump size in bytes (0 until the source finishes uploading). */
+  byte_size: number;
+  error?: string;
 }
 
 // ---------------------------------------------------------------------------

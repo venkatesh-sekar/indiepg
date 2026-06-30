@@ -16,10 +16,13 @@ import type {
   ConfigResponse,
   TuningStatus,
   CreateDatabaseRequest,
+  CreateDropoffRequest,
+  CreateDropoffResult,
   CreateReadonlyUserRequest,
   CreateRoleRequest,
   CreateSessionRequest,
   CredentialResult,
+  DropoffSession,
   DashboardData,
   DatabaseInfo,
   DropRequest,
@@ -403,6 +406,40 @@ export const api = {
     return request<void>(`/migrate/sessions/${encodeURIComponent(code)}`, {
       method: "DELETE",
     });
+  },
+  // Drop-off link (requires S3): mint two presigned S3 PUT URLs + a paste-able
+  // push command for a source the panel can't reach. The mint response carries
+  // the URL-bearing commands ONCE — never persisted or re-served by getDropoff.
+  createDropoff(req: CreateDropoffRequest): Promise<CreateDropoffResult> {
+    return request<CreateDropoffResult>("/migrate/drops", { method: "POST", body: req });
+  },
+  // Active (non-terminal, not-yet-expired) drop-off sessions as the safe status
+  // view — no URLs, no command. The recovery path: if the minted code was lost to
+  // a browser reload before Start/Cancel, the operator resumes from this list.
+  listDropoffs(signal?: AbortSignal): Promise<DropoffSession[]> {
+    return request<DropoffSession[]>("/migrate/drops", { signal });
+  },
+  // Safe status poll: no URLs, no command. The badge flips waiting → uploaded
+  // once the source's meta.json lands; once migration_id is set, switch to
+  // getMigration(migration_id) for the live import/verify progress.
+  getDropoff(code: string, signal?: AbortSignal): Promise<DropoffSession> {
+    return request<DropoffSession>(`/migrate/drops/${encodeURIComponent(code)}`, { signal });
+  },
+  // Begins the import once the upload is present (409 if not uploaded yet).
+  // Returns the migration job id to poll via getMigration(). When the session was
+  // minted with overwrite=true the DROP runs HERE (not at mint), so `confirm` must
+  // re-echo the target database name or the server refuses with a safety error —
+  // the same typed-name guard as the single-db pull. A non-overwrite Start may pass
+  // an empty confirm.
+  startDropoff(code: string, confirm = ""): Promise<MigrationStarted> {
+    return request<MigrationStarted>(`/migrate/drops/${encodeURIComponent(code)}/start`, {
+      method: "POST",
+      body: { confirm },
+    });
+  },
+  // Deletes the dump + meta objects (idempotent) and marks the session cancelled.
+  cancelDropoff(code: string): Promise<void> {
+    return request<void>(`/migrate/drops/${encodeURIComponent(code)}`, { method: "DELETE" });
   },
 
   // pg version & upgrades --------------------------------------------------

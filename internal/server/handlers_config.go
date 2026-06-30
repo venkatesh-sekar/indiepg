@@ -229,18 +229,58 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Serialize the ENTIRE config update — Load -> overlay -> validate -> save ->
+	// transport swap — under the drop-off lifecycle lock, which a drop-off mint also
+	// holds. EVERY config save must be mutually exclusive with both a mint AND any
+	// other config save, not just the S3-changing path: a concurrent non-S3 save could
+	// otherwise Load the OLD S3 target, then Save it back AFTER another request changed
+	// S3 (or after a mint slipped in), silently reverting the target and orphaning that
+	// mint's sessions. Holding the lock across the whole critical section makes the
+	// uncleaned-session check, the Save, and the transport swap one atomic step.
+	// Config saves are rare, so briefly serializing mints is immaterial.
+	s.dropLifecycleMu.Lock()
+	defer s.dropLifecycleMu.Unlock()
+
 	cfg, err := config.Load(ctx, s.store)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 
+	// Capture the S3 target BEFORE the overlay so we can detect a re-point below.
+	prevBackup := cfg.Backup
 	applyConfigUpdate(&cfg, req)
 
 	if err := cfg.Validate(); err != nil {
 		writeError(w, err)
 		return
 	}
+
+	// Refuse to re-point the S3 target while ANY drop-off session may still own
+	// objects in the OLD bucket. A non-'expired' session's dump and metadata live in
+	// the old bucket; swapping s.drops to a new target would orphan that dump and
+	// break the import/retry/cleanup it expects. This covers not just the in-flight
+	// states but also 'failed' (its dump is kept for retry) and 'completed'/'canceled'
+	// (whose best-effort cleanup delete may have failed) — only the sweep's terminal
+	// 'expired' proves the objects are gone. Make the operator finish, cancel, or let
+	// the open sessions expire first.
+	//
+	// The whole handler already runs under dropLifecycleMu (acquired above), which a
+	// concurrent mint also holds for its read-transport -> insert sequence, so a mint
+	// cannot slip a session in between this check and the transport swap below (and so
+	// point its URLs at the old bucket).
+	if s3TargetChanged(prevBackup, cfg.Backup) {
+		if uncleaned, cerr := s.store.CountUncleanedDropoffs(ctx); cerr != nil {
+			writeError(w, cerr)
+			return
+		} else if uncleaned > 0 {
+			writeError(w, core.ConflictError(
+				"cannot change the S3 target while a drop-off migration may still own objects in the current bucket").
+				WithHint("finish, cancel, or let the open drop-off sessions expire under Migrate first, then change S3"))
+			return
+		}
+	}
+
 	if err := config.Save(ctx, s.store, cfg); err != nil {
 		writeError(w, err)
 		return
@@ -249,6 +289,11 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// Refresh the live backup Manager so a freshly-saved S3 target (and its
 	// single-writer ownership guard) takes effect immediately, without a restart.
 	s.backups.Reconfigure(cfg, backupOwnerFor(ctx, s.store, cfg, s.log))
+	// Atomically re-point the drop-off transport at the saved S3 target too, so a
+	// newly configured (or changed) bucket/credentials are usable immediately —
+	// mirroring the backup Manager refresh above. The refusal above guarantees no
+	// active session still depends on the previous transport.
+	s.setDropTransport(dropTransportFor(cfg, s.log))
 
 	s.audit(ctx, "update_config", "config", "success", "panel configuration updated", "")
 
@@ -323,6 +368,21 @@ func applyConfigUpdate(cfg *config.Config, req updateConfigRequest) {
 		setIf(&cfg.Schedules.TelemetrySample, sc.TelemetrySample)
 		setIf(&cfg.Schedules.Digest, sc.Digest)
 	}
+}
+
+// s3TargetChanged reports whether the fields that define the S3 transport (shared
+// by backups and the drop-off mode) differ between two targets. SecretKey is
+// included so rotating credentials counts as a change; an empty incoming SecretKey
+// means "unchanged" (applyConfigUpdate preserves the stored secret), so it compares
+// equal and is not falsely flagged. Prefix/CipherPass are backup-repo concerns that
+// don't affect which bucket the drop-off transport talks to, so they're excluded.
+func s3TargetChanged(a, b config.S3Target) bool {
+	return a.Endpoint != b.Endpoint ||
+		a.Region != b.Region ||
+		a.Bucket != b.Bucket ||
+		a.AccessKey != b.AccessKey ||
+		a.SecretKey != b.SecretKey ||
+		a.UseSSL != b.UseSSL
 }
 
 func setIf(dst *string, src *string) {

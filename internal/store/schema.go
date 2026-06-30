@@ -128,6 +128,59 @@ var schemaStatements = []string{
 		finished_at     TEXT
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_migrations_created ON migrations (created_at)`,
+
+	// dropoff_sessions — the local source of truth for "drop-off link" migrations:
+	// the panel mints two presigned S3 PUT URLs, a source box pushes one database's
+	// dump + meta.json to them, and the panel imports from S3. Only the S3 object
+	// KEYS are stored here (never the presigned URLs or any password). A dedicated
+	// table (not new columns on `migrations`) because the schema runner only issues
+	// CREATE TABLE IF NOT EXISTS and SQLite's ADD COLUMN has no IF NOT EXISTS, so
+	// re-running ALTERs would crash migrate() on the second startup.
+	`CREATE TABLE IF NOT EXISTS dropoff_sessions (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		code            TEXT    NOT NULL UNIQUE,
+		migration_id    INTEGER,
+		dump_key        TEXT    NOT NULL,
+		meta_key        TEXT    NOT NULL,
+		target_database TEXT    NOT NULL,
+		overwrite       INTEGER NOT NULL DEFAULT 0,
+		created_target  INTEGER NOT NULL DEFAULT 0,
+		status          TEXT    NOT NULL,
+		error           TEXT    NOT NULL DEFAULT '',
+		byte_size       INTEGER NOT NULL DEFAULT 0,
+		expires_at      TEXT    NOT NULL,
+		created_at      TEXT    NOT NULL,
+		updated_at      TEXT    NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_dropoff_expires ON dropoff_sessions (expires_at)`,
+}
+
+// additiveColumn describes a column added to a table AFTER its initial CREATE in a
+// prior build. The schema runner CREATEs tables with IF NOT EXISTS, which is a no-op
+// on an existing table, so a column added only to a CREATE TABLE statement above never
+// appears on a database created before the column existed. SQLite's ALTER TABLE ADD
+// COLUMN has no IF NOT EXISTS, so a bare ALTER in schemaStatements would crash migrate()
+// on the second startup — migrate() instead guards each one on a PRAGMA table_info
+// check (columnExists) to stay idempotent across restarts.
+type additiveColumn struct {
+	table  string
+	column string
+	ddl    string
+}
+
+// additiveColumns are applied (each guarded) after schemaStatements by migrate().
+var additiveColumns = []additiveColumn{
+	{
+		// created_target records whether the import worker CREATED the drop-off target
+		// database (vs restoring into a pre-existing one). Startup reconciliation of an
+		// interrupted import uses it to drop a partially-restored target it created so a
+		// non-overwrite retry is not blocked by leftover tables. Added after the
+		// dropoff_sessions table first shipped without it; also present in the CREATE TABLE
+		// above so fresh installs get it directly.
+		table:  "dropoff_sessions",
+		column: "created_target",
+		ddl:    `ALTER TABLE dropoff_sessions ADD COLUMN created_target INTEGER NOT NULL DEFAULT 0`,
+	},
 }
 
 // connectionPragmas are encoded into the DSN by buildDSN so the driver applies

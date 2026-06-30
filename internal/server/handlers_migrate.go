@@ -196,17 +196,45 @@ func (s *Server) handleMigrateCluster(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusAccepted, migrateStartedResponse{ID: id, Status: string(migrate.StatusImporting)})
 }
 
+// importTargetKey is the admission-gate key for a direct job: the single target
+// database for single-db, or the whole-cluster sentinel for a cluster import (which
+// targets every database and has no single name).
+func importTargetKey(job migrate.Job) string {
+	if job.Mode == migrate.ModeCluster {
+		return clusterImportTarget
+	}
+	return job.TargetDatabase
+}
+
 // startDirectJob inserts the local migration record and spawns the direct-pull
 // worker on a background context. It returns the record id. The Source.Redacted()
 // summary is the only source detail persisted — never the password.
+//
+// It first claims the target database in the process-local admission gate so a
+// second import into the same local target (any mode) is rejected rather than racing
+// the restore; the spawned worker releases the claim when it exits.
 func (s *Server) startDirectJob(ctx context.Context, job migrate.Job) (int64, error) {
+	target := importTargetKey(job)
+	if !s.claimImportTarget(target) {
+		return 0, errImportTargetBusy(directTargetLabel(job))
+	}
 	rec := storeMigrationRecord(job)
 	id, err := s.store.InsertMigration(ctx, rec)
 	if err != nil {
+		s.releaseImportTarget(target)
 		return 0, err
 	}
 	go s.runDirectJob(id, job)
 	return id, nil
+}
+
+// directTargetLabel is the human-readable target for a busy-target conflict message:
+// the database name for single-db, or "the cluster" when no single name applies.
+func directTargetLabel(job migrate.Job) string {
+	if job.Mode == migrate.ModeCluster {
+		return "the cluster"
+	}
+	return job.TargetDatabase
 }
 
 // handleListMigrations returns the migration history, newest first. Read-only;
@@ -260,12 +288,52 @@ func (s *Server) handleCreateMigrationSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Validate the target name up front so the admission gate can be claimed BEFORE any
+	// S3 session document is written. CreateSession applies the same checks, but doing
+	// them here means a busy-target (or invalid-name) rejection leaves NO orphaned
+	// session.json in the bucket. Mirrors migrate.Service.CreateSession.
+	if req.Database == "" {
+		writeError(w, core.ValidationError("database is required to create a migration session"))
+		return
+	}
+	if err := core.ValidateIdentifier(req.Database, "database"); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	// Claim the local target BEFORE CreateSession: a target another import is already
+	// restoring into must reject this one rather than race the restore — and rejecting
+	// before the S3 write means a busy-target refusal cannot orphan a session. The
+	// worker releases the claim when it exits (after import or TTL).
+	if !s.claimImportTarget(req.Database) {
+		s.audit(ctx, "migrate_session_create", req.Database, "failure", "target busy", core.CodeOf(errImportTargetBusy(req.Database)))
+		writeError(w, errImportTargetBusy(req.Database))
+		return
+	}
+	targetClaimHeld := true
+	defer func() {
+		if targetClaimHeld {
+			s.releaseImportTarget(req.Database)
+		}
+	}()
+
 	sess, err := s.migrate.CreateSession(ctx, req.Database, migrate.DefaultTTL)
 	if err != nil {
 		s.audit(ctx, "migrate_session_create", req.Database, "failure", "create session failed", core.CodeOf(err))
 		writeError(w, err)
 		return
 	}
+	// From here a pre-worker failure must also delete the session.json we just wrote, or
+	// it would linger in S3 until the expiry sweep. Cleared once the worker owns it.
+	sessionCreated := true
+	defer func() {
+		if sessionCreated {
+			// Use a background context so cleanup runs even if the request ctx is done.
+			if cerr := s.migrate.CleanupSession(context.Background(), sess.Code); cerr != nil {
+				s.log.Warn("could not clean up orphaned migration session", "code", sess.Code, "err", cerr)
+			}
+		}
+	}()
 
 	rec := sessionMigrationRecord(sess.Code, sess.Database)
 	id, err := s.store.InsertMigration(ctx, rec)
@@ -277,7 +345,9 @@ func (s *Server) handleCreateMigrationSession(w http.ResponseWriter, r *http.Req
 
 	// The target side waits for the source to export, then imports. It resolves
 	// the local target Postgres itself so the request returns immediately.
-	go s.runImportWorker(id, sess.Code)
+	go s.runImportWorker(id, sess.Code, sess.Database)
+	targetClaimHeld = false // the worker now owns the claim
+	sessionCreated = false  // the worker now owns the session lifecycle
 
 	s.audit(ctx, "migrate_session_create", sess.Code, "success", "ssh-less target session created", "")
 	writeData(w, http.StatusCreated, sess)

@@ -17,7 +17,9 @@ read-only access at the database level, not just in the UI.
   read-only users done correctly (`ALTER DEFAULT PRIVILEGES`).
 - **Backups** via pgBackRest to any S3-compatible target, with rich stats,
   restore, and restore-testing.
-- **Migration** across hosts (single-DB, whole-cluster, SSH-less session wizard).
+- **Migration** across hosts (single-DB, whole-cluster, SSH-less session wizard,
+  and a drop-off link for a source the panel can't reach: it `curl … | sh`-pushes
+  one database to a presigned S3 URL, then the panel imports + verifies it).
 - **Observability** in an in-panel dashboard and exported via OTLP.
 - **Alerting** through Pushover and generic webhooks with smart defaults.
 

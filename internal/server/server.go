@@ -79,6 +79,37 @@ type Server struct {
 	migrateEngine migrate.PgEngine
 	migrate       *migrate.Service
 
+	// drops is the S3 transport for the "drop-off link" migration mode (presigned
+	// PUT mint + streaming download + stat + cleanup). Like migrate it is nil
+	// unless an S3 backup target is configured — that nil is the ONLY honest reason
+	// the drop-off endpoints report "requires S3". It is read through dropTransport()
+	// and swapped through setDropTransport() under dropsMu so a config save can
+	// atomically re-point it at a new bucket/credentials without a restart (and
+	// without racing the in-flight drop handlers that read it).
+	dropsMu sync.RWMutex
+	drops   migrate.DropTransport
+
+	// dropLifecycleMu serializes a drop-off MINT (read-transport -> probe -> presign
+	// -> insert, in handleCreateDropoff) against an S3-target CHANGE (the uncleaned-
+	// session check -> config save -> transport swap, in handleUpdateConfig). Without
+	// it, Create could capture the OLD transport, a concurrent config save could
+	// observe no session and swap s.drops, and Create would then insert a session
+	// whose presigned URLs point at the now-inaccessible old bucket. Both paths take
+	// THIS lock, so the check+swap and the read+insert are mutually exclusive. It is
+	// distinct from dropsMu (which only guards the transport pointer read/write).
+	dropLifecycleMu sync.Mutex
+
+	// importTargetsMu guards inFlightImportTargets, the set of local target databases
+	// (plus a whole-cluster sentinel) that a migration import worker is currently
+	// restoring into. This single panel process owns the local Postgres, so it is a
+	// PROCESS-LOCAL admission gate: a target a worker is already restoring into must
+	// reject a SECOND concurrent Start — another drop-off code, or a single-db /
+	// ssh-less / cluster import — that would otherwise race DROP/CREATE/pg_restore and
+	// cleanup into the same database. A target is claimed at Start and released when
+	// the worker exits.
+	importTargetsMu       sync.Mutex
+	inFlightImportTargets map[string]struct{}
+
 	// upgrades persists the version-upgrade feature's durable state (the in-
 	// flight operation + the pending-finalization record), backed by the config
 	// key/value table so it survives a panel restart. upgradeMu is the single
@@ -174,6 +205,17 @@ func New(opts Options) (*Server, error) {
 	}
 	if rerr := os.RemoveAll(migrateWorkBaseDir); rerr != nil {
 		log.Warn("could not clear stale migration work dir on startup", "dir", migrateWorkBaseDir, "err", rerr)
+	}
+
+	// Reconcile drop-off sessions left "importing" by a panel restart (their worker
+	// goroutine is gone): the linked migration decides the terminal status (a genuinely-
+	// completed import -> completed; otherwise failed), and a partially-restored target
+	// THIS import created in a non-overwrite restore is dropped so a retry is not blocked.
+	// Then expire any past-TTL sessions — deleting the full database at rest from S3.
+	// Best-effort: failures only log.
+	srv.reconcileInterruptedDropoffs(connectCtx)
+	if serr := srv.sweepExpiredDropoffs(connectCtx); serr != nil {
+		log.Warn("could not sweep expired drop-off sessions on startup", "err", serr)
 	}
 
 	// Sweep any backup left "running" by a panel restart: the async backup's
@@ -319,6 +361,116 @@ func migrateServiceFor(cfg config.Config, runner exec.Runner, log *core.Logger) 
 	return migrate.NewService(objstore, runner, log)
 }
 
+// dropTransportFor builds the S3 transport for the drop-off migration mode when an
+// S3 backup target is configured, or returns nil when there is none (a nil
+// transport is what makes the drop-off endpoints honestly report "requires S3").
+// It reuses the same bucket/credentials as the backup repo, so no second
+// credential is needed.
+//
+// It is a free function (not a method) so newServer can call it while still
+// assembling the Server.
+func dropTransportFor(cfg config.Config, log *core.Logger) migrate.DropTransport {
+	if cfg.Backup.Bucket == "" && cfg.Backup.Endpoint == "" {
+		return nil // no S3 target: drop-off is unavailable, direct pull still works.
+	}
+	objstore, err := backup.NewS3ObjectStore(backup.S3StoreParams{
+		Endpoint:  cfg.Backup.Endpoint,
+		Region:    cfg.Backup.Region,
+		Bucket:    cfg.Backup.Bucket,
+		AccessKey: cfg.Backup.AccessKey,
+		SecretKey: cfg.Backup.SecretKey,
+		UseSSL:    cfg.Backup.UseSSL,
+	})
+	if err != nil {
+		log.Warn("drop-off migration unavailable: could not build S3 client", "err", err)
+		return nil
+	}
+	return objstore
+}
+
+// dropTransport returns the current drop-off S3 transport under a read lock, so a
+// handler reads a coherent value even while a config save swaps it. Callers should
+// capture it ONCE per request and use the local copy for the whole operation.
+func (s *Server) dropTransport() migrate.DropTransport {
+	s.dropsMu.RLock()
+	defer s.dropsMu.RUnlock()
+	return s.drops
+}
+
+// setDropTransport atomically swaps the drop-off transport, called when an S3
+// config save re-points the panel at a new bucket/credentials. The refusal in
+// handleUpdateConfig guarantees no active drop-off session still depends on the old
+// transport when this runs.
+func (s *Server) setDropTransport(tr migrate.DropTransport) {
+	s.dropsMu.Lock()
+	s.drops = tr
+	s.dropsMu.Unlock()
+}
+
+// clusterImportTarget is the reserved admission-gate key for a whole-cluster import,
+// which has no single target database name. A real database can never be named this
+// (a NUL byte is not a legal identifier), so it cannot collide with a per-database
+// claim. A whole-cluster import drops/restores EVERY database, so unlike a per-
+// database claim it conflicts with ANY other in-flight import — see claimImportTarget.
+const clusterImportTarget = "\x00whole-cluster"
+
+// claimImportTarget reserves a local target for an import worker, returning false
+// when it conflicts with an already-claimed target. The caller MUST call
+// releaseImportTarget(target) when the worker exits (or on any Start error after a
+// successful claim). It is the process-local guard against two imports racing into
+// the same database (or a cluster import racing a per-database one); see
+// inFlightImportTargets.
+//
+// Conflict rules — a whole-cluster import touches every database, so it cannot be
+// excluded by its own sentinel alone:
+//   - A CLUSTER claim (target == clusterImportTarget) succeeds only when NO target is
+//     currently claimed; it conflicts with any in-flight import, cluster or per-database.
+//   - A PER-DATABASE claim is refused while the cluster sentinel is held (that cluster
+//     import covers this database too) or while the SAME database is already claimed.
+//
+// Two DIFFERENT per-database targets may still be claimed concurrently — they never
+// touch each other's database. The single lock keeps every path deadlock-free.
+func (s *Server) claimImportTarget(target string) bool {
+	s.importTargetsMu.Lock()
+	defer s.importTargetsMu.Unlock()
+	if s.inFlightImportTargets == nil {
+		s.inFlightImportTargets = make(map[string]struct{})
+	}
+	if target == clusterImportTarget {
+		// A whole-cluster import races DROP/CREATE/restore across every database, so it
+		// may proceed only when nothing else is in flight.
+		if len(s.inFlightImportTargets) > 0 {
+			return false
+		}
+	} else {
+		// A per-database import conflicts with an in-flight whole-cluster import (which
+		// covers this database) and with another import into the SAME database.
+		if _, clusterBusy := s.inFlightImportTargets[clusterImportTarget]; clusterBusy {
+			return false
+		}
+		if _, busy := s.inFlightImportTargets[target]; busy {
+			return false
+		}
+	}
+	s.inFlightImportTargets[target] = struct{}{}
+	return true
+}
+
+// releaseImportTarget frees a target claimed by claimImportTarget. A delete of an
+// absent key (nil map included) is a safe no-op.
+func (s *Server) releaseImportTarget(target string) {
+	s.importTargetsMu.Lock()
+	defer s.importTargetsMu.Unlock()
+	delete(s.inFlightImportTargets, target)
+}
+
+// errImportTargetBusy is the typed conflict returned when a Start would restore into
+// a local database another import is already restoring into.
+func errImportTargetBusy(target string) error {
+	return core.ConflictError("a migration is already importing into %q on this panel", target).
+		WithHint("wait for the in-progress import to finish or fail before starting another into the same database")
+}
+
 // newServer is the unexported builder used by New and by tests to inject a
 // pre-wired authenticator and SPA filesystem.
 func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth.Authenticator, dist fs.FS, ttl time.Duration) (*Server, error) {
@@ -351,6 +503,7 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 		// no S3); the S3 session Service is built only when an S3 target exists.
 		migrateEngine: migrate.NewEngine(runner, log),
 		migrate:       migrateServiceFor(cfg, runner, log),
+		drops:         dropTransportFor(cfg, log),
 
 		// Version-upgrade durable state, backed by the panel's local store (config
 		// key/value table). The *store.Store satisfies pg.StateStore directly.

@@ -129,6 +129,31 @@ type MigrationRecord struct {
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`
 }
 
+// DropoffRecord is the local-store source of truth for one "drop-off link"
+// migration session. It stores only the S3 object KEYS (dump_key/meta_key) — never
+// the presigned URLs (short-lived secrets returned once at mint) nor any source
+// password. MigrationID links the migrations-table row created when the import
+// starts, so the SPA can poll the shared migration progress path.
+type DropoffRecord struct {
+	ID             int64  `json:"id"`
+	Code           string `json:"code"`
+	MigrationID    *int64 `json:"migration_id,omitempty"`
+	DumpKey        string `json:"dump_key"`
+	MetaKey        string `json:"meta_key"`
+	TargetDatabase string `json:"target_database"`
+	Overwrite      bool   `json:"overwrite"`
+	// CreatedTarget records that THIS import created the target database (vs restoring
+	// into a pre-existing one). Startup reconciliation of an interrupted import drops a
+	// partially-restored target it created so a non-overwrite retry is not blocked.
+	CreatedTarget bool      `json:"created_target"`
+	Status        string    `json:"status"`
+	Error         string    `json:"error"`
+	ByteSize      int64     `json:"byte_size"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 // TelemetrySample is one buffered metric sample for the in-panel dashboard.
 // Labels is a JSON object string.
 type TelemetrySample struct {

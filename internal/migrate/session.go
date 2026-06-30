@@ -177,10 +177,17 @@ func (s MigrationSession) ValidateForImport() error {
 }
 
 // RowCountDiff is a single per-table mismatch found by CompareRowCounts.
+//
+// SourceMissing / TargetMissing flag a table that exists on only ONE side (a schema
+// mismatch, not just a row-count difference). They are set by the drop-off
+// presence-aware comparison (compareRowCountsByTable); the flat CompareRowCounts
+// leaves them false and relies on its zero-fill semantics.
 type RowCountDiff struct {
-	Table  string
-	Source int64
-	Target int64
+	Table         string
+	Source        int64
+	Target        int64
+	SourceMissing bool
+	TargetMissing bool
 }
 
 // CompareRowCounts returns every table whose source and target row counts do
