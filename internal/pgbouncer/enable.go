@@ -75,8 +75,15 @@ type EnableResult struct {
 // new, rewrites nothing, and does not bounce a healthy pooler.
 //
 // The steps run in a deliberate order:
-//  1. InstallPackage — first, because it creates the pgbouncer OS user and
-//     /etc/pgbouncer, both of which the config/auth_file install below depend on.
+//  1. InstallPackage — first, because it creates /etc/pgbouncer and the packaged
+//     pgbouncer unit, both of which the config/auth_file install below depend on.
+//     (The Debian/Ubuntu package ships NO dedicated `pgbouncer` OS user; its unit
+//     runs PgBouncer as the existing `postgres` user, which is therefore the owner
+//     the managed config falls back to — see bouncerOwnerCandidates.)
+//     ResetPackageConffiles then clears the apt-shipped pristine default
+//     pgbouncer.ini (an UNTOUCHED package conffile, detected by its dpkg-recorded
+//     md5) so EnsureConfig's marker guard does not 409 on a clean box; an
+//     operator-edited config is left in place and still hard-stops the flow.
 //  2. RoleVerifiers → EnsureConfig — read the roles' SCRAM verifiers from
 //     pg_authid (privileged path), then size the pool and install pgbouncer.ini.
 //     EnsureConfig's marker guard is the flow's only ownership check, so it runs
@@ -86,13 +93,20 @@ type EnableResult struct {
 //     now that indiepg ownership of /etc/pgbouncer is confirmed. RoleVerifiers
 //     and RenderUserlist are strict (missing role / no password / non-SCRAM all
 //     error), so a half-built auth_file that locks an app out is never written.
-//  4. EnableNow — enable + start the unit (idempotent).
-//  5. Reload — apply a changed config/auth_file with a SIGHUP (no dropped client
+//  4. EnsureRuntimeDir — provision PgBouncer's pidfile directory (/run/pgbouncer)
+//     BEFORE the unit starts: a RuntimeDirectory= drop-in (+ daemon-reload) makes
+//     systemd recreate it on every start (reboot-safe), plus an explicit
+//     `install -d` for the already-booted box the package was just apt-installed
+//     on. Without it `systemctl enable --now` fails: the post-boot install missed
+//     the package's boot-time runtime provisioning, so the daemon could not open
+//     its pidfile ("No such file or directory").
+//  5. EnableNow — enable + start the unit (idempotent).
+//  6. Reload — apply a changed config/auth_file with a SIGHUP (no dropped client
 //     connections), and ONLY when something changed, so an unchanged pooler is
 //     never bounced.
-//  6. IsRunning — verify the unit is actually up before recording success;
+//  7. IsRunning — verify the unit is actually up before recording success;
 //     "couldn't ask" surfaces as an error, never a silent "down".
-//  7. Persist enabled=true — last, only once the pooler is confirmed up, so the
+//  8. Persist enabled=true — last, only once the pooler is confirmed up, so the
 //     stored state can never contradict a failed bring-up.
 //
 // On any error it stops and returns the partial result; nothing past the failed
@@ -117,6 +131,16 @@ func (m *Manager) Enable(ctx context.Context, src VerifierSource, state PoolerSt
 	}
 
 	if err := m.InstallPackage(ctx); err != nil {
+		return res, err
+	}
+
+	// The apt install ships a pristine default pgbouncer.ini that carries no
+	// managed marker; on a clean box EnsureConfig's marker guard would 409 on it
+	// and block the enable. Clear that (and any other UNTOUCHED package conffile we
+	// manage) BEFORE EnsureConfig so it can write the managed config. A genuinely
+	// operator-edited conffile is detected by its changed md5 and left in place, so
+	// the marker guard still refuses to clobber a hand-edited config.
+	if err := m.ResetPackageConffiles(ctx); err != nil {
 		return res, err
 	}
 
@@ -159,6 +183,16 @@ func (m *Manager) Enable(ctx context.Context, src VerifierSource, state PoolerSt
 		return res, err
 	}
 	res.UserlistChanged = userlistChanged
+
+	// Provision PgBouncer's runtime (pidfile) directory BEFORE starting the unit.
+	// The package was apt-installed above — after systemd booted — so the package's
+	// boot-time provisioning of /run/pgbouncer never ran, and `systemctl enable
+	// --now` would otherwise fail with "could not open pidfile ... No such file or
+	// directory". A RuntimeDirectory= drop-in makes systemd recreate it on every
+	// start (reboot-safe); an explicit `install -d` covers the already-booted box.
+	if err := m.EnsureRuntimeDir(ctx); err != nil {
+		return res, err
+	}
 
 	if err := m.EnableNow(ctx); err != nil {
 		return res, err

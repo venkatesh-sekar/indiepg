@@ -73,7 +73,9 @@ func newEnableManager(t *testing.T) (*Manager, *exec.FakeRunner) {
 	r := exec.NewFakeRunner()
 	// is-active must report "active" so the verify step passes on the happy path.
 	r.On("is-active pgbouncer", exec.FakeResponse{Stdout: "active\n"})
-	m := New(Options{Runner: r, Logger: core.Discard(), ConfDir: t.TempDir()})
+	// SystemdDir is a temp dir so EnsureRuntimeDir's drop-in install never touches
+	// the real /etc/systemd/system.
+	m := New(Options{Runner: r, Logger: core.Discard(), ConfDir: t.TempDir(), SystemdDir: t.TempDir()})
 	return m, r
 }
 
@@ -116,8 +118,12 @@ func TestEnable_HappyPath_WiresEveryStepInOrder(t *testing.T) {
 	}
 	joined := strings.Join(order, "\n")
 	require.Contains(t, joined, "apt-get install -y pgbouncer")
+	// daemon-reload (from the RuntimeDirectory= drop-in install) must land after the
+	// package install and BEFORE the unit is enabled/started, so systemd has the
+	// runtime-dir directive when it brings the pooler up.
 	requireOrder(t, order,
 		"apt-get install -y pgbouncer",
+		"systemctl daemon-reload",
 		"systemctl enable --now pgbouncer",
 		"systemctl reload pgbouncer",
 		"systemctl is-active pgbouncer",
@@ -239,7 +245,7 @@ func TestEnable_ServiceNotRunningAfterStartIsNotRecorded(t *testing.T) {
 	r.On("is-active pgbouncer", exec.FakeResponse{
 		Stdout: "failed\n", ExitCode: 3, Err: errors.New("exit status 3"),
 	})
-	m := New(Options{Runner: r, Logger: core.Discard(), ConfDir: t.TempDir()})
+	m := New(Options{Runner: r, Logger: core.Discard(), ConfDir: t.TempDir(), SystemdDir: t.TempDir()})
 
 	res, err := m.Enable(context.Background(), okSource(), newFakeState(), okParams())
 	require.Error(t, err)
@@ -253,7 +259,7 @@ func TestEnable_DoesNotPersistWhenBringUpFails(t *testing.T) {
 	// Register is-active too so only `enable --now` fails — the error code then
 	// reflects that step, not an incidental later one if the match ever shifted.
 	r.On("is-active pgbouncer", exec.FakeResponse{Stdout: "active\n"})
-	m := New(Options{Runner: r, Logger: core.Discard(), ConfDir: t.TempDir()})
+	m := New(Options{Runner: r, Logger: core.Discard(), ConfDir: t.TempDir(), SystemdDir: t.TempDir()})
 	state := newFakeState()
 
 	_, err := m.Enable(context.Background(), okSource(), state, okParams())
