@@ -266,6 +266,14 @@ type DropImportSpec struct {
 	TargetDatabase string
 	Overwrite      bool
 	Target         ConnInfo
+	// OnTargetCreated, when non-nil, is invoked once this import has CREATED the target
+	// database (prepareTarget returned created=true — a brand-new non-overwrite target,
+	// or the fresh database an overwrite re-creates). The drop-off worker uses it to
+	// persist a created_target flag on the session row BEFORE the (potentially long)
+	// restore, so a crash mid-restore can be reconciled by dropping the partially-
+	// restored target it created (unblocking a non-overwrite retry). Best-effort: an
+	// error is logged and never fails the import.
+	OnTargetCreated func(ctx context.Context) error
 }
 
 // errDropTooLarge is the friendly refusal when the uploaded dump exceeds the
@@ -399,6 +407,17 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 	createdTarget, err := o.prepareTarget(ctx, job)
 	if err != nil {
 		return o.fail(ctx, rec, err)
+	}
+	if createdTarget && spec.OnTargetCreated != nil {
+		// Persist the created_target flag NOW, before the restore: if the worker crashes
+		// mid-restore, startup reconciliation can then drop this partially-restored target
+		// so a non-overwrite retry from the kept-in-S3 dump is not blocked by its leftover
+		// tables. Best-effort — a persist failure only logs (an interrupted retry may then
+		// need a manual drop), never failing the import that is otherwise proceeding.
+		if cerr := spec.OnTargetCreated(ctx); cerr != nil {
+			o.log.Warn("could not persist drop-off created_target flag; an interrupted retry may need a manual drop",
+				"code", spec.Code, "error", cerr)
+		}
 	}
 	if err := o.engine.Restore(ctx, job.Target, dumpPath, job.TargetDatabase, RestoreOpts{
 		Clean:   job.Overwrite,

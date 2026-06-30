@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -308,10 +310,10 @@ func TestCountUncleanedDropoffs(t *testing.T) {
 	mk("WAIT01", "waiting_for_upload")
 	mk("UPLD01", "uploaded")
 	mk("IMPR01", "importing")
-	mk("FAIL01", "failed")     // keeps its dump for retry
-	mk("CANC01", "canceled")   // best-effort delete may have failed
-	mk("DONE01", "completed")  // best-effort delete may have failed
-	mk("EXPR01", "expired")    // sweep proved both deletes succeeded -> NOT counted
+	mk("FAIL01", "failed")    // keeps its dump for retry
+	mk("CANC01", "canceled")  // best-effort delete may have failed
+	mk("DONE01", "completed") // best-effort delete may have failed
+	mk("EXPR01", "expired")   // sweep proved both deletes succeeded -> NOT counted
 
 	n, err = s.CountUncleanedDropoffs(ctx)
 	require.NoError(t, err)
@@ -402,28 +404,114 @@ func TestMarkDropoffCancelled(t *testing.T) {
 	require.Equal(t, "completed", got.Status)
 }
 
-func TestSweepRunningDropoffs(t *testing.T) {
+// TestMigrateAddsCreatedTargetToLegacyTable proves the additive-column migration is
+// safe under the schema constraint (CREATE ... IF NOT EXISTS is a no-op on an existing
+// table, and SQLite's ADD COLUMN has no IF NOT EXISTS): a database whose
+// dropoff_sessions predates created_target gets the column back-filled on Open, and a
+// SECOND Open (a second startup) re-applies the guarded ALTER as a harmless no-op
+// rather than crashing.
+func TestMigrateAddsCreatedTargetToLegacyTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+
+	// Build a LEGACY dropoff_sessions (no created_target column) directly.
+	raw, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = raw.Exec(`CREATE TABLE dropoff_sessions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL UNIQUE,
+		migration_id INTEGER, dump_key TEXT NOT NULL, meta_key TEXT NOT NULL,
+		target_database TEXT NOT NULL, overwrite INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '', byte_size INTEGER NOT NULL DEFAULT 0,
+		expires_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`)
+	require.NoError(t, err)
+	_, err = raw.Exec(`INSERT INTO dropoff_sessions
+		(code, dump_key, meta_key, target_database, status, expires_at, created_at, updated_at)
+		VALUES ('LEGAC1','d','m','appdb','failed','2999-01-01T00:00:00.000000000Z','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	// First Open: migrate() must ADD created_target to the legacy table.
+	s, err := Open(path)
+	require.NoError(t, err)
+	got, err := s.GetDropoffByCode(context.Background(), "LEGAC1")
+	require.NoError(t, err)
+	require.False(t, got.CreatedTarget, "the back-filled column defaults to false")
+	require.NoError(t, s.Close())
+
+	// Second Open (a second startup): re-applying the guarded ALTER must be a no-op.
+	s2, err := Open(path)
+	require.NoError(t, err)
+	require.NoError(t, s2.Close())
+}
+
+func TestMarkDropoffTargetCreated(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-
-	importing := sampleDropoff("IMPORT", time.Now().Add(time.Hour))
-	importing.Status = "importing"
-	_, err := s.InsertDropoff(ctx, importing)
-	require.NoError(t, err)
-	_, err = s.InsertDropoff(ctx, sampleDropoff("WAITAA", time.Now().Add(time.Hour)))
+	_, err := s.InsertDropoff(ctx, sampleDropoff("TGTCRT", time.Now().Add(time.Hour)))
 	require.NoError(t, err)
 
-	n, err := s.SweepRunningDropoffs(ctx)
+	got, err := s.GetDropoffByCode(ctx, "TGTCRT")
 	require.NoError(t, err)
-	require.Equal(t, 1, n)
+	require.False(t, got.CreatedTarget, "created_target defaults false")
 
-	got, err := s.GetDropoffByCode(ctx, "IMPORT")
+	require.NoError(t, s.MarkDropoffTargetCreated(ctx, "TGTCRT"))
+	got, err = s.GetDropoffByCode(ctx, "TGTCRT")
 	require.NoError(t, err)
-	require.Equal(t, "failed", got.Status)
-	require.Contains(t, got.Error, "interrupted")
+	require.True(t, got.CreatedTarget, "the flag persists")
 
-	// A waiting session is untouched (its worker never ran).
-	wait, err := s.GetDropoffByCode(ctx, "WAITAA")
+	// Idempotent, and a no-op for an unknown code (never errors).
+	require.NoError(t, s.MarkDropoffTargetCreated(ctx, "TGTCRT"))
+	require.NoError(t, s.MarkDropoffTargetCreated(ctx, "NOSUCH"))
+}
+
+// TestReconcileImportingDropoffs pins finding #2: startup reconciliation of sessions
+// left 'importing' by a crash must consult the linked migration (completed -> the
+// session is completed, not blindly failed) and must drop ONLY a target THIS import
+// created in a NON-overwrite restore — never a pre-existing or an overwrite target.
+func TestReconcileImportingDropoffs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	exp := time.Now().Add(time.Hour).UTC()
+
+	mk := func(code string, createdTarget, overwrite bool, migStatus string) {
+		var mid *int64
+		if migStatus != "" {
+			id, err := s.InsertMigration(ctx, MigrationRecord{
+				Mode: "drop-off", Role: "target", Status: migStatus, TargetDatabase: "appdb", Code: code,
+			})
+			require.NoError(t, err)
+			mid = &id
+		}
+		d := sampleDropoff(code, exp)
+		d.Overwrite = overwrite
+		d.CreatedTarget = createdTarget
+		d.Status = "importing"
+		d.MigrationID = mid
+		_, err := s.InsertDropoff(ctx, d)
+		require.NoError(t, err)
+	}
+
+	mk("DONELK", false, false, "completed") // linked migration completed -> completed
+	mk("FAILCR", true, false, "failed")     // created + non-overwrite -> failed + DROP
+	mk("FAILOW", true, true, "failed")      // created + overwrite     -> failed, NOT dropped
+	mk("FAILEX", false, false, "")          // pre-existing (not created) -> failed, NOT dropped
+
+	toDrop, err := s.ReconcileImportingDropoffs(ctx)
 	require.NoError(t, err)
-	require.Equal(t, "waiting_for_upload", wait.Status)
+
+	var codes []string
+	for _, d := range toDrop {
+		codes = append(codes, d.Code)
+	}
+	require.Equal(t, []string{"FAILCR"}, codes, "only a created, non-overwrite target is returned for dropping")
+	require.Equal(t, "appdb", toDrop[0].TargetDatabase)
+
+	statusOf := func(code string) string {
+		d, gerr := s.GetDropoffByCode(ctx, code)
+		require.NoError(t, gerr)
+		return d.Status
+	}
+	require.Equal(t, "completed", statusOf("DONELK"), "a completed linked migration reconciles to completed")
+	require.Equal(t, "failed", statusOf("FAILCR"))
+	require.Equal(t, "failed", statusOf("FAILOW"))
+	require.Equal(t, "failed", statusOf("FAILEX"))
 }

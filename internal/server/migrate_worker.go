@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -131,11 +132,55 @@ func (r *storeRecorder) Fail(ctx context.Context, cause error) error {
 	rec.Status = string(migrate.StatusFailed)
 	rec.Phase = ""
 	if cause != nil {
-		rec.Error = cause.Error()
+		rec.Error = failErrorText(cause)
 	}
 	now := time.Now().UTC()
 	rec.FinishedAt = &now
 	return r.store.UpdateMigration(ctx, *rec)
+}
+
+// maxPersistedDiagnostic bounds the command diagnostic appended to a failed
+// migration's persisted error, so a pathological multi-megabyte stderr cannot bloat
+// the row; the actionable pg_restore reason is in the first lines.
+const maxPersistedDiagnostic = 2000
+
+// failErrorText builds the error string persisted for a failed migration: the
+// (already password-redacted) cause, plus — when the cause carries a structured
+// "stderr" diagnostic (the actual pg_restore/psql failure reason) — a bounded summary
+// of it. Without this an operator sees only a generic "exit status 1" while the
+// actionable PostgreSQL reason sits unread in Error.Details. The diagnostic is re-run
+// through SanitizeRestoreStderr (idempotent) as defense in depth, so even an stderr
+// detail that was only password-scrubbed at its source never persists an echoed
+// "Command was:" DDL body — which can embed a secret — while keeping pg_restore's
+// error:/fatal: reason lines.
+func failErrorText(cause error) string {
+	msg := cause.Error()
+	pe, ok := core.AsError(cause)
+	if !ok {
+		return msg
+	}
+	raw, ok := pe.Details["stderr"].(string)
+	if !ok {
+		return msg
+	}
+	diag := boundDiagnostic(strings.TrimSpace(migrate.SanitizeRestoreStderr(raw)))
+	if diag == "" || strings.Contains(msg, diag) {
+		return msg
+	}
+	return msg + "\n" + diag
+}
+
+// boundDiagnostic caps a diagnostic string at maxPersistedDiagnostic, on a rune
+// boundary so a multi-byte character is never split.
+func boundDiagnostic(s string) string {
+	if len(s) <= maxPersistedDiagnostic {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= maxPersistedDiagnostic {
+		return s
+	}
+	return strings.TrimSpace(string(r[:maxPersistedDiagnostic])) + " … (truncated)"
 }
 
 // Succeed marks the migration completed with the verified row counts and a

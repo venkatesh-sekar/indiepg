@@ -71,6 +71,12 @@ func (s *Server) runDropImportWorker(id int64, code, targetDB string) {
 		TargetDatabase: drec.TargetDatabase,
 		Overwrite:      drec.Overwrite,
 		Target:         tgt,
+		// Persist created_target the moment the import creates the target DB, so a crash
+		// mid-restore can be reconciled (the partially-restored target dropped) on the
+		// next startup instead of permanently blocking a non-overwrite retry.
+		OnTargetCreated: func(cctx context.Context) error {
+			return s.store.MarkDropoffTargetCreated(cctx, code)
+		},
 	}
 	// svc/os are nil: ImportFromDrop takes the DropTransport as an argument and
 	// never touches the Orchestrator's ssh-less session plumbing.
@@ -169,14 +175,79 @@ func (s *Server) sweepExpiredDropoffs(ctx context.Context) error {
 		if dumpErr != nil || metaErr != nil {
 			continue // not fully reclaimed: do NOT mark expired, retry next sweep
 		}
-		// Both objects are gone (or were already absent — deletes are idempotent).
-		// Move to the terminal 'expired' state so the row drains out of the sweep's
-		// set (it won't be reclaimed again every cycle) while preserving any failure
-		// Error, so the UI can still explain why a previously-failed drop-off ended.
+		// The deletes reported success, but a presigned PUT minted at session start is
+		// a bearer token valid for the FULL TTL: a source upload begun before expiry can
+		// land AFTER this delete and re-create the object. Marking the row terminally
+		// 'expired' now (which drains it from EVERY future sweep) would then orphan that
+		// late upload — a full database at rest — in S3 indefinitely. So CONFIRM both
+		// objects are actually gone with an authoritative StatObject before the terminal
+		// transition. If either still exists (a late upload re-created it) or the stat
+		// itself fails, leave the row sweep-eligible so the next pass re-deletes and
+		// re-checks it — expired/over-deadline sessions keep getting cleaned until the
+		// objects are provably gone.
+		_, dumpThere, dumpStatErr := drops.StatObject(ctx, cur.DumpKey)
+		if dumpStatErr != nil {
+			s.log.Warn("could not confirm expired drop-off dump is gone; leaving for the next sweep", "code", cur.Code, "err", dumpStatErr)
+			continue
+		}
+		_, metaThere, metaStatErr := drops.StatObject(ctx, cur.MetaKey)
+		if metaStatErr != nil {
+			s.log.Warn("could not confirm expired drop-off metadata is gone; leaving for the next sweep", "code", cur.Code, "err", metaStatErr)
+			continue
+		}
+		if dumpThere || metaThere {
+			s.log.Warn("expired drop-off object reappeared after delete (a late upload through the still-valid PUT URL); leaving for the next sweep",
+				"code", cur.Code, "dump_present", dumpThere, "meta_present", metaThere)
+			continue
+		}
+		// Both objects PROVABLY gone — safe to make the terminal transition. The row
+		// drains out of the sweep's set (it won't be reclaimed again every cycle) while
+		// preserving any failure Error, so the UI can still explain why a previously-
+		// failed drop-off ended.
 		cur.Status = string(migrate.DropExpired)
 		if uerr := s.store.UpdateDropoff(ctx, *cur); uerr != nil {
 			s.log.Warn("could not mark drop-off expired", "code", cur.Code, "err", uerr)
 		}
 	}
 	return nil
+}
+
+// dropReconcileDropTimeout bounds each detached DROP DATABASE performed while
+// reconciling an interrupted drop-off import on startup.
+const dropReconcileDropTimeout = 30 * time.Second
+
+// reconcileInterruptedDropoffs reconciles drop-off sessions left 'importing' by a panel
+// restart. The store decides each session's terminal status from its linked migration
+// (a genuinely-completed import -> 'completed'; otherwise 'failed') and returns the
+// sessions whose target database THIS import created during a NON-overwrite restore.
+// Their partially-restored target is dropped here — via the engine, which the store
+// cannot reach — so a non-overwrite retry from the kept-in-S3 dump is not blocked
+// forever by a leftover non-empty database. A pre-existing or an overwrite target is
+// NEVER dropped (the store does not return them). Best-effort: any failure only logs.
+// Called on startup, mirroring sweepExpiredDropoffs.
+func (s *Server) reconcileInterruptedDropoffs(ctx context.Context) {
+	toDrop, err := s.store.ReconcileImportingDropoffs(ctx)
+	if err != nil {
+		s.log.Warn("could not reconcile interrupted drop-off sessions on startup", "err", err)
+		return
+	}
+	if len(toDrop) == 0 {
+		return
+	}
+	s.log.Warn("dropping partially-restored drop-off targets from interrupted imports so retries are not blocked", "count", len(toDrop))
+	target, terr := s.localTargetConn(ctx)
+	if terr != nil {
+		s.log.Warn("cannot reach local Postgres to drop interrupted drop-off targets; a retry may need a manual drop", "count", len(toDrop), "err", terr)
+		return
+	}
+	for _, d := range toDrop {
+		// Detached + bounded, mirroring dropCreatedTargetForCleanup in the import path:
+		// the DROP must not be tied to a (possibly short or cancelled) startup context.
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dropReconcileDropTimeout)
+		if derr := s.migrateEngine.DropDatabase(dctx, target, d.TargetDatabase); derr != nil {
+			s.log.Warn("could not drop interrupted drop-off target created by this import; a retry may need a manual drop",
+				"code", d.Code, "database", d.TargetDatabase, "err", derr)
+		}
+		cancel()
+	}
 }

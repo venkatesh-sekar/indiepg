@@ -391,6 +391,45 @@ func TestImportFromDrop_createsTargetWhenAbsent(t *testing.T) {
 	require.Equal(t, []string{"appdb"}, eng.created, "absent target must be created")
 }
 
+// TestImportFromDrop_onTargetCreatedFiresWhenCreated pins finding #2's worker hook:
+// when this import CREATES the target database, OnTargetCreated fires (once) so the
+// worker can persist the created_target flag BEFORE the restore — enabling a crash to
+// be reconciled by dropping the partially-restored target.
+func TestImportFromDrop_onTargetCreatedFiresWhenCreated(t *testing.T) {
+	tr := newFakeDrop()
+	stageDrop(t, tr, "ABCDEF", []byte("PGDMP"), map[string]int64{})
+
+	eng := &fakeEngine{exists: false} // absent -> prepareTarget creates it
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, nil, nil)
+	spec := dropSpec("ABCDEF")
+	called := 0
+	spec.OnTargetCreated = func(ctx context.Context) error { called++; return nil }
+
+	require.NoError(t, o.ImportFromDrop(context.Background(), tr, spec, rec))
+	require.Equal(t, 1, called, "callback fires once when this import creates the target")
+	require.Equal(t, []string{"appdb"}, eng.created)
+}
+
+// TestImportFromDrop_onTargetCreatedSkippedWhenPreExisting verifies the hook does NOT
+// fire for a pre-existing target (the import created nothing), so reconciliation never
+// drops a database the operator already had.
+func TestImportFromDrop_onTargetCreatedSkippedWhenPreExisting(t *testing.T) {
+	tr := newFakeDrop()
+	stageDrop(t, tr, "ABCDEF", []byte("PGDMP"), map[string]int64{})
+
+	eng := &fakeEngine{exists: true, rowCounts: map[string]map[string]int64{"tgt:appdb": {}}}
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, nil, nil)
+	spec := dropSpec("ABCDEF")
+	called := 0
+	spec.OnTargetCreated = func(ctx context.Context) error { called++; return nil }
+
+	require.NoError(t, o.ImportFromDrop(context.Background(), tr, spec, rec))
+	require.Equal(t, 0, called, "a pre-existing target is not 'created', so the callback never fires")
+	require.Empty(t, eng.created)
+}
+
 func TestImportFromDrop_nilTransport(t *testing.T) {
 	rec := &fakeRecorder{}
 	o := newOrch(t, &fakeEngine{}, nil, nil)

@@ -610,7 +610,7 @@ func TestSanitizeRestoreStderr(t *testing.T) {
 	in := "pg_restore: error: could not execute query: ERROR:  boom\n" +
 		"Command was: CREATE FUNCTION f() AS $$ secret-body\nmore-secret $$;\n" +
 		"pg_restore: warning: errors ignored on restore: 1"
-	out := sanitizeRestoreStderr(in)
+	out := SanitizeRestoreStderr(in)
 	require.NotContains(t, out, "secret-body")
 	require.NotContains(t, out, "more-secret")
 	require.Contains(t, out, "Command was: [redacted]")
@@ -619,7 +619,7 @@ func TestSanitizeRestoreStderr(t *testing.T) {
 
 	// No "Command was:" line: returned unchanged (trimmed).
 	plain := "pg_restore: error: connection refused"
-	require.Equal(t, plain, sanitizeRestoreStderr(plain))
+	require.Equal(t, plain, SanitizeRestoreStderr(plain))
 }
 
 // TestRowCountsByTable_preservesTrickyIdentifiers pins finding #6: the table listing

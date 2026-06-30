@@ -207,14 +207,13 @@ func New(opts Options) (*Server, error) {
 		log.Warn("could not clear stale migration work dir on startup", "dir", migrateWorkBaseDir, "err", rerr)
 	}
 
-	// Sweep drop-off sessions left "importing" by a panel restart (their worker
-	// goroutine is gone) to failed, then expire any past-TTL sessions — deleting
-	// the full database at rest from S3. Best-effort: failures only log.
-	if swept, serr := srv.store.SweepRunningDropoffs(connectCtx); serr != nil {
-		log.Warn("could not sweep interrupted drop-off sessions on startup", "err", serr)
-	} else if swept > 0 {
-		log.Warn("marked interrupted drop-off sessions as failed on startup", "count", swept)
-	}
+	// Reconcile drop-off sessions left "importing" by a panel restart (their worker
+	// goroutine is gone): the linked migration decides the terminal status (a genuinely-
+	// completed import -> completed; otherwise failed), and a partially-restored target
+	// THIS import created in a non-overwrite restore is dropped so a retry is not blocked.
+	// Then expire any past-TTL sessions — deleting the full database at rest from S3.
+	// Best-effort: failures only log.
+	srv.reconcileInterruptedDropoffs(connectCtx)
 	if serr := srv.sweepExpiredDropoffs(connectCtx); serr != nil {
 		log.Warn("could not sweep expired drop-off sessions on startup", "err", serr)
 	}

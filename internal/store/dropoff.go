@@ -11,7 +11,7 @@ import (
 // dropoffColumns is the canonical column list for dropoff_sessions, kept in the
 // exact order scanDropoff reads.
 const dropoffColumns = `id, code, migration_id, dump_key, meta_key, target_database,
-	overwrite, status, error, byte_size, expires_at, created_at, updated_at`
+	overwrite, created_target, status, error, byte_size, expires_at, created_at, updated_at`
 
 // dropoffExpiresLayout is a FIXED-WIDTH UTC timestamp layout for the expires_at
 // column. The expiry sweep filters `expires_at <= ?` as a SQLite TEXT comparison,
@@ -46,10 +46,10 @@ func (s *Store) InsertDropoff(ctx context.Context, d DropoffRecord) (int64, erro
 	}
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO dropoff_sessions
-			(code, migration_id, dump_key, meta_key, target_database, overwrite,
+			(code, migration_id, dump_key, meta_key, target_database, overwrite, created_target,
 			 status, error, byte_size, expires_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.Code, nullInt64(d.MigrationID), d.DumpKey, d.MetaKey, d.TargetDatabase, boolToInt(d.Overwrite),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.Code, nullInt64(d.MigrationID), d.DumpKey, d.MetaKey, d.TargetDatabase, boolToInt(d.Overwrite), boolToInt(d.CreatedTarget),
 		d.Status, d.Error, d.ByteSize, d.ExpiresAt.UTC().Format(dropoffExpiresLayout), created, updated)
 	if err != nil {
 		return 0, core.InternalError("insert dropoff session").Wrap(err)
@@ -87,7 +87,8 @@ func (s *Store) GetDropoffByCode(ctx context.Context, code string) (*DropoffReco
 
 // UpdateDropoff writes the mutable columns of a drop-off session back by code
 // (migration_id, status, error, byte_size), always bumping updated_at. The keys,
-// target, overwrite flag and expiry are immutable after insert.
+// target, overwrite flag, created_target flag and expiry are immutable through this
+// method; created_target is set only by MarkDropoffTargetCreated.
 func (s *Store) UpdateDropoff(ctx context.Context, d DropoffRecord) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE dropoff_sessions SET
@@ -300,23 +301,108 @@ func (s *Store) ListActiveDropoffs(ctx context.Context, now time.Time, limit int
 	return out, nil
 }
 
-// SweepRunningDropoffs marks every drop-off session left "importing" by a panel
-// restart as failed (its worker goroutine is gone), returning the rows affected.
-// Mirrors SweepRunningMigrations; called best-effort on startup.
-func (s *Store) SweepRunningDropoffs(ctx context.Context) (int, error) {
+// MarkDropoffTargetCreated records that THIS import created the session's target
+// database (as opposed to restoring into a pre-existing one), so startup
+// reconciliation of an interrupted import can drop a partially-restored target it
+// created and thus unblock a non-overwrite retry. The worker sets it right after the
+// target is created, BEFORE the (potentially long) restore, so a crash mid-restore
+// still finds the flag set. Narrow (touches only created_target) and idempotent:
+// re-running it, or running it after the row moved on, is a harmless no-op.
+func (s *Store) MarkDropoffTargetCreated(ctx context.Context, code string) error {
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE dropoff_sessions SET created_target = 1, updated_at = ?
+		WHERE code = ?`, nowRFC3339(), code); err != nil {
+		return core.InternalError("mark dropoff target created").Wrap(err)
+	}
+	return nil
+}
+
+// ReconcileImportingDropoffs reconciles drop-off sessions left 'importing' by a panel
+// restart (their import worker goroutine is gone). Unlike a blind sweep-to-failed, it
+// consults each session's linked migration row so the persisted outcome matches what
+// actually happened before the crash:
+//
+//   - If the linked migration COMPLETED (the import verified the restore and recorded
+//     success in the small window before the dropoff row itself was finalized), the
+//     session is marked 'completed'. Any S3 objects whose success-path delete had not
+//     run are reclaimed later by the expiry sweep — so a crash after S3 deletion no
+//     longer strands a 'failed' session with no retry artifact (it reads as completed).
+//   - Otherwise the session is marked 'failed'. When THIS import had created the target
+//     database in a NON-overwrite restore (created_target set, overwrite false), the
+//     session is returned in toDrop so the caller can drop that partially-restored
+//     target — otherwise its leftover tables read as non-empty and block every future
+//     non-overwrite retry from the kept-in-S3 dump forever. A pre-existing target (the
+//     operator declined a destructive overwrite) and an overwrite target (a retry
+//     re-drops it anyway) are NEVER returned for dropping.
+//
+// The store cannot drop a Postgres database, so the actual DROP is performed by the
+// server caller, which owns the engine. Best-effort: called on startup.
+func (s *Store) ReconcileImportingDropoffs(ctx context.Context) ([]DropoffRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+dropoffColumns+`
+		FROM dropoff_sessions WHERE status = 'importing' ORDER BY id`)
+	if err != nil {
+		return nil, core.InternalError("list importing dropoffs").Wrap(err)
+	}
+	var importing []DropoffRecord
+	for rows.Next() {
+		d, serr := scanDropoff(rows)
+		if serr != nil {
+			rows.Close()
+			return nil, serr
+		}
+		importing = append(importing, d)
+	}
+	if cerr := rows.Err(); cerr != nil {
+		rows.Close()
+		return nil, core.InternalError("iterate importing dropoffs").Wrap(cerr)
+	}
+	// Close BEFORE the per-row migration reads/updates below: they run on the same
+	// pooled connection and must not interleave with an open cursor.
+	rows.Close()
+
 	now := nowRFC3339()
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE dropoff_sessions SET
-			status = 'failed', error = 'interrupted by panel restart', updated_at = ?
-		WHERE status = 'importing'`, now)
-	if err != nil {
-		return 0, core.InternalError("sweep running dropoffs").Wrap(err)
+	var toDrop []DropoffRecord
+	for _, d := range importing {
+		completed, cerr := s.migrationCompleted(ctx, d.MigrationID)
+		if cerr != nil {
+			return nil, cerr
+		}
+		status, errMsg := "failed", "interrupted by panel restart"
+		if completed {
+			status, errMsg = "completed", ""
+		}
+		// Conditional on still 'importing' for idempotency, matching
+		// FinalizeDropoffFromImporting (there is no concurrent worker at startup).
+		if _, uerr := s.db.ExecContext(ctx, `
+			UPDATE dropoff_sessions SET status = ?, error = ?, updated_at = ?
+			WHERE code = ? AND status = 'importing'`, status, errMsg, now, d.Code); uerr != nil {
+			return nil, core.InternalError("reconcile importing dropoff %s", d.Code).Wrap(uerr)
+		}
+		if !completed && d.CreatedTarget && !d.Overwrite {
+			toDrop = append(toDrop, d)
+		}
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, core.InternalError("sweep dropoffs rows affected").Wrap(err)
+	return toDrop, nil
+}
+
+// migrationCompleted reports whether the migration with id (if any) is in the terminal
+// 'completed' state. A nil id, a missing row, or any non-completed status yields false.
+// 'completed' is terminal and never swept, so this read is reliable regardless of
+// whether SweepRunningMigrations has already run earlier in the same startup.
+func (s *Store) migrationCompleted(ctx context.Context, id *int64) (bool, error) {
+	if id == nil {
+		return false, nil
 	}
-	return int(n), nil
+	var status string
+	err := s.db.QueryRowContext(ctx, `SELECT status FROM migrations WHERE id = ?`, *id).Scan(&status)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, core.InternalError("read linked migration %d", *id).Wrap(err)
+	}
+	return status == "completed", nil
 }
 
 // CountUncleanedDropoffs returns how many drop-off sessions may still own S3 objects
@@ -342,14 +428,15 @@ func (s *Store) CountUncleanedDropoffs(ctx context.Context) (int, error) {
 // scanDropoff reads one dropoff_sessions row into a DropoffRecord.
 func scanDropoff(rows rowScanner) (DropoffRecord, error) {
 	var d DropoffRecord
-	var overwrite int
+	var overwrite, createdTarget int
 	var migrationID sql.NullInt64
 	var expires, created, updated string
 	if err := rows.Scan(&d.ID, &d.Code, &migrationID, &d.DumpKey, &d.MetaKey, &d.TargetDatabase,
-		&overwrite, &d.Status, &d.Error, &d.ByteSize, &expires, &created, &updated); err != nil {
+		&overwrite, &createdTarget, &d.Status, &d.Error, &d.ByteSize, &expires, &created, &updated); err != nil {
 		return d, core.InternalError("scan dropoff").Wrap(err)
 	}
 	d.Overwrite = overwrite != 0
+	d.CreatedTarget = createdTarget != 0
 	if migrationID.Valid {
 		v := migrationID.Int64
 		d.MigrationID = &v

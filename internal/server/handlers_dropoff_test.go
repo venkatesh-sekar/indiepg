@@ -266,6 +266,27 @@ func (f *failDeleteDrop) DeleteObject(ctx context.Context, key string) error {
 	return core.InternalError("backup: delete S3 object: AccessDenied")
 }
 
+// lateUploadReappearDrop models a presigned PUT that lands AFTER the expiry sweep's
+// delete: DeleteObject reports success (idempotent) but, while skipDelete is set, does
+// NOT actually remove the object, so a follow-up StatObject still reports it present —
+// exactly what a source upload begun before expiry through the still-valid PUT URL
+// looks like. The sweep must NOT mark such a session terminally 'expired' until
+// StatObject confirms both objects are really gone.
+type lateUploadReappearDrop struct {
+	*fakeServerDrop
+	skipDelete bool
+}
+
+func (l *lateUploadReappearDrop) DeleteObject(ctx context.Context, key string) error {
+	if l.skipDelete {
+		l.fakeServerDrop.mu.Lock()
+		l.fakeServerDrop.deletes = append(l.fakeServerDrop.deletes, key)
+		l.fakeServerDrop.mu.Unlock()
+		return nil // "succeeds" but the late re-upload keeps the object at rest
+	}
+	return l.fakeServerDrop.DeleteObject(ctx, key)
+}
+
 // TestCreateDropoffFailsFastOnUnreachableS3 pins the mint-time reachability probe:
 // a HEAD that errors (bad creds / unreachable bucket) must fail the mint with a
 // clear "not reachable with the configured credentials" message instead of handing
@@ -658,6 +679,50 @@ func TestSweepExpiredDropoffsLeavesUnreclaimedOnDeleteFailure(t *testing.T) {
 	require.Equal(t, string(migrate.DropFailed), got.Status,
 		"a delete failure must NOT mark the session expired; it stays eligible for the next sweep")
 	require.Contains(t, got.Error, "row mismatch")
+}
+
+// TestSweepExpiredDropoffsKeepsSessionEligibleWhenObjectReappears pins round-5 finding
+// #1: a presigned PUT minted before expiry can re-create the object AFTER the sweep's
+// delete. The sweep must NOT mark the session terminally 'expired' (which would exclude
+// it from every future sweep, orphaning the dump) until an authoritative StatObject
+// confirms both objects are gone — until then it stays sweep-eligible and is retried.
+func TestSweepExpiredDropoffsKeepsSessionEligibleWhenObjectReappears(t *testing.T) {
+	srv, fake, _ := withDrops(t)
+	late := &lateUploadReappearDrop{fakeServerDrop: fake, skipDelete: true}
+	srv.drops = late
+	ctx := context.Background()
+	past := time.Now().Add(-time.Hour).UTC()
+
+	d := store.DropoffRecord{
+		Code: "LATE01", DumpKey: migrate.DropDumpKey("LATE01"), MetaKey: migrate.DropMetaKey("LATE01"),
+		TargetDatabase: "appdb", Status: string(migrate.DropCompleted), ExpiresAt: past,
+	}
+	_, err := srv.store.InsertDropoff(ctx, d)
+	require.NoError(t, err)
+	fake.put(migrate.DropDumpKey("LATE01"), []byte("PGDMP-late-reupload"))
+	fake.put(migrate.DropMetaKey("LATE01"), []byte(`{"sha256":"x"}`))
+
+	// First sweep: the delete "succeeds" but the object reappears, so the confirming
+	// StatObject still sees it. The session must NOT be marked terminally expired.
+	require.NoError(t, srv.sweepExpiredDropoffs(ctx))
+	got, err := srv.store.GetDropoffByCode(ctx, "LATE01")
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.DropCompleted), got.Status,
+		"a session whose objects reappear must NOT be marked terminally expired")
+	// Still sweep-eligible (not 'expired'): the next pass will retry it.
+	elig, err := srv.store.ListExpiredDropoffs(ctx, time.Now().UTC(), 100)
+	require.NoError(t, err)
+	require.Len(t, elig, 1)
+	require.Equal(t, "LATE01", elig[0].Code)
+
+	// The late upload finally stops; now the delete really removes the objects and the
+	// confirming StatObject reports them gone, so the sweep may mark it expired.
+	late.skipDelete = false
+	require.NoError(t, srv.sweepExpiredDropoffs(ctx))
+	got, err = srv.store.GetDropoffByCode(ctx, "LATE01")
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.DropExpired), got.Status,
+		"once StatObject confirms both objects are gone, the session is marked expired")
 }
 
 // TestUpdateConfigBlocksS3ChangeWhileUncleanedDropoffExists pins finding #2: an

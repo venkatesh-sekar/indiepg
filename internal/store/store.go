@@ -142,10 +142,41 @@ func (s *Store) migrate() error {
 			return core.InternalError("apply schema statement").WithDetail("sql", stmt).Wrap(err)
 		}
 	}
+	// Apply additive columns that post-date a table's initial CREATE. SQLite's ADD
+	// COLUMN has no IF NOT EXISTS, so each ALTER is guarded on a PRAGMA table_info check
+	// to stay idempotent across restarts (a bare ALTER would crash on the second start).
+	for _, ac := range additiveColumns {
+		has, err := columnExists(ctx, tx, ac.table, ac.column)
+		if err != nil {
+			return core.InternalError("check column %s.%s", ac.table, ac.column).Wrap(err)
+		}
+		if has {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, ac.ddl); err != nil {
+			return core.InternalError("add column %s.%s", ac.table, ac.column).WithDetail("sql", ac.ddl).Wrap(err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return core.InternalError("commit migration").Wrap(err)
 	}
 	return nil
+}
+
+// columnExists reports whether table has a column named column, via the table-valued
+// pragma_table_info function (a parameterizable form of PRAGMA table_info). It lets
+// migrate() make additive ALTER ... ADD COLUMN statements idempotent, since SQLite's
+// ADD COLUMN has no IF NOT EXISTS.
+func columnExists(ctx context.Context, tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT 1 FROM pragma_table_info(?) WHERE name = ?`, table, column)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return true, rows.Err()
+	}
+	return false, rows.Err()
 }
 
 // nowRFC3339 returns the current UTC time formatted as RFC3339Nano, the

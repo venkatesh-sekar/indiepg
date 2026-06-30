@@ -528,7 +528,7 @@ func (e *engine) Restore(ctx context.Context, conn ConnInfo, dumpPath, targetDat
 	// so without this override the run would be non-sensitive and the runner would fold
 	// the echoed DDL into its own error message and logs. Marking it Sensitive keeps the
 	// argv and the stderr tail out of the runner's error/logs; the DDL body is then also
-	// stripped from anything we persist or log via sanitizeRestoreStderr below.
+	// stripped from anything we persist or log via SanitizeRestoreStderr below.
 	connArgs, asUser, env, _ := conn.connArgs()
 	args := append([]string{}, connArgs...)
 	args = append(args, "-j", strconv.Itoa(jobs), "-d", targetDatabase)
@@ -553,7 +553,7 @@ func (e *engine) Restore(ctx context.Context, conn ConnInfo, dumpPath, targetDat
 	if err != nil {
 		// Scrub the password, THEN strip the echoed DDL body before this stderr flows
 		// into the wrapped error, logs, and migration history.
-		stderr := sanitizeRestoreStderr(e.scrubText(conn, res.Stderr))
+		stderr := SanitizeRestoreStderr(e.scrubText(conn, res.Stderr))
 		if restoreStderrFatal(stderr) {
 			return core.ExecError("pg_restore into %s failed", core.QuoteIdent(targetDatabase)).
 				WithDetail("stderr", stderr).Wrap(err)
@@ -576,14 +576,18 @@ func restoreStderrFatal(stderr string) bool {
 	return strings.Contains(lower, "error:") || strings.Contains(lower, "fatal:")
 }
 
-// sanitizeRestoreStderr removes the DDL body pg_restore echoes after a "Command was:"
+// SanitizeRestoreStderr removes the DDL body pg_restore echoes after a "Command was:"
 // line. pg_restore prints the failing SQL command verbatim, which can embed secrets
 // (a password inside a CREATE FUNCTION body, say); that stderr otherwise flows into
 // wrapped errors, logs, migration history, and the drop-off API. The pg_restore
 // diagnostic lines (the actual error reason and the error:/fatal: markers) are kept;
 // only the echoed command text — from "Command was:" until the next "pg_restore:"
 // diagnostic or end of output — is dropped, since the DDL can span multiple lines.
-func sanitizeRestoreStderr(stderr string) string {
+//
+// It is exported so the server's migration recorder can re-apply it (idempotently) to
+// any stderr diagnostic it persists into the migration error text, keeping the DDL-body
+// stripping in one place.
+func SanitizeRestoreStderr(stderr string) string {
 	lines := strings.Split(stderr, "\n")
 	out := make([]string, 0, len(lines))
 	skipping := false
