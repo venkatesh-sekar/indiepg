@@ -179,11 +179,18 @@ func flattenRowCounts(counts map[TableKey]int64) map[string]int64 {
 	return out
 }
 
-// compareRowCountsByTable returns every table whose source and target counts differ,
+// compareRowCountsByTable returns every table whose source and target disagree,
 // comparing on the unambiguous (schema, name) pair so a name that flattens to the
 // same "schema.name" string as a different pair can never mask a real mismatch (the
-// bug a flattened-key comparison has). The RowCountDiff.Table is the flattened name,
-// used only for the human-readable mismatch summary. Sorted for stable output.
+// bug a flattened-key comparison has).
+//
+// It compares key PRESENCE in BOTH directions, not just counts: a table present on
+// one side and absent on the other is ALWAYS a mismatch, even for a zero-row table.
+// Reading an absent map entry yields 0, so a flat count-only comparison would let a
+// zero-row source table that the restore never created (absent on target) — or an
+// unexpected extra empty table on the target — falsely verify as equal (0 == 0) and
+// delete the dump despite a schema mismatch. The RowCountDiff.Table is the flattened
+// name, used only for the human-readable mismatch summary. Sorted for stable output.
 func compareRowCountsByTable(source, target map[TableKey]int64) []RowCountDiff {
 	seen := make(map[TableKey]struct{}, len(source)+len(target))
 	for k := range source {
@@ -194,10 +201,18 @@ func compareRowCountsByTable(source, target map[TableKey]int64) []RowCountDiff {
 	}
 	var diffs []RowCountDiff
 	for k := range seen {
-		s := source[k]
-		t := target[k]
-		if s != t {
-			diffs = append(diffs, RowCountDiff{Table: k.Schema + "." + k.Name, Source: s, Target: t})
+		s, inSource := source[k]
+		t, inTarget := target[k]
+		// A presence difference is a mismatch regardless of count; otherwise compare
+		// the counts of a table present on both sides.
+		if inSource != inTarget || s != t {
+			diffs = append(diffs, RowCountDiff{
+				Table:         k.Schema + "." + k.Name,
+				Source:        s,
+				Target:        t,
+				SourceMissing: !inSource,
+				TargetMissing: !inTarget,
+			})
 		}
 	}
 	sort.Slice(diffs, func(i, j int) bool { return diffs[i].Table < diffs[j].Table })

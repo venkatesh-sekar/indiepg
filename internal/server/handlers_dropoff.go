@@ -516,7 +516,18 @@ func (s *Server) handleCancelDropoff(w http.ResponseWriter, r *http.Request) {
 // record. Best-effort: a stat/store error leaves the record as read.
 func (s *Server) refreshDropoff(ctx context.Context, drops migrate.DropTransport, rec *store.DropoffRecord) *store.DropoffRecord {
 	switch migrate.DropStatus(rec.Status) {
-	case migrate.DropCompleted, migrate.DropFailed, migrate.DropCanceled, migrate.DropExpired, migrate.DropImporting:
+	case migrate.DropFailed:
+		// A failed import is normally RETRYABLE, so the UI offers "Retry import". But once
+		// past its TTL the atomic start gate (handleStartDropoff's expiry check) will
+		// always reject the retry. Report it as expired — in-memory only, NOT persisted,
+		// exactly like the non-terminal expiry path below, so the expiry sweep stays the
+		// single authority that persists 'expired' and deletes the dump+metadata — so the
+		// UI stops offering a retry that can never succeed.
+		if rec.ExpiresAt.Before(nowUTC()) {
+			rec.Status = string(migrate.DropExpired)
+		}
+		return rec
+	case migrate.DropCompleted, migrate.DropCanceled, migrate.DropExpired, migrate.DropImporting:
 		return rec // terminal or actively importing: nothing to flip
 	}
 	if rec.ExpiresAt.Before(nowUTC()) {

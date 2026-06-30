@@ -357,3 +357,41 @@ func TestValidateDirectSource(t *testing.T) {
 		})
 	}
 }
+
+// TestClaimImportTarget_clusterConflictsWithPerDatabase pins finding #1: a
+// whole-cluster import drops/restores EVERY database, so the admission gate must
+// treat it as conflicting with ANY in-flight per-database import (and vice-versa),
+// not just with another cluster import. Two DIFFERENT per-database targets may still
+// run concurrently.
+func TestClaimImportTarget_clusterConflictsWithPerDatabase(t *testing.T) {
+	t.Run("per-db then cluster is refused", func(t *testing.T) {
+		s := &Server{}
+		require.True(t, s.claimImportTarget("appdb"), "a per-database target is free")
+		require.False(t, s.claimImportTarget(clusterImportTarget),
+			"a cluster import must conflict with an in-flight per-database import")
+		// Releasing the per-database target frees the cluster import.
+		s.releaseImportTarget("appdb")
+		require.True(t, s.claimImportTarget(clusterImportTarget),
+			"with nothing in flight, the cluster import may proceed")
+	})
+
+	t.Run("cluster then per-db is refused", func(t *testing.T) {
+		s := &Server{}
+		require.True(t, s.claimImportTarget(clusterImportTarget), "a cluster import is free")
+		require.False(t, s.claimImportTarget("appdb"),
+			"a per-database import must conflict with an in-flight whole-cluster import")
+		require.False(t, s.claimImportTarget(clusterImportTarget),
+			"a second cluster import conflicts with the first")
+		// Releasing the cluster sentinel admits the per-database import.
+		s.releaseImportTarget(clusterImportTarget)
+		require.True(t, s.claimImportTarget("appdb"))
+	})
+
+	t.Run("distinct per-db targets run concurrently", func(t *testing.T) {
+		s := &Server{}
+		require.True(t, s.claimImportTarget("appdb"))
+		require.True(t, s.claimImportTarget("otherdb"),
+			"two different databases never touch each other and may import at once")
+		require.False(t, s.claimImportTarget("appdb"), "the same database is still excluded")
+	})
+}

@@ -242,10 +242,16 @@ func (s *S3ObjectStore) bucketVersioningEnabled(ctx context.Context) (bool, erro
 // buffering them all would exhaust the panel. Any removal failure (e.g. an
 // Object-Lock-retained version) is returned so the caller knows the data is NOT gone.
 func (s *S3ObjectStore) purgeAllVersions(ctx context.Context, key string) error {
+	// ListObjectsIter is the range-over-func form: breaking/returning out of the loop
+	// stops it cleanly and defer cancel() aborts any in-flight request, with NO
+	// background producer goroutine to leak. The channel-based ListObjects requires the
+	// caller to fully DRAIN the channel after cancelling (minio buffers it size-1 and
+	// blocks the producer on the terminal ctx-error send otherwise) — easy to get wrong
+	// on the early-return-on-delete-failure path below, so we use the iterator instead.
 	listCtx, cancel := context.WithCancel(ctx)
-	defer cancel() // ensure the minio list goroutine is released even on early return
+	defer cancel()
 
-	for info := range s.client.ListObjects(listCtx, s.bucket, minio.ListObjectsOptions{
+	for info := range s.client.ListObjectsIter(listCtx, s.bucket, minio.ListObjectsOptions{
 		Prefix:       key,
 		WithVersions: true,
 		Recursive:    true,
@@ -279,10 +285,12 @@ func (s *S3ObjectStore) purgeAllVersions(ctx context.Context, key string) error 
 // zero means the data is truly gone; non-zero means versioning + Object Lock /
 // retention is keeping a dump alive that the panel could never reclaim.
 func (s *S3ObjectStore) countDataVersions(ctx context.Context, key string) (int, error) {
+	// Iterator form (see purgeAllVersions): an early return on a list error stops it
+	// cleanly without leaking a producer goroutine blocked on the channel's terminal send.
 	listCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	n := 0
-	for info := range s.client.ListObjects(listCtx, s.bucket, minio.ListObjectsOptions{
+	for info := range s.client.ListObjectsIter(listCtx, s.bucket, minio.ListObjectsOptions{
 		Prefix:       key,
 		WithVersions: true,
 		Recursive:    true,

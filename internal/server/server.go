@@ -411,23 +411,47 @@ func (s *Server) setDropTransport(tr migrate.DropTransport) {
 // clusterImportTarget is the reserved admission-gate key for a whole-cluster import,
 // which has no single target database name. A real database can never be named this
 // (a NUL byte is not a legal identifier), so it cannot collide with a per-database
-// claim; two concurrent cluster imports (which would race dropping every database)
-// are mutually excluded by claiming it.
+// claim. A whole-cluster import drops/restores EVERY database, so unlike a per-
+// database claim it conflicts with ANY other in-flight import — see claimImportTarget.
 const clusterImportTarget = "\x00whole-cluster"
 
-// claimImportTarget reserves a local target database for an import worker, returning
-// false when another worker is already restoring into it. The caller MUST call
+// claimImportTarget reserves a local target for an import worker, returning false
+// when it conflicts with an already-claimed target. The caller MUST call
 // releaseImportTarget(target) when the worker exits (or on any Start error after a
 // successful claim). It is the process-local guard against two imports racing into
-// the same database; see inFlightImportTargets.
+// the same database (or a cluster import racing a per-database one); see
+// inFlightImportTargets.
+//
+// Conflict rules — a whole-cluster import touches every database, so it cannot be
+// excluded by its own sentinel alone:
+//   - A CLUSTER claim (target == clusterImportTarget) succeeds only when NO target is
+//     currently claimed; it conflicts with any in-flight import, cluster or per-database.
+//   - A PER-DATABASE claim is refused while the cluster sentinel is held (that cluster
+//     import covers this database too) or while the SAME database is already claimed.
+//
+// Two DIFFERENT per-database targets may still be claimed concurrently — they never
+// touch each other's database. The single lock keeps every path deadlock-free.
 func (s *Server) claimImportTarget(target string) bool {
 	s.importTargetsMu.Lock()
 	defer s.importTargetsMu.Unlock()
 	if s.inFlightImportTargets == nil {
 		s.inFlightImportTargets = make(map[string]struct{})
 	}
-	if _, busy := s.inFlightImportTargets[target]; busy {
-		return false
+	if target == clusterImportTarget {
+		// A whole-cluster import races DROP/CREATE/restore across every database, so it
+		// may proceed only when nothing else is in flight.
+		if len(s.inFlightImportTargets) > 0 {
+			return false
+		}
+	} else {
+		// A per-database import conflicts with an in-flight whole-cluster import (which
+		// covers this database) and with another import into the SAME database.
+		if _, clusterBusy := s.inFlightImportTargets[clusterImportTarget]; clusterBusy {
+			return false
+		}
+		if _, busy := s.inFlightImportTargets[target]; busy {
+			return false
+		}
 	}
 	s.inFlightImportTargets[target] = struct{}{}
 	return true

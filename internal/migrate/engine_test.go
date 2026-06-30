@@ -512,8 +512,10 @@ func TestRestore_passwordScrubbedFromFatal(t *testing.T) {
 
 func TestRowCounts_parses(t *testing.T) {
 	e, r := newEngine()
+	// The table listing now comes back as JSON (not pipe-delimited text) so
+	// identifiers are decoded exactly; see RowCountsByTable.
 	r.On("information_schema.tables", exec.FakeResponse{
-		Stdout: "public|users\npublic|orders\nshop|items\n",
+		Stdout: `[{"schema":"public","name":"users"},{"schema":"public","name":"orders"},{"schema":"shop","name":"items"}]` + "\n",
 	})
 	r.On(`count(*) FROM "public"."users"`, exec.FakeResponse{Stdout: "42\n"})
 	r.On(`count(*) FROM "public"."orders"`, exec.FakeResponse{Stdout: "7\n"})
@@ -530,7 +532,7 @@ func TestRowCounts_parses(t *testing.T) {
 
 func TestRowCounts_emptyDatabase(t *testing.T) {
 	e, r := newEngine()
-	r.On("information_schema.tables", exec.FakeResponse{Stdout: "\n"})
+	r.On("information_schema.tables", exec.FakeResponse{Stdout: "[]\n"})
 	counts, err := e.RowCounts(context.Background(), localConn(), "appdb")
 	require.NoError(t, err)
 	require.Empty(t, counts)
@@ -538,7 +540,7 @@ func TestRowCounts_emptyDatabase(t *testing.T) {
 
 func TestRowCounts_malformedCount(t *testing.T) {
 	e, r := newEngine()
-	r.On("information_schema.tables", exec.FakeResponse{Stdout: "public|users\n"})
+	r.On("information_schema.tables", exec.FakeResponse{Stdout: `[{"schema":"public","name":"users"}]` + "\n"})
 	r.On(`count(*) FROM "public"."users"`, exec.FakeResponse{Stdout: "notanumber\n"})
 	_, err := e.RowCounts(context.Background(), localConn(), "appdb")
 	require.Error(t, err)
@@ -563,4 +565,79 @@ func lastCArg(t *testing.T, r *exec.FakeRunner) string {
 	calls := r.Calls()
 	require.NotEmpty(t, calls)
 	return cArg(calls[len(calls)-1])
+}
+
+// TestRestore_sanitizesEchoedCommandDDL pins finding #3: on a failed restore,
+// pg_restore echoes the offending DDL after a "Command was:" line, and that DDL can
+// embed secrets (here a password inside a function body). The stripped detail must
+// drop the DDL body while preserving the actionable diagnostic, and the run must be
+// marked Sensitive so even a LOCAL (passwordless) restore keeps the argv/stderr tail
+// out of the runner's own error and logs.
+func TestRestore_sanitizesEchoedCommandDDL(t *testing.T) {
+	e, r := newEngine()
+	r.On("pg_restore", exec.FakeResponse{
+		Stderr: "pg_restore: error: could not execute query: ERROR:  syntax error at or near \"x\"\n" +
+			"Command was: CREATE FUNCTION secret() RETURNS void AS $$\n" +
+			"  PERFORM dblink('host=db password=SUPERSECRET');\n" +
+			"$$ LANGUAGE plpgsql;",
+		ExitCode: 1,
+		Err:      core.ExecError("exit status 1"),
+	})
+	err := e.Restore(context.Background(), localConn(), "/tmp/d.bin", "appdb", RestoreOpts{})
+	require.Error(t, err)
+	require.Equal(t, core.CodeExec, core.CodeOf(err))
+
+	var ce *core.Error
+	require.ErrorAs(t, err, &ce)
+	stderr, _ := ce.Details["stderr"].(string)
+	// The echoed DDL body — and any secret embedded in it — is stripped from the detail
+	// that flows into logs / migration history / the API.
+	require.NotContains(t, stderr, "SUPERSECRET")
+	require.NotContains(t, stderr, "CREATE FUNCTION secret")
+	require.NotContains(t, stderr, "dblink")
+	require.Contains(t, stderr, "Command was: [redacted]")
+	// The diagnostic reason survives so the failure is still actionable.
+	require.Contains(t, stderr, "syntax error")
+
+	// pg_restore is ALWAYS Sensitive, even for a local, passwordless restore.
+	require.True(t, r.Calls()[0].Sensitive, "pg_restore must run Sensitive so its echoed DDL never leaks")
+}
+
+// TestSanitizeRestoreStderr covers the helper directly: a multi-line DDL body after
+// "Command was:" is dropped up to the next pg_restore diagnostic, and ordinary
+// diagnostics pass through unchanged.
+func TestSanitizeRestoreStderr(t *testing.T) {
+	in := "pg_restore: error: could not execute query: ERROR:  boom\n" +
+		"Command was: CREATE FUNCTION f() AS $$ secret-body\nmore-secret $$;\n" +
+		"pg_restore: warning: errors ignored on restore: 1"
+	out := sanitizeRestoreStderr(in)
+	require.NotContains(t, out, "secret-body")
+	require.NotContains(t, out, "more-secret")
+	require.Contains(t, out, "Command was: [redacted]")
+	require.Contains(t, out, "ERROR:  boom")
+	require.Contains(t, out, "errors ignored on restore: 1", "later diagnostics survive the strip")
+
+	// No "Command was:" line: returned unchanged (trimmed).
+	plain := "pg_restore: error: connection refused"
+	require.Equal(t, plain, sanitizeRestoreStderr(plain))
+}
+
+// TestRowCountsByTable_preservesTrickyIdentifiers pins finding #6: the table listing
+// is decoded from JSON, so identifiers containing a '|' or leading/trailing spaces —
+// which a pipe-split/whitespace-trim text parse would corrupt — round-trip exactly,
+// keeping the (schema, name) keys byte-identical to the source's meta.json.
+func TestRowCountsByTable_preservesTrickyIdentifiers(t *testing.T) {
+	e, r := newEngine()
+	r.On("information_schema.tables", exec.FakeResponse{
+		Stdout: `[{"schema":"public","name":"weird|name"},{"schema":"my schema","name":" spaced "}]` + "\n",
+	})
+	r.On(`count(*) FROM "public"."weird|name"`, exec.FakeResponse{Stdout: "3\n"})
+	r.On(`count(*) FROM "my schema"." spaced "`, exec.FakeResponse{Stdout: "5\n"})
+
+	counts, err := e.RowCountsByTable(context.Background(), localConn(), "appdb")
+	require.NoError(t, err)
+	require.Equal(t, map[TableKey]int64{
+		{Schema: "public", Name: "weird|name"}:  3,
+		{Schema: "my schema", Name: " spaced "}: 5,
+	}, counts)
 }

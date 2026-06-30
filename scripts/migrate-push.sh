@@ -261,7 +261,17 @@ META_FILE="$(mktemp "$WORK_DIR/indiepg-meta.XXXXXX")" || die "could not create a
 # on exit alongside the dump/meta temp files.
 CURL_CFG="$(mktemp "$WORK_DIR/indiepg-curlcfg.XXXXXX")" || die "could not create a temp file in '$WORK_DIR'"
 chmod 0600 "$DUMP_FILE" "$META_FILE" "$CURL_CFG" 2>/dev/null || true
-trap 'rm -f "$DUMP_FILE" "$META_FILE" "$CURL_CFG"' EXIT INT TERM
+# Clean up the staged dump, meta, and the 0600 url-config on EXIT. The INT/TERM traps
+# are SEPARATE and EXIT after cleaning up: a single combined trap on INT/TERM would only
+# remove the files and then let execution FALL THROUGH, so a later redirection
+# (run_pg_dump > "$DUMP_FILE", the meta printf, or the curl-config printf) could recreate
+# a temp file under the ambient umask — losing the 0600 mode and re-exposing the dump or
+# the presigned upload URL — and the upload could keep running after a Ctrl-C. Exiting on
+# the signal stops the script; the exit then re-fires this EXIT trap (rm -f is idempotent).
+# 130 = 128+SIGINT(2), 143 = 128+SIGTERM(15), the conventional signal exit codes.
+trap 'rm -f "$DUMP_FILE" "$META_FILE" "$CURL_CFG"' EXIT
+trap 'rm -f "$DUMP_FILE" "$META_FILE" "$CURL_CFG"; exit 130' INT
+trap 'rm -f "$DUMP_FILE" "$META_FILE" "$CURL_CFG"; exit 143' TERM
 say "staging the dump under '$WORK_DIR' (needs free disk room for the whole dump; set INDIEPG_TMPDIR if /tmp is small or RAM-backed)"
 
 # --- 1. dump --------------------------------------------------------------

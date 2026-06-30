@@ -288,25 +288,50 @@ func (s *Server) handleCreateMigrationSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Validate the target name up front so the admission gate can be claimed BEFORE any
+	// S3 session document is written. CreateSession applies the same checks, but doing
+	// them here means a busy-target (or invalid-name) rejection leaves NO orphaned
+	// session.json in the bucket. Mirrors migrate.Service.CreateSession.
+	if req.Database == "" {
+		writeError(w, core.ValidationError("database is required to create a migration session"))
+		return
+	}
+	if err := core.ValidateIdentifier(req.Database, "database"); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	// Claim the local target BEFORE CreateSession: a target another import is already
+	// restoring into must reject this one rather than race the restore — and rejecting
+	// before the S3 write means a busy-target refusal cannot orphan a session. The
+	// worker releases the claim when it exits (after import or TTL).
+	if !s.claimImportTarget(req.Database) {
+		s.audit(ctx, "migrate_session_create", req.Database, "failure", "target busy", core.CodeOf(errImportTargetBusy(req.Database)))
+		writeError(w, errImportTargetBusy(req.Database))
+		return
+	}
+	targetClaimHeld := true
+	defer func() {
+		if targetClaimHeld {
+			s.releaseImportTarget(req.Database)
+		}
+	}()
+
 	sess, err := s.migrate.CreateSession(ctx, req.Database, migrate.DefaultTTL)
 	if err != nil {
 		s.audit(ctx, "migrate_session_create", req.Database, "failure", "create session failed", core.CodeOf(err))
 		writeError(w, err)
 		return
 	}
-
-	// Claim the local target before spawning the import worker: a target another
-	// import is already restoring into must reject this one rather than race the
-	// restore. The worker releases the claim when it exits (after import or TTL).
-	if !s.claimImportTarget(sess.Database) {
-		s.audit(ctx, "migrate_session_create", sess.Database, "failure", "target busy", core.CodeOf(errImportTargetBusy(sess.Database)))
-		writeError(w, errImportTargetBusy(sess.Database))
-		return
-	}
-	targetClaimHeld := true
+	// From here a pre-worker failure must also delete the session.json we just wrote, or
+	// it would linger in S3 until the expiry sweep. Cleared once the worker owns it.
+	sessionCreated := true
 	defer func() {
-		if targetClaimHeld {
-			s.releaseImportTarget(sess.Database)
+		if sessionCreated {
+			// Use a background context so cleanup runs even if the request ctx is done.
+			if cerr := s.migrate.CleanupSession(context.Background(), sess.Code); cerr != nil {
+				s.log.Warn("could not clean up orphaned migration session", "code", sess.Code, "err", cerr)
+			}
 		}
 	}()
 
@@ -322,6 +347,7 @@ func (s *Server) handleCreateMigrationSession(w http.ResponseWriter, r *http.Req
 	// the local target Postgres itself so the request returns immediately.
 	go s.runImportWorker(id, sess.Code, sess.Database)
 	targetClaimHeld = false // the worker now owns the claim
+	sessionCreated = false  // the worker now owns the session lifecycle
 
 	s.audit(ctx, "migrate_session_create", sess.Code, "success", "ssh-less target session created", "")
 	writeData(w, http.StatusCreated, sess)

@@ -181,6 +181,57 @@ func TestCompareRowCountsByTable_dotNamesDoNotCollide(t *testing.T) {
 	require.Equal(t, int64(50), diffs[0].Target)
 }
 
+// TestCompareRowCountsByTable_presenceMismatchFails pins finding #2: a table present
+// on only ONE side is a verification failure regardless of its count. An absent map
+// entry reads as 0, so a count-only comparison would let a ZERO-ROW source table that
+// the restore never created (absent on the target) — or an unexpected extra empty
+// table ON the target — falsely verify as equal (0 == 0).
+func TestCompareRowCountsByTable_presenceMismatchFails(t *testing.T) {
+	// Zero-row table present on the source, ABSENT on the target -> mismatch.
+	src := map[TableKey]int64{{Schema: "public", Name: "audit"}: 0}
+	diffs := compareRowCountsByTable(src, map[TableKey]int64{})
+	require.Len(t, diffs, 1, "a zero-row source table absent on the target must NOT verify as equal")
+	require.Equal(t, "public.audit", diffs[0].Table)
+	require.True(t, diffs[0].TargetMissing)
+	require.False(t, diffs[0].SourceMissing)
+
+	// Zero-row table present on the target, ABSENT on the source -> mismatch.
+	tgt := map[TableKey]int64{{Schema: "public", Name: "extra"}: 0}
+	diffs = compareRowCountsByTable(map[TableKey]int64{}, tgt)
+	require.Len(t, diffs, 1, "an unexpected empty table on the target must NOT verify as equal")
+	require.True(t, diffs[0].SourceMissing)
+	require.False(t, diffs[0].TargetMissing)
+
+	// Identical presence AND counts still verifies cleanly.
+	same := map[TableKey]int64{{Schema: "public", Name: "users"}: 5}
+	require.Empty(t, compareRowCountsByTable(same, map[TableKey]int64{{Schema: "public", Name: "users"}: 5}))
+}
+
+// TestImportFromDrop_zeroRowTableAbsentOnTargetFails pins finding #2 end to end: the
+// source claims a ZERO-ROW table that the restore never reproduced (absent on the
+// target). A count-only verification would read both as 0 and falsely report success,
+// deleting the dump despite the schema mismatch; the presence-aware comparison must
+// FAIL and keep the S3 objects.
+func TestImportFromDrop_zeroRowTableAbsentOnTargetFails(t *testing.T) {
+	tr := newFakeDrop()
+	stageDrop(t, tr, "ABCDEF", []byte("PGDMP-zero"), map[string]int64{"public.audit": 0})
+
+	// exists:true => pre-existing target, never dropped on a verification failure. The
+	// target has NO tables, so the claimed zero-row "audit" is absent there.
+	eng := &fakeEngine{
+		exists:    true,
+		rowCounts: map[string]map[string]int64{"tgt:appdb": {}},
+	}
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, nil, nil)
+	err := o.ImportFromDrop(context.Background(), tr, dropSpec("ABCDEF"), rec)
+	require.Error(t, err, "a zero-row source table absent on the target must FAIL verification")
+	require.Equal(t, core.CodeInternal, core.CodeOf(err))
+	require.Contains(t, err.Error(), "verification failed")
+	require.False(t, rec.succeeded)
+	require.Empty(t, tr.deletes, "a verification failure keeps the S3 objects (the dump is NOT deleted)")
+}
+
 // TestImportFromDrop_dotNameCollisionDoesNotFalsePass pins finding #5 end to end: the
 // source claims two tables whose (schema, name) pairs flatten to the same string but
 // hold different counts; the restored target under-restores the first. A flattened-key

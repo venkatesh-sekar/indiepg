@@ -695,7 +695,17 @@ func rowMismatchError(diffs []RowCountDiff) error {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		fmt.Fprintf(&b, "%s(src=%d,tgt=%d)", d.Table, d.Source, d.Target)
+		// Render an absent side as "absent" rather than a misleading 0 so a table that
+		// exists on only one side reads as the schema mismatch it is.
+		src := strconv.FormatInt(d.Source, 10)
+		if d.SourceMissing {
+			src = "absent"
+		}
+		tgt := strconv.FormatInt(d.Target, 10)
+		if d.TargetMissing {
+			tgt = "absent"
+		}
+		fmt.Fprintf(&b, "%s(src=%s,tgt=%s)", d.Table, src, tgt)
 	}
 	return core.InternalError("row count verification failed: %d table(s) differ", len(diffs)).
 		WithDetail("mismatches", b.String()).
