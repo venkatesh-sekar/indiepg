@@ -426,10 +426,15 @@ export const api = {
     return request<DropoffSession>(`/migrate/drops/${encodeURIComponent(code)}`, { signal });
   },
   // Begins the import once the upload is present (409 if not uploaded yet).
-  // Returns the migration job id to poll via getMigration().
-  startDropoff(code: string): Promise<MigrationStarted> {
+  // Returns the migration job id to poll via getMigration(). When the session was
+  // minted with overwrite=true the DROP runs HERE (not at mint), so `confirm` must
+  // re-echo the target database name or the server refuses with a safety error —
+  // the same typed-name guard as the single-db pull. A non-overwrite Start may pass
+  // an empty confirm.
+  startDropoff(code: string, confirm = ""): Promise<MigrationStarted> {
     return request<MigrationStarted>(`/migrate/drops/${encodeURIComponent(code)}/start`, {
       method: "POST",
+      body: { confirm },
     });
   },
   // Deletes the dump + meta objects (idempotent) and marks the session cancelled.

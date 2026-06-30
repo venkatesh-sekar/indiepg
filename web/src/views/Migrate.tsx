@@ -1327,7 +1327,7 @@ function DropoffForm({ onCreated }: { onCreated: (r: CreateDropoffResult) => voi
 // Statuses where the drop-off itself is finished but no import job exists to hand
 // off to (cancelled/expired before Start) — the panel shows a terminal callout.
 function isDropTerminal(status: DropoffStatus): boolean {
-  return status === "failed" || status === "expired";
+  return status === "failed" || status === "canceled" || status === "expired";
 }
 
 // The push command + URLs are minted ONCE and never re-served, so a resumed
@@ -1368,42 +1368,15 @@ export function DropoffProgress({
 
   const status: DropoffStatus = drop?.status ?? "waiting_for_upload";
 
-  // Retry re-runs the import from the dump the panel KEEPS in S3 on failure, so a
-  // transient restore/transport error doesn't force a full re-push from the
-  // source the operator can barely reach. startDropoff records a fresh migration
-  // row and re-points the live poller at it.
-  const retryImport = async () => {
-    try {
-      const res = await api.startDropoff(code);
-      toast.success("Retrying the import.");
-      setStartedId(res.id);
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not retry the import.");
-    }
-  };
-
-  // Once an import job exists, the existing per-job poller owns the live
-  // progress + verification view — identical to every other migration mode.
-  const migrationId = startedId ?? drop?.migration_id ?? null;
-  if (migrationId != null) {
-    // Offer "Retry import" only while the dump is still in S3 (the session hasn't
-    // expired); once expired the sweep has deleted it and a re-push is required.
-    return (
-      <DirectJobProgress
-        id={migrationId}
-        onReset={onReset}
-        onRetry={status === "expired" ? undefined : retryImport}
-      />
-    );
-  }
-
-  const expiresAt = drop?.expires_at ?? initialExpiresAt;
-  const terminal = isDropTerminal(status);
-
-  const start = async () => {
+  // doStart fires the import. When the session was minted with overwrite the DROP
+  // runs HERE (not at mint), so the typed-name confirm is sent through — the server
+  // re-checks it and refuses without it (the same guard as the single-db pull), so a
+  // direct API call can't bypass this dialog and drop the database. A non-overwrite
+  // import sends an empty confirm.
+  const doStart = async (confirmValue: string) => {
     setStarting(true);
     try {
-      const res = await api.startDropoff(code);
+      const res = await api.startDropoff(code, confirmValue);
       toast.success("Import started.");
       setStartConfirmOpen(false);
       setStartConfirm("");
@@ -1415,12 +1388,110 @@ export function DropoffProgress({
     }
   };
 
+  // The re-affirmation modal's destructive button: send the re-typed confirmation.
+  const start = () => void doStart(overwrite ? startConfirm.trim() : "");
+
+  // Retry re-runs the import from the dump the panel KEEPS in S3 on failure, so a
+  // transient restore/transport error doesn't force a full re-push from the source
+  // the operator can barely reach. An overwrite session must re-affirm the DROP by
+  // name (the same re-affirmation as the first Start) before retrying; a
+  // non-overwrite session retries immediately.
+  const retryImport = () => {
+    if (overwrite) setStartConfirmOpen(true);
+    else void doStart("");
+  };
+
   // A non-destructive import starts immediately; a destructive overwrite must be
   // re-affirmed by name first, because the DROP executes now, not at mint.
   const onStartClick = () => {
     if (overwrite) setStartConfirmOpen(true);
-    else void start();
+    else void doStart("");
   };
+
+  // The start-confirm modal is shared by the link view and the hand-off (retry)
+  // view, so it is built once and rendered in both returns.
+  const startConfirmModal = (
+    <Modal
+      open={startConfirmOpen}
+      title="Replace the existing database?"
+      tone="danger"
+      width="sm"
+      onClose={starting ? () => undefined : () => setStartConfirmOpen(false)}
+      footer={
+        <>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setStartConfirmOpen(false)}
+            disabled={starting}
+          >
+            Back
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            onClick={start}
+            disabled={starting || !startConfirmMatches}
+          >
+            {starting ? (
+              <>
+                <InlineSpinner data-icon="inline-start" />
+                Starting…
+              </>
+            ) : (
+              "Drop & import"
+            )}
+          </Button>
+        </>
+      }
+    >
+      <Callout tone="danger" title="This drops the database now">
+        Starting the import will drop <strong>{target}</strong> on this server and recreate it from
+        the upload. You confirmed this when you created the link; confirm again since the drop
+        happens now. This cannot be undone.
+      </Callout>
+      <Field className="mt-4" data-invalid={startConfirm.length > 0 && !startConfirmMatches}>
+        <FieldLabel htmlFor="drop-start-confirm">
+          Type <code>{target}</code> to confirm
+        </FieldLabel>
+        <Input
+          id="drop-start-confirm"
+          value={startConfirm}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={target}
+          aria-invalid={startConfirm.length > 0 && !startConfirmMatches}
+          onChange={(e) => setStartConfirm(e.target.value)}
+        />
+        {startConfirm.length > 0 && !startConfirmMatches ? (
+          <FieldError>
+            Must match <code>{target}</code> exactly.
+          </FieldError>
+        ) : null}
+      </Field>
+    </Modal>
+  );
+
+  // Once an import job exists, the existing per-job poller owns the live
+  // progress + verification view — identical to every other migration mode.
+  const migrationId = startedId ?? drop?.migration_id ?? null;
+  if (migrationId != null) {
+    // Offer "Retry import" only while the dump is still in S3 (the session hasn't
+    // expired); once expired the sweep has deleted it and a re-push is required.
+    return (
+      <>
+        <DirectJobProgress
+          id={migrationId}
+          onReset={onReset}
+          onRetry={status === "expired" ? undefined : retryImport}
+        />
+        {startConfirmModal}
+      </>
+    );
+  }
+
+  const expiresAt = drop?.expires_at ?? initialExpiresAt;
+  const terminal = isDropTerminal(status);
 
   const cancel = async () => {
     setCancelBusy(true);
@@ -1529,65 +1600,7 @@ export function DropoffProgress({
         </div>
       ) : null}
 
-      <Modal
-        open={startConfirmOpen}
-        title="Replace the existing database?"
-        tone="danger"
-        width="sm"
-        onClose={starting ? () => undefined : () => setStartConfirmOpen(false)}
-        footer={
-          <>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setStartConfirmOpen(false)}
-              disabled={starting}
-            >
-              Back
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={start}
-              disabled={starting || !startConfirmMatches}
-            >
-              {starting ? (
-                <>
-                  <InlineSpinner data-icon="inline-start" />
-                  Starting…
-                </>
-              ) : (
-                "Drop & import"
-              )}
-            </Button>
-          </>
-        }
-      >
-        <Callout tone="danger" title="This drops the database now">
-          Starting the import will drop <strong>{target}</strong> on this server and recreate it from
-          the upload. You confirmed this when you created the link; confirm again since the drop
-          happens now. This cannot be undone.
-        </Callout>
-        <Field className="mt-4" data-invalid={startConfirm.length > 0 && !startConfirmMatches}>
-          <FieldLabel htmlFor="drop-start-confirm">
-            Type <code>{target}</code> to confirm
-          </FieldLabel>
-          <Input
-            id="drop-start-confirm"
-            value={startConfirm}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder={target}
-            aria-invalid={startConfirm.length > 0 && !startConfirmMatches}
-            onChange={(e) => setStartConfirm(e.target.value)}
-          />
-          {startConfirm.length > 0 && !startConfirmMatches ? (
-            <FieldError>
-              Must match <code>{target}</code> exactly.
-            </FieldError>
-          ) : null}
-        </Field>
-      </Modal>
+      {startConfirmModal}
 
       <Modal
         open={cancelOpen}
@@ -1663,6 +1676,8 @@ function DropStatusBadge({ status }: { status: DropoffStatus }) {
       return <Badge tone="ok">Completed</Badge>;
     case "failed":
       return <Badge tone="danger">Failed</Badge>;
+    case "canceled":
+      return <Badge tone="warn">Cancelled</Badge>;
     case "expired":
       return <Badge tone="warn">Expired</Badge>;
     default:

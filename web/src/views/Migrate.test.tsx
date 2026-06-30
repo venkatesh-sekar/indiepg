@@ -393,7 +393,8 @@ describe("Migrate — drop-off link mode", () => {
 
     const retry = screen.getByRole("button", { name: /retry import/i });
     fireEvent.click(retry);
-    expect(startSpy).toHaveBeenCalledWith("ABC123");
+    // A non-overwrite retry sends an empty confirm (no DROP to re-affirm).
+    expect(startSpy).toHaveBeenCalledWith("ABC123", "");
   });
 
   it("surfaces the S3-required mint error as a helpful, mode-named callout", async () => {
@@ -428,10 +429,11 @@ describe("Migrate — drop-off link mode", () => {
     expect(startSpy).not.toHaveBeenCalled();
     expect(screen.getByText(/this drops the database now/i)).toBeInTheDocument();
 
-    // Typing the name and confirming runs the import.
+    // Typing the name and confirming runs the import — the typed confirm is sent to
+    // the server, which re-checks it (a direct API call cannot bypass this).
     fireEvent.change(screen.getByPlaceholderText("shop"), { target: { value: "shop" } });
     fireEvent.click(screen.getByRole("button", { name: /drop & import/i }));
-    expect(startSpy).toHaveBeenCalledWith("ABC123");
+    expect(startSpy).toHaveBeenCalledWith("ABC123", "shop");
   });
 
   it("a resumed session (no command) hides the one-time push command but still offers Start", () => {

@@ -661,6 +661,10 @@ export type DropoffStatus =
   | "importing"
   | "completed"
   | "failed"
+  // Operator-cancelled: terminal and NOT retryable (distinct from `failed`, whose
+  // kept dump can be re-imported). The presigned PUT URLs can't be revoked, so a
+  // cancelled session must never be restartable.
+  | "canceled"
   | "expired";
 
 /** POST /api/migrate/drops — mint a drop-off link for ONE target database. A
