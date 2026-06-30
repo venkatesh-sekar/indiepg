@@ -218,8 +218,11 @@ func (e *Env) DumpLogs() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if e.panelContainer != "" {
-		if out, _, err := dockerExec(ctx, e.panelContainer, "", "journalctl", "-u", "indiepg", "-u", "postgresql", "--no-pager", "-n", "120"); err == nil {
-			e.t.Logf("=== panel journal (indiepg+postgresql) [%s] ===\n%s", e.Project, out)
+		if out, _, err := dockerExec(ctx, e.panelContainer, "", "journalctl", "-u", "indiepg", "-u", "postgresql", "-u", "pgbouncer", "--no-pager", "-n", "160"); err == nil {
+			e.t.Logf("=== panel journal (indiepg+postgresql+pgbouncer) [%s] ===\n%s", e.Project, out)
+		}
+		if out, _, err := dockerExec(ctx, e.panelContainer, "", "systemctl", "status", "pgbouncer", "--no-pager", "-l"); err == nil {
+			e.t.Logf("=== systemctl status pgbouncer [%s] ===\n%s", e.Project, out)
 		}
 	}
 	if out, err := e.compose(ctx, nil, "logs", "--no-color", "--tail", "60"); err == nil {
