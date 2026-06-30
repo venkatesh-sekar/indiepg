@@ -31,6 +31,14 @@ type createDropoffRequest struct {
 	Confirm        string `json:"confirm"`
 }
 
+// startDropoffRequest is the OPTIONAL body of POST /migrate/drops/{code}/start. A
+// session minted with overwrite=true requires Confirm to re-echo the target
+// database name (the DROP runs at Start, not at mint), mirroring the single-db
+// handler; a non-overwrite Start may omit the body entirely.
+type startDropoffRequest struct {
+	Confirm string `json:"confirm"`
+}
+
 // createDropoffResponse is returned ONCE at mint. It is the only place the
 // presigned-URL-bearing commands are served — they are never re-served by the
 // status endpoint.
@@ -77,11 +85,11 @@ type s3PutProber interface {
 // tolerates a ListBucket/GetObject-less, PutObject-only policy — the only
 // permission the source actually exercises) and falls back to a plain HEAD via
 // StatObject for transports that don't implement it (the test fakes).
-func (s *Server) probeDropTransport(ctx context.Context, key string) error {
-	if p, ok := s.drops.(s3PutProber); ok {
+func (s *Server) probeDropTransport(ctx context.Context, drops migrate.DropTransport, key string) error {
+	if p, ok := drops.(s3PutProber); ok {
 		return p.ProbePutReachable(ctx, key)
 	}
-	_, _, err := s.drops.StatObject(ctx, key)
+	_, _, err := drops.StatObject(ctx, key)
 	return err
 }
 
@@ -93,7 +101,8 @@ func (s *Server) probeDropTransport(ctx context.Context, key string) error {
 // GET /migrate/drops.
 func (s *Server) handleListDropoffs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if s.drops == nil {
+	drops := s.dropTransport()
+	if drops == nil {
 		writeError(w, errDropRequiresS3())
 		return
 	}
@@ -107,7 +116,7 @@ func (s *Server) handleListDropoffs(w http.ResponseWriter, r *http.Request) {
 		// Apply the same upload-readiness flip (waiting -> uploaded) the single-code
 		// status endpoint does, so the list badge says "ready to import" the moment
 		// the source's meta.json lands and the operator can Start straight from here.
-		rec := s.refreshDropoff(ctx, &recs[i])
+		rec := s.refreshDropoff(ctx, drops, &recs[i])
 		out = append(out, toDropoffStatusResponse(*rec))
 	}
 	writeData(w, http.StatusOK, out)
@@ -118,7 +127,8 @@ func (s *Server) handleListDropoffs(w http.ResponseWriter, r *http.Request) {
 // command. Requires S3. POST /migrate/drops.
 func (s *Server) handleCreateDropoff(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if s.drops == nil {
+	drops := s.dropTransport()
+	if drops == nil {
 		writeError(w, errDropRequiresS3())
 		return
 	}
@@ -174,8 +184,16 @@ func (s *Server) handleCreateDropoff(w http.ResponseWriter, r *http.Request) {
 	code := migrate.GenerateCode()
 	dumpKey := migrate.DropDumpKey(code)
 	metaKey := migrate.DropMetaKey(code)
-	ttl := migrate.DropDefaultTTL
-	expiresAt := nowUTC().Add(ttl)
+	probeKey := migrate.DropProbeKey(code)
+
+	// ONE absolute deadline for the whole session: the persisted expiry, the expiry
+	// sweep's cutoff, AND both presigned-URL validities all derive from it. Each URL
+	// is later signed for only its REMAINING time to this deadline, so neither can
+	// outlive the session/sweep and recreate an object after cleanup. (Signing a
+	// fresh full TTL per URL — computed after the probe and the first signing —
+	// would let each URL expire slightly AFTER the persisted expiry: the bug.)
+	deadline := nowUTC().Add(migrate.DropDefaultTTL)
+	expiresAt := deadline
 
 	// Probe S3 reachability with a cheap authenticated request BEFORE handing out a
 	// command. PresignPut is a purely local SigV4 signing op and NewS3ObjectStore
@@ -183,11 +201,12 @@ func (s *Server) handleCreateDropoff(w http.ResponseWriter, r *http.Request) {
 	// happily return a paste-able command even with wrong access/secret keys or an
 	// unreachable bucket — and the failure would only surface on the hard-to-reach
 	// source as migrate-push.sh's misleading "the link may have expired". The probe
-	// tolerates a PutObject-only policy (no s3:ListBucket / s3:GetObject) since the
-	// source only ever performs the single presigned PUT — see
-	// S3ObjectStore.ProbePutReachable — but still fails on bad creds / a missing
-	// bucket / an unreachable endpoint, so the mint fails NOW with a clear cause.
-	if perr := s.probeDropTransport(ctx, dumpKey); perr != nil {
+	// exercises the FULL object lifecycle the panel itself needs (PUT a disposable
+	// probe object, then stat, read and delete it — see S3ObjectStore.ProbePutReachable):
+	// a PutObject-only policy that lets the source upload but denies the panel's
+	// later stat/get/delete must fail the mint NOW, since it would otherwise import-
+	// fail or orphan the dump with no way to clean up.
+	if perr := s.probeDropTransport(ctx, drops, probeKey); perr != nil {
 		s.audit(ctx, "migrate_dropoff_create", req.TargetDatabase, "failure", "S3 reachability probe failed", core.CodeOf(perr))
 		writeError(w, core.InternalError("S3 object storage is not reachable with the configured credentials").
 			WithHint("check the S3 endpoint, bucket, and access/secret keys in Settings, then try again").
@@ -195,13 +214,26 @@ func (s *Server) handleCreateDropoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dumpURL, err := s.drops.PresignPut(ctx, dumpKey, ttl)
+	// Sign each URL for only the time LEFT to the shared deadline, and abort if the
+	// probe (or anything before this) already burned through it — never hand out a
+	// URL that outlives the session.
+	dumpTTL := deadline.Sub(nowUTC())
+	if dumpTTL <= 0 {
+		writeError(w, core.InternalError("drop-off link expired before it could be issued; please try again"))
+		return
+	}
+	dumpURL, err := drops.PresignPut(ctx, dumpKey, dumpTTL)
 	if err != nil {
 		s.audit(ctx, "migrate_dropoff_create", req.TargetDatabase, "failure", "presign dump url failed", core.CodeOf(err))
 		writeError(w, err)
 		return
 	}
-	metaURL, err := s.drops.PresignPut(ctx, metaKey, ttl)
+	metaTTL := deadline.Sub(nowUTC())
+	if metaTTL <= 0 {
+		writeError(w, core.InternalError("drop-off link expired before it could be issued; please try again"))
+		return
+	}
+	metaURL, err := drops.PresignPut(ctx, metaKey, metaTTL)
 	if err != nil {
 		s.audit(ctx, "migrate_dropoff_create", req.TargetDatabase, "failure", "presign meta url failed", core.CodeOf(err))
 		writeError(w, err)
@@ -231,7 +263,8 @@ func (s *Server) handleCreateDropoff(w http.ResponseWriter, r *http.Request) {
 // re-serves the command or URLs. Requires S3. GET /migrate/drops/{code}.
 func (s *Server) handleGetDropoff(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if s.drops == nil {
+	drops := s.dropTransport()
+	if drops == nil {
 		writeError(w, errDropRequiresS3())
 		return
 	}
@@ -242,7 +275,7 @@ func (s *Server) handleGetDropoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec = s.refreshDropoff(ctx, rec)
+	rec = s.refreshDropoff(ctx, drops, rec)
 	writeData(w, http.StatusOK, toDropoffStatusResponse(*rec))
 }
 
@@ -251,7 +284,8 @@ func (s *Server) handleGetDropoff(w http.ResponseWriter, r *http.Request) {
 // existing GET /migrate/{id} path. Requires S3. POST /migrate/drops/{code}/start.
 func (s *Server) handleStartDropoff(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if s.drops == nil {
+	drops := s.dropTransport()
+	if drops == nil {
 		writeError(w, errDropRequiresS3())
 		return
 	}
@@ -260,6 +294,26 @@ func (s *Server) handleStartDropoff(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+
+	// The import is where the DROP DATABASE actually runs (the mint only recorded
+	// intent), so a destructive overwrite must be RE-AUTHORIZED here with the typed
+	// target name — never a bare flag. The body is optional (a non-overwrite Start
+	// needs none) but when the session was minted with overwrite=true the operator
+	// must echo the database name in `confirm`, or the import is refused with a typed
+	// CodeSafety error. Without this gate a direct API call could bypass the SPA's
+	// confirm dialog and drop the database. Mirrors the single-db handler.
+	var startReq startDropoffRequest
+	if err := decodeJSONOptional(r, &startReq, maxBodyBytes); err != nil {
+		writeError(w, err)
+		return
+	}
+	if rec.Overwrite {
+		if err := core.RequireConfirmation("overwrite database "+rec.TargetDatabase, rec.TargetDatabase, startReq.Confirm); err != nil {
+			s.audit(ctx, "migrate_dropoff_start", code, "failure", "overwrite not confirmed", core.CodeOf(err))
+			writeError(w, err)
+			return
+		}
 	}
 
 	switch migrate.DropStatus(rec.Status) {
@@ -269,6 +323,10 @@ func (s *Server) handleStartDropoff(w http.ResponseWriter, r *http.Request) {
 	case migrate.DropCompleted:
 		writeError(w, core.ConflictError("drop-off %s already completed", code))
 		return
+	case migrate.DropCanceled:
+		writeError(w, core.ConflictError("drop-off %s was cancelled and cannot be started", code).
+			WithHint("create a new drop-off link"))
+		return
 	}
 	if rec.ExpiresAt.Before(nowUTC()) {
 		writeError(w, core.ConflictError("drop-off %s has expired", code).
@@ -277,7 +335,7 @@ func (s *Server) handleStartDropoff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// meta.json present == upload complete & verifiable. Refuse otherwise.
-	if _, metaExists, serr := s.drops.StatObject(ctx, rec.MetaKey); serr != nil {
+	if _, metaExists, serr := drops.StatObject(ctx, rec.MetaKey); serr != nil {
 		writeError(w, serr)
 		return
 	} else if !metaExists {
@@ -285,7 +343,7 @@ func (s *Server) handleStartDropoff(w http.ResponseWriter, r *http.Request) {
 			WithHint("run the push command on the source, then click Start"))
 		return
 	}
-	dumpSize, dumpExists, serr := s.drops.StatObject(ctx, rec.DumpKey)
+	dumpSize, dumpExists, serr := drops.StatObject(ctx, rec.DumpKey)
 	if serr != nil {
 		writeError(w, serr)
 		return
@@ -360,7 +418,8 @@ func (s *Server) handleStartDropoff(w http.ResponseWriter, r *http.Request) {
 // DELETE /migrate/drops/{code}.
 func (s *Server) handleCancelDropoff(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if s.drops == nil {
+	drops := s.dropTransport()
+	if drops == nil {
 		writeError(w, errDropRequiresS3())
 		return
 	}
@@ -371,41 +430,43 @@ func (s *Server) handleCancelDropoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Interrupt an in-flight import FIRST so its pg_restore is killed before we pull
-	// the dump out from under it (and so it can't finish and report success after
-	// the user cancelled). The worker's finalize is conditional on the row still
-	// being 'importing', so the 'cancelled' state we set below is authoritative even
-	// if the restore had already completed by the time the cancel landed. (No-op
-	// when no worker is running.)
-	s.cancelDropWorker(code)
-
-	// Best-effort delete of the data at rest (idempotent: a missing object is fine).
-	if derr := s.drops.DeleteObject(ctx, rec.DumpKey); derr != nil {
-		s.log.Warn("could not delete drop-off dump on cancel", "code", code, "err", derr)
-	}
-	if derr := s.drops.DeleteObject(ctx, rec.MetaKey); derr != nil {
-		s.log.Warn("could not delete drop-off metadata on cancel", "code", code, "err", derr)
+	// REFUSE to cancel a running import. Cancelling mid-import could interrupt an
+	// overwrite AFTER the original database was already dropped, and then this
+	// handler would delete the S3 recovery dump — destroying the only copy — while
+	// reporting success. An import either completes or fails on its own; the failed
+	// path keeps the dump in S3 for a retry, and only THEN can it be cancelled to
+	// clean up. (The store-side MarkDropoffCancelled also excludes 'importing'
+	// atomically, closing the read-then-write race below.)
+	if migrate.DropStatus(rec.Status) == migrate.DropImporting {
+		writeError(w, core.ConflictError("drop-off %s is importing and cannot be cancelled now", code).
+			WithHint("wait for the import to finish or fail; a failed import can then be cancelled to clean up"))
+		return
 	}
 
-	// Mark the session cancelled, but never clobber a terminal 'completed'/'expired'
-	// row: a completion that landed between the read above and here (the worker's
-	// finalize racing this cancel), or a prior sweep, is authoritative. The
-	// conditional UPDATE makes this race-safe instead of trusting the stale rec.
-	if _, uerr := s.store.MarkDropoffCancelled(ctx, code); uerr != nil {
+	// Atomically claim the cancel: 'canceled' (terminal, NOT the retryable 'failed')
+	// only when the row is not already completed/expired/importing. A Start that
+	// raced the row into 'importing' between the read above and here makes this
+	// no-op (won=false), so we must NOT then delete the objects out from under it.
+	won, uerr := s.store.MarkDropoffCancelled(ctx, code)
+	if uerr != nil {
 		s.log.Warn("could not mark cancelled drop-off", "code", code, "err", uerr)
+		writeError(w, uerr)
+		return
 	}
-	// Mark a linked, still-running migration record cancelled too.
-	if rec.MigrationID != nil {
-		if mrec, merr := s.store.GetMigration(ctx, *rec.MigrationID); merr == nil && mrec.Status != string(migrate.StatusCompleted) {
-			mrec.Status = string(migrate.StatusFailed)
-			mrec.Phase = ""
-			mrec.Error = "cancelled"
-			now := nowUTC()
-			mrec.FinishedAt = &now
-			if uerr := s.store.UpdateMigration(ctx, *mrec); uerr != nil {
-				s.log.Warn("could not mark cancelled drop-off migration", "code", code, "err", uerr)
-			}
-		}
+	if !won {
+		writeError(w, core.ConflictError("drop-off %s can no longer be cancelled", code).
+			WithHint("it just started importing or already finished — refresh to see its status"))
+		return
+	}
+
+	// The cancel is committed and the session is no longer startable, so it is now
+	// safe to reclaim the data at rest. Best-effort + idempotent: a missing object
+	// is fine, and the expiry sweep is the backstop for a transient delete failure.
+	if derr := drops.DeleteObject(ctx, rec.DumpKey); derr != nil {
+		s.log.Warn("could not delete drop-off dump on cancel; the expiry sweep will reclaim it", "code", code, "err", derr)
+	}
+	if derr := drops.DeleteObject(ctx, rec.MetaKey); derr != nil {
+		s.log.Warn("could not delete drop-off metadata on cancel; the expiry sweep will reclaim it", "code", code, "err", derr)
 	}
 
 	s.audit(ctx, "migrate_dropoff_cancel", code, "success", "drop-off session cancelled", "")
@@ -415,9 +476,9 @@ func (s *Server) handleCancelDropoff(w http.ResponseWriter, r *http.Request) {
 // refreshDropoff applies expiry-on-read and the upload-readiness flip
 // (waiting_for_upload -> uploaded) and persists any change, returning the updated
 // record. Best-effort: a stat/store error leaves the record as read.
-func (s *Server) refreshDropoff(ctx context.Context, rec *store.DropoffRecord) *store.DropoffRecord {
+func (s *Server) refreshDropoff(ctx context.Context, drops migrate.DropTransport, rec *store.DropoffRecord) *store.DropoffRecord {
 	switch migrate.DropStatus(rec.Status) {
-	case migrate.DropCompleted, migrate.DropFailed, migrate.DropExpired, migrate.DropImporting:
+	case migrate.DropCompleted, migrate.DropFailed, migrate.DropCanceled, migrate.DropExpired, migrate.DropImporting:
 		return rec // terminal or actively importing: nothing to flip
 	}
 	if rec.ExpiresAt.Before(nowUTC()) {
@@ -436,7 +497,7 @@ func (s *Server) refreshDropoff(ctx context.Context, rec *store.DropoffRecord) *
 	}
 	// meta.json is uploaded LAST by the push script, so its presence means the dump
 	// upload completed and the session is ready to import.
-	size, exists, err := s.drops.StatObject(ctx, rec.MetaKey)
+	size, exists, err := drops.StatObject(ctx, rec.MetaKey)
 	if err != nil {
 		s.log.Warn("could not stat drop-off metadata on read", "code", rec.Code, "err", err)
 		return rec
@@ -446,7 +507,7 @@ func (s *Server) refreshDropoff(ctx context.Context, rec *store.DropoffRecord) *
 	}
 	_ = size // meta size itself is not surfaced; the dump size is.
 	rec.Status = string(migrate.DropUploaded)
-	if dumpSize, dumpExists, derr := s.drops.StatObject(ctx, rec.DumpKey); derr == nil && dumpExists {
+	if dumpSize, dumpExists, derr := drops.StatObject(ctx, rec.DumpKey); derr == nil && dumpExists {
 		rec.ByteSize = dumpSize
 	}
 	if uerr := s.store.UpdateDropoff(ctx, *rec); uerr != nil {

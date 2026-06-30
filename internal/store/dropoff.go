@@ -119,8 +119,11 @@ func (s *Store) UpdateDropoff(ctx context.Context, d DropoffRecord) error {
 // from the dump kept on failure). 'waiting_for_upload' is also accepted because
 // the handler only reaches this call after confirming meta.json is present (the
 // readiness flip may simply not have been persisted yet). 'importing',
-// 'completed' and 'expired' never transition, so a started/finished/expired
-// session is left untouched and the caller is told it already moved on.
+// 'completed', 'canceled' and 'expired' never transition, so a started/finished/
+// cancelled/expired session is left untouched and the caller is told it already
+// moved on. 'canceled' is terminal here ON PURPOSE: the presigned PUT URLs cannot
+// be revoked, so a cancelled session must never be re-claimable for import even if
+// its dump is re-uploaded.
 func (s *Store) ClaimDropoffForImport(ctx context.Context, code string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE dropoff_sessions SET status = 'importing', error = '', updated_at = ?
@@ -159,15 +162,28 @@ func (s *Store) FinalizeDropoffFromImporting(ctx context.Context, code, status, 
 	return n == 1, nil
 }
 
-// MarkDropoffCancelled records a cancel on a drop-off session — status 'failed'
-// with the reason 'cancelled' — but ONLY when it is not already terminal
-// ('completed'/'expired'), returning true when applied. The condition makes cancel
-// race-safe against a completion (or sweep) that landed between the handler's read
-// and this write: a genuinely-completed import must not be relabelled cancelled.
+// MarkDropoffCancelled records a cancel on a drop-off session — the TERMINAL
+// 'canceled' status with the reason 'cancelled' — but ONLY when it is not already
+// terminal ('completed'/'expired') AND not actively 'importing', returning true
+// when applied.
+//
+// 'canceled' (not the retryable 'failed') is deliberate: presigned PUT URLs cannot
+// be revoked once minted, so a cancel recorded as 'failed' would leave the session
+// re-startable (ClaimDropoffForImport claims 'failed' for retry) and a holder of
+// the URL could re-upload and restart it. 'canceled' is excluded from the claim, so
+// the cancel is truly terminal.
+//
+// Excluding 'importing' is the atomic guard behind the handler's "cannot cancel a
+// running import" refusal: even if a concurrent Start flipped the row to 'importing'
+// between the handler's read and this write, the conditional UPDATE no-ops (returns
+// false) so the handler does NOT then delete the dump out from under a live restore
+// (which could interrupt an overwrite after the original was dropped, then delete
+// the only recovery copy). The condition also keeps cancel race-safe against a
+// completion/sweep: a genuinely-completed import must not be relabelled cancelled.
 func (s *Store) MarkDropoffCancelled(ctx context.Context, code string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE dropoff_sessions SET status = 'failed', error = 'cancelled', updated_at = ?
-		WHERE code = ? AND status NOT IN ('completed','expired')`,
+		UPDATE dropoff_sessions SET status = 'canceled', error = 'cancelled', updated_at = ?
+		WHERE code = ? AND status NOT IN ('completed','expired','importing')`,
 		nowRFC3339(), code)
 	if err != nil {
 		return false, core.InternalError("mark dropoff cancelled").Wrap(err)
@@ -187,9 +203,12 @@ func (s *Store) MarkDropoffCancelled(ctx context.Context, code string) (bool, er
 // Started shortly before the (short) TTL can still be streaming/restoring past it
 // under the worker's longer context, and reclaiming its dump out from under it
 // would fail the job spuriously. Interrupted imports are handled separately by
-// SweepRunningDropoffs on startup. It INCLUDES 'failed': a failed/abandoned
-// session keeps its (up to multi-GiB) dump in S3 for retry, which must still be
-// reclaimed once the TTL passes, or a full database lingers at rest indefinitely.
+// SweepRunningDropoffs on startup. It INCLUDES 'failed' and 'canceled': a failed/
+// abandoned session keeps its (up to multi-GiB) dump in S3 for retry, and a cancel
+// deletes the objects best-effort but may have hit a transient S3 error — both must
+// still be reclaimed once the TTL passes, or a full database lingers at rest
+// indefinitely. The deletes are idempotent, so an already-cleaned session is a
+// cheap no-op.
 //
 // It also INCLUDES 'completed': the import path deletes the dump+metadata on
 // success best-effort, but a transient S3 error there would otherwise orphan the
@@ -235,9 +254,10 @@ func (s *Store) ListExpiredDropoffs(ctx context.Context, now time.Time, limit in
 //
 // It returns only the safe, re-servable columns (the presigned URLs and the push
 // command were NEVER stored, only the keys), so this can never re-leak the
-// upload secret. It deliberately EXCLUDES 'failed': a cancel records 'failed' with
-// reason 'cancelled', and a cancelled/abandoned session must not resurface as
-// resumable. limit <= 0 defaults to 50.
+// upload secret. It deliberately EXCLUDES the terminal states 'failed', 'canceled',
+// 'completed' and 'expired': a failed import is surfaced via its own migration job,
+// and a cancelled/finished/abandoned session must not resurface as resumable.
+// limit <= 0 defaults to 50.
 func (s *Store) ListActiveDropoffs(ctx context.Context, now time.Time, limit int) ([]DropoffRecord, error) {
 	if limit <= 0 {
 		limit = 50

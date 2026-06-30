@@ -256,57 +256,46 @@ func (s *S3ObjectStore) DownloadToFile(ctx context.Context, key, dest string, ma
 	return nil
 }
 
-// ProbePutReachable confirms the configured credentials can reach the bucket
-// BEFORE the panel hands a presigned-PUT command to a source it cannot otherwise
-// help — so an unreachable endpoint or genuinely-bad credentials fail the mint
-// while the operator is still in the panel, instead of surfacing later on the
-// hard-to-reach source as a misleading "the link may have expired".
+// ProbePutReachable confirms the configured credentials can perform the FULL
+// object lifecycle the panel will need BEFORE it hands a presigned-PUT command to a
+// source it cannot otherwise help — so a misconfiguration fails the mint while the
+// operator is still in the panel, instead of surfacing later on the hard-to-reach
+// source as a misleading "the link may have expired", or worse, leaving an imported
+// dump that can never be cleaned up.
 //
-// It is deliberately MORE permissive than StatObject about a permission error,
-// because the only operation the source performs is a single PutObject via the
-// presigned URL — it never lists or gets. A GET (not a HEAD) is used on purpose:
-// S3 omits the response body on a HEAD, so minio-go synthesizes Code="AccessDenied"
-// for EVERY 403 there and cannot tell a no-permission policy from bad keys; a GET
-// returns the precise <Code> in its body, letting us distinguish them. key need not
-// exist (it is a fresh per-session dump key at mint time). The cases:
-//
-//   - NoSuchKey / a bare 404: healthy — valid creds, reachable bucket, key absent.
-//   - AccessDenied (403 WITH a parsed code): treated as REACHABLE. A deliberately
-//     PutObject-only policy (no s3:GetObject / s3:ListBucket — exactly what a
-//     drop-off source path may use) denies the GET yet still honors the presigned
-//     PUT, so we must NOT block the mint on it.
-//   - NoSuchBucket, InvalidAccessKeyId, SignatureDoesNotMatch, and any transport
-//     failure (no HTTP status): NOT reachable — the presigned PUT would fail too,
-//     so fail the mint now with a clear cause.
+// It is NOT enough to tolerate a PutObject-only policy: although the source only
+// ever performs the single presigned PUT, the PANEL itself must later StatObject,
+// GET/download and DeleteObject those same keys to import the dump and reclaim it.
+// A PutObject-only policy would let the source's upload succeed yet leave the panel
+// unable to import (stat/get denied) or clean up (delete denied) — orphaning a full
+// database at rest forever. So the probe exercises exactly that lifecycle against a
+// disposable probe object: PUT, then stat, then read, then delete. If any step is
+// denied the mint fails NOW with a clear cause. The probe key is a fresh per-session
+// throwaway (migrate.DropProbeKey); the deferred delete cleans it up on every path.
 func (s *S3ObjectStore) ProbePutReachable(ctx context.Context, key string) error {
-	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
-	if err != nil {
-		return s.classifyProbe(err, key)
+	payload := []byte("indiepg drop-off reachability probe")
+	if err := s.PutObject(ctx, key, payload); err != nil {
+		return core.InternalError("backup: S3 is not writable for a presigned PUT to %q (check the bucket, endpoint and credentials)", key).Wrap(err)
 	}
-	defer func() { _ = obj.Close() }()
-	// minio's GetObject is lazy: the request is issued on first read, so a missing
-	// key / auth error surfaces here. io.EOF (an empty existing object) is success.
-	if _, rerr := obj.Read(make([]byte, 1)); rerr != nil && rerr != io.EOF {
-		return s.classifyProbe(rerr, key)
+	// Best-effort cleanup of the probe object no matter which step below fails, so a
+	// probe that aborts after the PUT never strands the throwaway object.
+	defer func() { _ = s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}) }()
+
+	if _, exists, err := s.StatObject(ctx, key); err != nil {
+		return core.InternalError("backup: the configured S3 credentials cannot stat objects (needed to detect the upload and its size); grant s3:GetObject/HeadObject").Wrap(err)
+	} else if !exists {
+		return core.InternalError("backup: S3 probe object %q vanished immediately after a successful PUT — the bucket may not be durable or another writer is racing it", key)
+	}
+	if _, err := s.GetObjectLimited(ctx, key, int64(len(payload))+1); err != nil {
+		return core.InternalError("backup: the configured S3 credentials cannot read objects (needed to download the dump); grant s3:GetObject").Wrap(err)
+	}
+	// Delete EXPLICITLY (not only via the deferred best-effort cleanup) so a
+	// delete-denied policy fails the mint: without delete the panel could never
+	// reclaim the multi-GiB dump after import, orphaning a full database forever.
+	if err := s.DeleteObject(ctx, key); err != nil {
+		return core.InternalError("backup: the configured S3 credentials cannot delete objects (needed to clean up the dump after import); grant s3:DeleteObject").Wrap(err)
 	}
 	return nil
-}
-
-// classifyProbe maps a minio GET error during a reachability probe to nil
-// (reachable) or a clear internal error. See ProbePutReachable for the rationale
-// behind tolerating AccessDenied but not NoSuchBucket / bad credentials.
-func (s *S3ObjectStore) classifyProbe(err error, key string) error {
-	resp := minio.ToErrorResponse(err)
-	switch {
-	case resp.Code == "NoSuchBucket":
-		// The bucket itself is missing/unreachable — the PUT would fail too. Fall
-		// through to the error (do NOT let the StatusCode==404 branch swallow it).
-	case resp.Code == "NoSuchKey" || (resp.Code == "" && resp.StatusCode == http.StatusNotFound):
-		return nil
-	case resp.Code == "AccessDenied":
-		return nil
-	}
-	return core.InternalError("backup: S3 is not reachable for a presigned PUT to %q", key).Wrap(err)
 }
 
 // classifyGet maps a minio "not found" to CodeNotFound (per the ObjectStore

@@ -235,12 +235,33 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture the S3 target BEFORE the overlay so we can detect a re-point below.
+	prevBackup := cfg.Backup
 	applyConfigUpdate(&cfg, req)
 
 	if err := cfg.Validate(); err != nil {
 		writeError(w, err)
 		return
 	}
+
+	// Refuse to re-point the S3 target while a non-terminal drop-off session still
+	// depends on the OLD bucket/credentials. Such a session's uploaded dump and its
+	// presigned PUT URLs live in the old bucket; swapping s.drops to a new target
+	// would orphan that dump and break the import/cleanup it expects. Make the
+	// operator finish or cancel the open session first. (Active = waiting/uploaded/
+	// importing; a one-row probe is enough to know any exist.)
+	if s3TargetChanged(prevBackup, cfg.Backup) {
+		if active, aerr := s.store.ListActiveDropoffs(ctx, nowUTC(), 1); aerr != nil {
+			writeError(w, aerr)
+			return
+		} else if len(active) > 0 {
+			writeError(w, core.ConflictError(
+				"cannot change the S3 target while a drop-off migration is still active").
+				WithHint("finish or cancel the open drop-off session under Migrate first, then change S3"))
+			return
+		}
+	}
+
 	if err := config.Save(ctx, s.store, cfg); err != nil {
 		writeError(w, err)
 		return
@@ -249,6 +270,11 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// Refresh the live backup Manager so a freshly-saved S3 target (and its
 	// single-writer ownership guard) takes effect immediately, without a restart.
 	s.backups.Reconfigure(cfg, backupOwnerFor(ctx, s.store, cfg, s.log))
+	// Atomically re-point the drop-off transport at the saved S3 target too, so a
+	// newly configured (or changed) bucket/credentials are usable immediately —
+	// mirroring the backup Manager refresh above. The refusal above guarantees no
+	// active session still depends on the previous transport.
+	s.setDropTransport(dropTransportFor(cfg, s.log))
 
 	s.audit(ctx, "update_config", "config", "success", "panel configuration updated", "")
 
@@ -323,6 +349,21 @@ func applyConfigUpdate(cfg *config.Config, req updateConfigRequest) {
 		setIf(&cfg.Schedules.TelemetrySample, sc.TelemetrySample)
 		setIf(&cfg.Schedules.Digest, sc.Digest)
 	}
+}
+
+// s3TargetChanged reports whether the fields that define the S3 transport (shared
+// by backups and the drop-off mode) differ between two targets. SecretKey is
+// included so rotating credentials counts as a change; an empty incoming SecretKey
+// means "unchanged" (applyConfigUpdate preserves the stored secret), so it compares
+// equal and is not falsely flagged. Prefix/CipherPass are backup-repo concerns that
+// don't affect which bucket the drop-off transport talks to, so they're excluded.
+func s3TargetChanged(a, b config.S3Target) bool {
+	return a.Endpoint != b.Endpoint ||
+		a.Region != b.Region ||
+		a.Bucket != b.Bucket ||
+		a.AccessKey != b.AccessKey ||
+		a.SecretKey != b.SecretKey ||
+		a.UseSSL != b.UseSSL
 }
 
 func setIf(dst *string, src *string) {

@@ -84,35 +84,79 @@ func TestPresignPut_clampsTTL(t *testing.T) {
 	require.Contains(t, url, "X-Amz-Signature=")
 }
 
-// TestProbePutReachable pins the mint-time reachability probe's tolerance: it must
-// treat a missing key AND a 403 AccessDenied (a PutObject-only policy with no
-// ListBucket/GetObject — exactly what a locked-down drop-off source path uses) as
-// REACHABLE, yet still fail on a missing bucket or genuinely-bad credentials. A GET
-// (not a HEAD) is used so the precise S3 <Code> survives in the body, letting bad
-// keys be told apart from a no-permission policy.
+// TestProbePutReachable pins the FULL-lifecycle reachability probe (finding #5):
+// the probe must exercise exactly the object operations the PANEL later needs — PUT,
+// then stat (HEAD), then read (GET), then delete — and fail the mint if ANY of them
+// is denied. A PutObject-only policy (the source can upload but the panel cannot
+// stat/read/delete) is NOT acceptable: it would import-fail or orphan the dump with
+// no cleanup. Only when the whole lifecycle succeeds is the target reachable.
 func TestProbePutReachable(t *testing.T) {
-	cases := []struct {
+	const probeKey = "pg-migrations/dropoff/ABCDEF/.probe"
+
+	// statuses maps an HTTP method to the status the stub returns; a method not
+	// present defaults to a successful response, so a case only lists the denials it
+	// models. errCode is the S3 <Code> placed in the (non-HEAD) error body.
+	type lifecycle struct {
 		name      string
-		status    int
-		code      string // S3 <Code>; "" => empty body (gateway supplies no code)
+		statuses  map[string]int
+		errCode   string
 		reachable bool
-	}{
-		{"missing key (NoSuchKey)", http.StatusNotFound, "NoSuchKey", true},
-		{"missing key (empty body 404)", http.StatusNotFound, "", true},
-		{"PutObject-only policy (AccessDenied)", http.StatusForbidden, "AccessDenied", true},
-		{"missing bucket (NoSuchBucket)", http.StatusNotFound, "NoSuchBucket", false},
-		{"bad access key (InvalidAccessKeyId)", http.StatusForbidden, "InvalidAccessKeyId", false},
-		{"bad secret (SignatureDoesNotMatch)", http.StatusForbidden, "SignatureDoesNotMatch", false},
 	}
+	cases := []lifecycle{
+		{"full lifecycle granted", map[string]int{}, "", true},
+		{"PutObject-only: stat/read denied", map[string]int{
+			http.MethodHead: http.StatusForbidden,
+			http.MethodGet:  http.StatusForbidden,
+		}, "AccessDenied", false},
+		{"delete denied (cannot clean up)", map[string]int{
+			http.MethodDelete: http.StatusForbidden,
+		}, "AccessDenied", false},
+		{"put denied (bad credentials)", map[string]int{
+			http.MethodPut: http.StatusForbidden,
+		}, "SignatureDoesNotMatch", false},
+		{"missing bucket on put", map[string]int{
+			http.MethodPut: http.StatusNotFound,
+		}, "NoSuchBucket", false},
+	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				st, listed := tc.statuses[r.Method]
+				if !listed {
+					st = http.StatusOK // default: this op is granted
+				}
+				ok := st == http.StatusOK || st == http.StatusNoContent
+				switch {
+				case r.Method == http.MethodPut && ok:
+					w.Header().Set("ETag", `"probe-etag"`)
+					w.WriteHeader(http.StatusOK)
+					return
+				case r.Method == http.MethodHead && ok:
+					w.Header().Set("Content-Length", "35")
+					w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+					w.Header().Set("ETag", `"probe-etag"`)
+					w.WriteHeader(http.StatusOK)
+					return
+				case r.Method == http.MethodGet && ok:
+					w.Header().Set("Content-Length", "35")
+					w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+					w.Header().Set("ETag", `"probe-etag"`)
+					w.WriteHeader(http.StatusOK)
+					_, _ = io.WriteString(w, "indiepg drop-off reachability probe")
+					return
+				case r.Method == http.MethodDelete && ok:
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				// Denied: an XML <Error> body for GET/PUT/DELETE (minio parses the
+				// <Code>); HEAD carries no body, so minio synthesizes the error itself.
 				w.Header().Set("Content-Type", "application/xml")
-				w.WriteHeader(tc.status)
-				if tc.code != "" {
+				w.WriteHeader(st)
+				if tc.errCode != "" && r.Method != http.MethodHead {
 					_, _ = io.WriteString(w,
-						`<?xml version="1.0" encoding="UTF-8"?><Error><Code>`+tc.code+
-							`</Code><Message>`+tc.code+`</Message></Error>`)
+						`<?xml version="1.0" encoding="UTF-8"?><Error><Code>`+tc.errCode+
+							`</Code><Message>`+tc.errCode+`</Message></Error>`)
 				}
 			}))
 			defer srv.Close()
@@ -129,7 +173,7 @@ func TestProbePutReachable(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			perr := s.ProbePutReachable(context.Background(), "pg-migrations/dropoff/ABCDEF/dump")
+			perr := s.ProbePutReachable(context.Background(), probeKey)
 			if tc.reachable {
 				require.NoError(t, perr, "must treat %s as reachable", tc.name)
 			} else {

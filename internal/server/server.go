@@ -82,19 +82,12 @@ type Server struct {
 	// drops is the S3 transport for the "drop-off link" migration mode (presigned
 	// PUT mint + streaming download + stat + cleanup). Like migrate it is nil
 	// unless an S3 backup target is configured — that nil is the ONLY honest reason
-	// the drop-off endpoints report "requires S3".
-	drops migrate.DropTransport
-
-	// dropCancels holds the cancel func of each in-flight drop-off import worker,
-	// keyed by session code, so handleCancelDropoff can INTERRUPT a running restore
-	// (the worker runs on its own bounded context, detached from the request) rather
-	// than only marking the row cancelled and letting the restore finish anyway.
-	// Guarded by dropCancelMu; entries are added by runDropImportWorker and removed
-	// when it returns. Each entry carries the owning worker's migration id so a
-	// retry's worker cannot have its registration clobbered by the previous worker's
-	// deferred unregister (the id is the owner guard for that race).
-	dropCancelMu sync.Mutex
-	dropCancels  map[string]dropCancelEntry
+	// the drop-off endpoints report "requires S3". It is read through dropTransport()
+	// and swapped through setDropTransport() under dropsMu so a config save can
+	// atomically re-point it at a new bucket/credentials without a restart (and
+	// without racing the in-flight drop handlers that read it).
+	dropsMu sync.RWMutex
+	drops   migrate.DropTransport
 
 	// upgrades persists the version-upgrade feature's durable state (the in-
 	// flight operation + the pending-finalization record), backed by the config
@@ -375,6 +368,25 @@ func dropTransportFor(cfg config.Config, log *core.Logger) migrate.DropTransport
 	return objstore
 }
 
+// dropTransport returns the current drop-off S3 transport under a read lock, so a
+// handler reads a coherent value even while a config save swaps it. Callers should
+// capture it ONCE per request and use the local copy for the whole operation.
+func (s *Server) dropTransport() migrate.DropTransport {
+	s.dropsMu.RLock()
+	defer s.dropsMu.RUnlock()
+	return s.drops
+}
+
+// setDropTransport atomically swaps the drop-off transport, called when an S3
+// config save re-points the panel at a new bucket/credentials. The refusal in
+// handleUpdateConfig guarantees no active drop-off session still depends on the old
+// transport when this runs.
+func (s *Server) setDropTransport(tr migrate.DropTransport) {
+	s.dropsMu.Lock()
+	s.drops = tr
+	s.dropsMu.Unlock()
+}
+
 // newServer is the unexported builder used by New and by tests to inject a
 // pre-wired authenticator and SPA filesystem.
 func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth.Authenticator, dist fs.FS, ttl time.Duration) (*Server, error) {
@@ -408,7 +420,6 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 		migrateEngine: migrate.NewEngine(runner, log),
 		migrate:       migrateServiceFor(cfg, runner, log),
 		drops:         dropTransportFor(cfg, log),
-		dropCancels:   make(map[string]dropCancelEntry),
 
 		// Version-upgrade durable state, backed by the panel's local store (config
 		// key/value table). The *store.Store satisfies pg.StateStore directly.

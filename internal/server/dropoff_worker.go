@@ -22,17 +22,14 @@ var _ migrate.DropTransport = (*backup.S3ObjectStore)(nil)
 func (s *Server) runDropImportWorker(id int64, code string) {
 	ctx, cancel := workerContext()
 	defer cancel()
-	// Publish this worker's cancel so handleCancelDropoff can INTERRUPT an in-flight
-	// restore (the worker is detached from the request context), not merely mark the
-	// row cancelled and let pg_restore run to completion. Keyed by code but guarded
-	// by this worker's unique migration id, so the deferred unregister only removes
-	// OUR entry — a retry (which spawns a new worker under the same code) is never
-	// torn down by the previous worker's late-running defer. Removed on return.
-	s.registerDropCancel(code, id, cancel)
-	defer s.unregisterDropCancel(code, id)
 	rec := newStoreRecorder(s.store, id)
 
-	if s.drops == nil {
+	// Capture the transport ONCE for the whole import: a config save cannot swap it
+	// mid-run anyway (handleUpdateConfig refuses to change the S3 target while a
+	// non-terminal drop-off session like this one exists), and reading it once keeps
+	// the dump's read/cleanup bound to the bucket it was uploaded to.
+	drops := s.dropTransport()
+	if drops == nil {
 		err := errDropRequiresS3()
 		_ = rec.Fail(ctx, err)
 		s.finishDropoff(ctx, code, err)
@@ -75,55 +72,11 @@ func (s *Server) runDropImportWorker(id int64, code string) {
 	// svc/os are nil: ImportFromDrop takes the DropTransport as an argument and
 	// never touches the Orchestrator's ssh-less session plumbing.
 	orch := migrate.NewOrchestrator(s.migrateEngine, nil, nil, workDir, s.log)
-	ierr := orch.ImportFromDrop(ctx, s.drops, spec, rec)
+	ierr := orch.ImportFromDrop(ctx, drops, spec, rec)
 	if ierr != nil {
 		s.log.Warn("drop-off import failed", "id", id, "code", code, "err", ierr)
 	}
 	s.finishDropoff(ctx, code, ierr)
-}
-
-// dropCancelEntry is one in-flight import worker's cancel func tagged with the
-// migration id that owns it. The id is the owner guard that makes register/
-// unregister race-safe: a retry under the same session code spawns a NEW worker
-// with a new id, and the previous worker's deferred unregister must not delete the
-// new worker's entry.
-type dropCancelEntry struct {
-	id     int64
-	cancel context.CancelFunc
-}
-
-// registerDropCancel publishes an in-flight import worker's cancel func (keyed by
-// session code, tagged with its migration id) so handleCancelDropoff can interrupt
-// it. unregisterDropCancel removes it when the worker returns.
-func (s *Server) registerDropCancel(code string, id int64, cancel context.CancelFunc) {
-	s.dropCancelMu.Lock()
-	s.dropCancels[code] = dropCancelEntry{id: id, cancel: cancel}
-	s.dropCancelMu.Unlock()
-}
-
-// unregisterDropCancel removes a worker's entry ONLY if it is still that worker's
-// own (same migration id). Without the id guard, a slow worker1 whose deferred
-// unregister runs after a retried worker2 has already registered under the same
-// code would delete worker2's entry, leaving worker2's restore non-interruptible
-// by handleCancelDropoff.
-func (s *Server) unregisterDropCancel(code string, id int64) {
-	s.dropCancelMu.Lock()
-	if e, ok := s.dropCancels[code]; ok && e.id == id {
-		delete(s.dropCancels, code)
-	}
-	s.dropCancelMu.Unlock()
-}
-
-// cancelDropWorker interrupts the in-flight import worker for code by cancelling
-// its context (which kills any pg_restore subprocess via exec.CommandContext). It
-// is a no-op when no worker is registered (already finished, or never started).
-func (s *Server) cancelDropWorker(code string) {
-	s.dropCancelMu.Lock()
-	e := s.dropCancels[code]
-	s.dropCancelMu.Unlock()
-	if e.cancel != nil {
-		e.cancel()
-	}
 }
 
 // finishDropoff records the terminal dropoff_sessions status. Like the recorder's
@@ -169,6 +122,7 @@ func (s *Server) finishDropoff(ctx context.Context, code string, jobErr error) {
 // gone is a cheap no-op. Best-effort: per-session errors only log. Called on
 // startup and on a periodic schedule.
 func (s *Server) sweepExpiredDropoffs(ctx context.Context) error {
+	drops := s.dropTransport()
 	expired, err := s.store.ListExpiredDropoffs(ctx, time.Now().UTC(), 100)
 	if err != nil {
 		return err
@@ -191,14 +145,28 @@ func (s *Server) sweepExpiredDropoffs(ctx context.Context) error {
 		case migrate.DropImporting, migrate.DropExpired:
 			continue
 		}
-		if s.drops != nil {
-			if derr := s.drops.DeleteObject(ctx, cur.DumpKey); derr != nil {
-				s.log.Warn("could not delete expired drop-off dump", "code", cur.Code, "err", derr)
-			}
-			if derr := s.drops.DeleteObject(ctx, cur.MetaKey); derr != nil {
-				s.log.Warn("could not delete expired drop-off metadata", "code", cur.Code, "err", derr)
-			}
+		// A persisted 'expired' is the panel's promise that the full database at rest
+		// was reclaimed (the sweep skips 'expired' rows forever after). So only make
+		// that transition once BOTH idempotent deletes actually succeed. With no
+		// transport configured, or on ANY delete failure (transient S3 error, rotated
+		// creds), leave the row non-terminal so the NEXT sweep retries it — marking it
+		// 'expired' anyway would orphan the dump permanently.
+		if drops == nil {
+			s.log.Warn("cannot reclaim expired drop-off objects: no S3 transport configured; will retry", "code", cur.Code)
+			continue
 		}
+		dumpErr := drops.DeleteObject(ctx, cur.DumpKey)
+		if dumpErr != nil {
+			s.log.Warn("could not delete expired drop-off dump; leaving for the next sweep", "code", cur.Code, "err", dumpErr)
+		}
+		metaErr := drops.DeleteObject(ctx, cur.MetaKey)
+		if metaErr != nil {
+			s.log.Warn("could not delete expired drop-off metadata; leaving for the next sweep", "code", cur.Code, "err", metaErr)
+		}
+		if dumpErr != nil || metaErr != nil {
+			continue // not fully reclaimed: do NOT mark expired, retry next sweep
+		}
+		// Both objects are gone (or were already absent — deletes are idempotent).
 		// Move to the terminal 'expired' state so the row drains out of the sweep's
 		// set (it won't be reclaimed again every cycle) while preserving any failure
 		// Error, so the UI can still explain why a previously-failed drop-off ended.

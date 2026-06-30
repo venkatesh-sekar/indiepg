@@ -223,34 +223,45 @@ func (e *errStatDrop) StatObject(ctx context.Context, key string) (int64, bool, 
 	return 0, false, e.err
 }
 
-// putReachableDrop models the real S3 store's smart probe: StatObject (a HEAD)
-// would fail under a PutObject-only policy, but ProbePutReachable (a GET that
-// tolerates AccessDenied) confirms the single presigned PUT the source performs
-// would still succeed — so the mint must NOT be blocked.
-type putReachableDrop struct {
+// probeFailDrop models the real S3 store's FULL-lifecycle probe failing: the panel
+// could PUT (the source's upload would land) but cannot stat/read/delete the object
+// — a PutObject-only policy. The panel itself needs all of those to import the dump
+// and reclaim it, so the mint must be REFUSED rather than handing out a command that
+// would import-fail or orphan the dump with no cleanup.
+type probeFailDrop struct {
 	*fakeServerDrop
 }
 
-func (p *putReachableDrop) StatObject(ctx context.Context, key string) (int64, bool, error) {
-	return 0, false, core.InternalError("backup: stat S3 object: AccessDenied (no ListBucket)")
+func (p *probeFailDrop) ProbePutReachable(ctx context.Context, key string) error {
+	return core.InternalError("backup: the configured S3 credentials cannot delete objects")
 }
 
-func (p *putReachableDrop) ProbePutReachable(ctx context.Context, key string) error {
-	return nil
-}
-
-// TestCreateDropoffToleratesPutOnlyPolicy pins the ListBucket false-negative fix: a
-// transport whose HEAD probe (StatObject) is denied but whose PUT-reachability
-// probe succeeds must still mint — a deliberately PutObject-only S3 policy is a
-// supported, secure configuration for the source path.
-func TestCreateDropoffToleratesPutOnlyPolicy(t *testing.T) {
+// TestCreateDropoffFailsWhenProbeLifecycleDenied pins the full-lifecycle probe fix:
+// a transport that can PUT but not stat/read/delete (a PutObject-only policy) must
+// FAIL the mint, because the panel itself later needs HEAD/GET/DELETE to import and
+// clean up — a PUT-only policy would orphan the dump forever.
+func TestCreateDropoffFailsWhenProbeLifecycleDenied(t *testing.T) {
 	srv, fake, token := withDrops(t)
-	srv.drops = &putReachableDrop{fakeServerDrop: fake}
+	srv.drops = &probeFailDrop{fakeServerDrop: fake}
 
 	rec := authedRequest(t, srv, http.MethodPost, "/api/migrate/drops", token, map[string]any{
 		"target_database": "appdb",
 	})
-	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, http.StatusInternalServerError, rec.Code, "body: %s", rec.Body.String())
+	var ae apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeInternal, ae.Code)
+	require.Contains(t, strings.ToLower(ae.Message), "not reachable")
+}
+
+// failDeleteDrop is a transport whose DeleteObject always errors, modelling an S3
+// target the panel can read but not delete from (rotated/over-restricted creds).
+type failDeleteDrop struct {
+	*fakeServerDrop
+}
+
+func (f *failDeleteDrop) DeleteObject(ctx context.Context, key string) error {
+	return core.InternalError("backup: delete S3 object: AccessDenied")
 }
 
 // TestCreateDropoffFailsFastOnUnreachableS3 pins the mint-time reachability probe:
@@ -270,33 +281,6 @@ func TestCreateDropoffFailsFastOnUnreachableS3(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
 	require.Equal(t, core.CodeInternal, ae.Code)
 	require.Contains(t, strings.ToLower(ae.Message), "not reachable")
-}
-
-// TestDropCancelRegistryGenerationGuard pins the owner-guard fix: a retry under the
-// same session code registers a NEW worker (new migration id); the previous
-// worker's late-running deferred unregister must NOT delete the new worker's entry,
-// so a cancel still interrupts the live restore rather than only marking the row.
-func TestDropCancelRegistryGenerationGuard(t *testing.T) {
-	srv, _, _ := withDrops(t)
-
-	worker1Cancelled := false
-	worker2Cancelled := false
-	srv.registerDropCancel("CODE01", 1, func() { worker1Cancelled = true })
-	// Retry: a new worker (id 2) registers under the same code.
-	srv.registerDropCancel("CODE01", 2, func() { worker2Cancelled = true })
-	// Worker 1's deferred unregister runs LATE — it must be a no-op (not its entry).
-	srv.unregisterDropCancel("CODE01", 1)
-
-	// A cancel now must still reach worker 2 (the live one).
-	srv.cancelDropWorker("CODE01")
-	require.False(t, worker1Cancelled, "the stale worker's cancel must not fire")
-	require.True(t, worker2Cancelled, "the live retry worker must remain interruptible")
-
-	// Worker 2's own unregister cleans the entry; a later cancel is a no-op.
-	srv.unregisterDropCancel("CODE01", 2)
-	worker2Cancelled = false
-	srv.cancelDropWorker("CODE01")
-	require.False(t, worker2Cancelled, "after the owner unregisters, no entry remains")
 }
 
 // TestCreateDropoffOverwriteRequiresTypedConfirm verifies the destructive
@@ -460,8 +444,142 @@ func TestCancelDropoffDeletesObjects(t *testing.T) {
 
 	drec, err := srv.store.GetDropoffByCode(context.Background(), code)
 	require.NoError(t, err)
-	require.Equal(t, string(migrate.DropFailed), drec.Status)
+	// Cancel records the TERMINAL 'canceled' status (not the retryable 'failed'), so
+	// the session can never be re-started even though its presigned PUT URLs live on.
+	require.Equal(t, string(migrate.DropCanceled), drec.Status)
 	require.Equal(t, "cancelled", drec.Error)
+}
+
+// TestCancelDropoffImportingIsRefused pins finding #9: a cancel must be REFUSED
+// while the import is running — interrupting an overwrite after the original DB was
+// dropped, then deleting the S3 recovery dump, would destroy the only copy. The
+// recovery dump must be left untouched.
+func TestCancelDropoffImportingIsRefused(t *testing.T) {
+	srv, fake, token := withDrops(t)
+	ctx := context.Background()
+
+	d := store.DropoffRecord{
+		Code: "IMPCXL", DumpKey: migrate.DropDumpKey("IMPCXL"), MetaKey: migrate.DropMetaKey("IMPCXL"),
+		TargetDatabase: "appdb", Status: string(migrate.DropImporting),
+		ExpiresAt: time.Now().Add(time.Hour).UTC(),
+	}
+	_, err := srv.store.InsertDropoff(ctx, d)
+	require.NoError(t, err)
+	fake.put(migrate.DropDumpKey("IMPCXL"), []byte("PGDMP-live"))
+	fake.put(migrate.DropMetaKey("IMPCXL"), []byte(`{"sha256":"x"}`))
+
+	rec := authedRequest(t, srv, http.MethodDelete, "/api/migrate/drops/IMPCXL", token, nil)
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+	var ae apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeConflict, ae.Code)
+	require.Contains(t, strings.ToLower(ae.Message), "importing")
+
+	// The recovery dump must NOT have been deleted, and the session stays importing.
+	require.NotContains(t, fake.deletes, migrate.DropDumpKey("IMPCXL"))
+	got, err := srv.store.GetDropoffByCode(ctx, "IMPCXL")
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.DropImporting), got.Status)
+}
+
+// TestStartDropoffOverwriteRequiresConfirm pins finding #3: the Start endpoint must
+// require the typed-name confirmation when the session was minted with overwrite, so
+// a direct API call cannot bypass the SPA's confirm dialog and drop the database.
+func TestStartDropoffOverwriteRequiresConfirm(t *testing.T) {
+	srv, fake, token := withDrops(t)
+
+	// Mint an overwrite session (confirm required at mint too).
+	rec := authedRequest(t, srv, http.MethodPost, "/api/migrate/drops", token, map[string]any{
+		"target_database": "appdb",
+		"overwrite":       true,
+		"confirm":         "appdb",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	var env struct {
+		Data createDropoffResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env))
+	code := env.Data.Code
+	fake.put(migrate.DropDumpKey(code), []byte("PGDMP-ovr"))
+	fake.put(migrate.DropMetaKey(code), []byte(`{"sha256":"x"}`))
+
+	// Start with NO typed confirm: refused with a typed CodeSafety error.
+	rec = authedRequest(t, srv, http.MethodPost, "/api/migrate/drops/"+code+"/start", token, nil)
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+	var ae apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeSafety, ae.Code)
+
+	// A WRONG confirm is also refused.
+	rec = authedRequest(t, srv, http.MethodPost, "/api/migrate/drops/"+code+"/start", token, map[string]any{"confirm": "nope"})
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+
+	// The session is still un-started after the refusals.
+	drec, err := srv.store.GetDropoffByCode(context.Background(), code)
+	require.NoError(t, err)
+	require.Nil(t, drec.MigrationID, "a refused overwrite Start must not have linked a migration")
+
+	// The correct typed confirm authorizes the import.
+	rec = authedRequest(t, srv, http.MethodPost, "/api/migrate/drops/"+code+"/start", token, map[string]any{"confirm": "appdb"})
+	require.Equal(t, http.StatusAccepted, rec.Code, "body: %s", rec.Body.String())
+}
+
+// TestStartDropoffCancelledIsRefused pins finding #6: a cancelled session must never
+// be startable, even though its presigned PUT URLs cannot be revoked and a dump may
+// still be present.
+func TestStartDropoffCancelledIsRefused(t *testing.T) {
+	srv, fake, token := withDrops(t)
+	ctx := context.Background()
+
+	d := store.DropoffRecord{
+		Code: "CXLSTR", DumpKey: migrate.DropDumpKey("CXLSTR"), MetaKey: migrate.DropMetaKey("CXLSTR"),
+		TargetDatabase: "appdb", Status: string(migrate.DropCanceled), Error: "cancelled",
+		ExpiresAt: time.Now().Add(time.Hour).UTC(),
+	}
+	_, err := srv.store.InsertDropoff(ctx, d)
+	require.NoError(t, err)
+	fake.put(migrate.DropDumpKey("CXLSTR"), []byte("PGDMP-reuploaded"))
+	fake.put(migrate.DropMetaKey("CXLSTR"), []byte(`{"sha256":"x"}`))
+
+	rec := authedRequest(t, srv, http.MethodPost, "/api/migrate/drops/CXLSTR/start", token, nil)
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+	var ae apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeConflict, ae.Code)
+	require.Contains(t, strings.ToLower(ae.Message), "cancel")
+
+	got, err := srv.store.GetDropoffByCode(ctx, "CXLSTR")
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.DropCanceled), got.Status, "a cancelled session stays cancelled")
+}
+
+// TestSweepExpiredDropoffsLeavesUnreclaimedOnDeleteFailure pins finding #4: the sweep
+// must NOT mark a session 'expired' (which would exclude it from all future sweeps)
+// until BOTH idempotent object deletes succeed — a delete failure leaves it eligible
+// for a later retry instead of orphaning the dump forever.
+func TestSweepExpiredDropoffsLeavesUnreclaimedOnDeleteFailure(t *testing.T) {
+	srv, fake, _ := withDrops(t)
+	srv.drops = &failDeleteDrop{fakeServerDrop: fake}
+	ctx := context.Background()
+	past := time.Now().Add(-time.Hour).UTC()
+
+	d := store.DropoffRecord{
+		Code: "DELERR", DumpKey: migrate.DropDumpKey("DELERR"), MetaKey: migrate.DropMetaKey("DELERR"),
+		TargetDatabase: "appdb", Status: string(migrate.DropFailed), Error: "verification failed: row mismatch",
+		ExpiresAt: past,
+	}
+	_, err := srv.store.InsertDropoff(ctx, d)
+	require.NoError(t, err)
+	fake.put(migrate.DropDumpKey("DELERR"), []byte("PGDMP-still-at-rest"))
+	fake.put(migrate.DropMetaKey("DELERR"), []byte(`{"sha256":"x"}`))
+
+	require.NoError(t, srv.sweepExpiredDropoffs(ctx))
+
+	got, err := srv.store.GetDropoffByCode(ctx, "DELERR")
+	require.NoError(t, err)
+	require.Equal(t, string(migrate.DropFailed), got.Status,
+		"a delete failure must NOT mark the session expired; it stays eligible for the next sweep")
+	require.Contains(t, got.Error, "row mismatch")
 }
 
 // TestGetDropoffExpiredInMemoryNotPersisted verifies the expiry-on-read fix: a
@@ -578,7 +696,7 @@ func TestFinishDropoffDoesNotResurrectCancelled(t *testing.T) {
 
 	d := store.DropoffRecord{
 		Code: "CANC01", DumpKey: migrate.DropDumpKey("CANC01"), MetaKey: migrate.DropMetaKey("CANC01"),
-		TargetDatabase: "appdb", Status: string(migrate.DropFailed), Error: "cancelled",
+		TargetDatabase: "appdb", Status: string(migrate.DropCanceled), Error: "cancelled",
 		ExpiresAt: time.Now().Add(time.Hour).UTC(),
 	}
 	_, err := srv.store.InsertDropoff(ctx, d)
@@ -588,7 +706,7 @@ func TestFinishDropoffDoesNotResurrectCancelled(t *testing.T) {
 
 	got, err := srv.store.GetDropoffByCode(ctx, "CANC01")
 	require.NoError(t, err)
-	require.Equal(t, string(migrate.DropFailed), got.Status, "a cancelled session must not be resurrected to completed")
+	require.Equal(t, string(migrate.DropCanceled), got.Status, "a cancelled session must not be resurrected to completed")
 	require.Equal(t, "cancelled", got.Error)
 }
 

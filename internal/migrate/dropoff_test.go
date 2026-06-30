@@ -327,6 +327,32 @@ func TestImportFromDrop_rowMismatch(t *testing.T) {
 	require.Contains(t, err.Error(), "verification failed")
 	require.False(t, rec.succeeded)
 	require.Empty(t, tr.deletes, "a verification failure keeps the S3 objects")
+	// The target PRE-EXISTED (exists:true), so a verification failure must never drop
+	// it (the operator may have created it with extensions/schemas).
+	require.Empty(t, eng.dropped, "a pre-existing target is never dropped on verification failure")
+}
+
+// TestImportFromDrop_verificationFailureDropsCreatedTarget pins finding #11: a
+// post-restore row-count mismatch into a database THIS import created leaves it
+// non-empty, which would poison the next non-overwrite retry's emptiness gate. Like
+// the restore-failure path, drop the target we created so the kept-in-S3 dump can be
+// retried clean.
+func TestImportFromDrop_verificationFailureDropsCreatedTarget(t *testing.T) {
+	tr := newFakeDrop()
+	stageDrop(t, tr, "ABCDEF", []byte("PGDMP-rows"), map[string]int64{"public.users": 10})
+
+	eng := &fakeEngine{
+		exists:    false, // absent -> this import creates the fresh target
+		rowCounts: map[string]map[string]int64{"tgt:appdb": {"public.users": 7}},
+	}
+	rec := &fakeRecorder{}
+	o := newOrch(t, eng, nil, nil)
+	err := o.ImportFromDrop(context.Background(), tr, dropSpec("ABCDEF"), rec)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "verification failed")
+	require.Equal(t, []string{"appdb"}, eng.created, "we created the fresh target")
+	require.Equal(t, []string{"appdb"}, eng.dropped, "a verification failure drops the target we created")
+	require.Empty(t, tr.deletes, "the dump is kept in S3 for retry")
 }
 
 func TestImportFromDrop_nonEmptyTargetWithoutOverwrite(t *testing.T) {

@@ -113,6 +113,7 @@ func TestListExpiredDropoffs(t *testing.T) {
 	insert("WAITLV", "waiting_for_upload", now.Add(time.Hour))
 	insert("IMPREX", "importing", now.Add(-time.Hour))
 	insert("DONEEX", "completed", now.Add(-time.Hour))
+	insert("CANCEX", "canceled", now.Add(-time.Hour))
 	insert("EXPDEX", "expired", now.Add(-time.Hour))
 
 	expired, err := s.ListExpiredDropoffs(ctx, now, 100)
@@ -121,8 +122,8 @@ func TestListExpiredDropoffs(t *testing.T) {
 	for i, e := range expired {
 		codes[i] = e.Code
 	}
-	require.ElementsMatch(t, []string{"WAITEX", "FAILEX", "DONEEX"}, codes,
-		"past-TTL waiting/uploaded/failed/completed are swept; never importing/expired")
+	require.ElementsMatch(t, []string{"WAITEX", "FAILEX", "DONEEX", "CANCEX"}, codes,
+		"past-TTL waiting/uploaded/failed/completed/canceled are swept; never importing/expired")
 }
 
 // TestListActiveDropoffs pins the recovery-list set: only non-terminal,
@@ -143,7 +144,8 @@ func TestListActiveDropoffs(t *testing.T) {
 	insert("WAITLV", "waiting_for_upload", now.Add(time.Hour))
 	insert("UPLDLV", "uploaded", now.Add(time.Hour))
 	insert("IMPRLV", "importing", now.Add(time.Hour))
-	insert("FAILLV", "failed", now.Add(time.Hour))     // cancelled/abandoned: excluded
+	insert("FAILLV", "failed", now.Add(time.Hour))     // failed import (shown via its job): excluded
+	insert("CANCLV", "canceled", now.Add(time.Hour))   // cancelled: excluded
 	insert("DONELV", "completed", now.Add(time.Hour))  // terminal: excluded
 	insert("WAITEX", "waiting_for_upload", now.Add(-time.Hour)) // past TTL: excluded
 
@@ -215,11 +217,18 @@ func TestClaimDropoffForImport(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, won)
 
-	// 'completed' and 'expired' are terminal — never startable.
+	// 'completed', 'canceled' and 'expired' are terminal — never startable. A
+	// cancelled session is terminal ON PURPOSE: its presigned PUT URLs can't be
+	// revoked, so re-claiming it would let a re-upload restart a cancelled import.
 	mk("DONEXX", "completed")
 	won, err = s.ClaimDropoffForImport(ctx, "DONEXX")
 	require.NoError(t, err)
 	require.False(t, won)
+
+	mk("CANCLD", "canceled")
+	won, err = s.ClaimDropoffForImport(ctx, "CANCLD")
+	require.NoError(t, err)
+	require.False(t, won, "a cancelled session must never be re-startable")
 
 	mk("EXPIRX", "expired")
 	won, err = s.ClaimDropoffForImport(ctx, "EXPIRX")
@@ -276,15 +285,34 @@ func TestMarkDropoffCancelled(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// A live (importing) session is cancellable.
-	mk("CXLIMP", "importing")
-	won, err := s.MarkDropoffCancelled(ctx, "CXLIMP")
+	// A waiting/uploaded session is cancellable -> the TERMINAL 'canceled' status
+	// (not the retryable 'failed'), with reason 'cancelled'.
+	mk("CXLUP", "uploaded")
+	won, err := s.MarkDropoffCancelled(ctx, "CXLUP")
 	require.NoError(t, err)
 	require.True(t, won)
-	got, err := s.GetDropoffByCode(ctx, "CXLIMP")
+	got, err := s.GetDropoffByCode(ctx, "CXLUP")
 	require.NoError(t, err)
-	require.Equal(t, "failed", got.Status)
+	require.Equal(t, "canceled", got.Status)
 	require.Equal(t, "cancelled", got.Error)
+
+	// A failed (post-failed-import) session is cancellable too, to clean up its
+	// kept-for-retry dump.
+	mk("CXLFAIL", "failed")
+	won, err = s.MarkDropoffCancelled(ctx, "CXLFAIL")
+	require.NoError(t, err)
+	require.True(t, won)
+
+	// An actively-importing session must NOT be cancellable at the store level:
+	// cancelling mid-import could delete the recovery dump out from under a live
+	// restore (e.g. an overwrite that already dropped the original).
+	mk("CXLIMP", "importing")
+	won, err = s.MarkDropoffCancelled(ctx, "CXLIMP")
+	require.NoError(t, err)
+	require.False(t, won, "importing must not be cancellable")
+	got, err = s.GetDropoffByCode(ctx, "CXLIMP")
+	require.NoError(t, err)
+	require.Equal(t, "importing", got.Status)
 
 	// A completed session must NOT be relabelled cancelled (a completion that landed
 	// just before the cancel is authoritative).

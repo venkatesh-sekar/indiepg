@@ -60,6 +60,14 @@ const (
 	DropCompleted DropStatus = "completed"
 	// DropFailed is the terminal failure state.
 	DropFailed DropStatus = "failed"
+	// DropCanceled is the terminal state for an operator-cancelled session. It is
+	// DISTINCT from DropFailed: a failed session is retryable (its dump is kept in
+	// S3 and ClaimDropoffForImport will re-claim it), but a cancelled session must
+	// NEVER be re-startable — its presigned PUT URLs cannot be revoked once minted,
+	// so a cancel that merely recorded 'failed' could be re-uploaded and restarted
+	// via the API. 'canceled' is excluded from start/import claims yet still eligible
+	// for expiry/object cleanup.
+	DropCanceled DropStatus = "canceled"
 	// DropExpired is the terminal state for a session swept past its TTL.
 	DropExpired DropStatus = "expired"
 )
@@ -74,6 +82,15 @@ func DropDumpKey(code string) string {
 // pg-migrations/dropoff/<code>/meta.json. Its presence == upload complete.
 func DropMetaKey(code string) string {
 	return DropPrefix + "/" + code + "/meta.json"
+}
+
+// DropProbeKey returns the S3 key the mint-time reachability probe writes,
+// stats, reads and deletes to confirm the panel can perform the FULL object
+// lifecycle it will need (not just the source's PUT) before handing out a command:
+// pg-migrations/dropoff/<code>/.probe. It is a disposable object, deleted by the
+// probe itself; using a dedicated key keeps it distinct from the real dump/meta.
+func DropProbeKey(code string) string {
+	return DropPrefix + "/" + code + "/.probe"
 }
 
 // DropTransport is the S3 capability surface the drop-off mode needs. It is a
@@ -288,6 +305,15 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 
 	// --- restoring -------------------------------------------------------
 	o.stage(ctx, rec, StatusImporting, PhaseRestoring)
+	// Re-affirm the overwrite-safety gate immediately before preparing/restoring.
+	// The first check ran during validation, BEFORE the (potentially multi-hour)
+	// download — during which the target could have become non-empty. Without an
+	// authorized overwrite we must refuse to write it now, exactly as the import
+	// began: re-run the same gate so a target that filled up mid-download is never
+	// silently clobbered.
+	if err := o.validateTargetOverwrite(ctx, job); err != nil {
+		return o.fail(ctx, rec, err)
+	}
 	createdTarget, err := o.prepareTarget(ctx, job)
 	if err != nil {
 		return o.fail(ctx, rec, err)
@@ -335,29 +361,48 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 	_ = rec.Progress(ctx, 1, 1, st.Size())
 
 	// --- verifying -------------------------------------------------------
+	// On a verification failure, drop the target ONLY when THIS import created it
+	// (createdTarget): a database we created holds nothing but this restore's output,
+	// so leaving it non-empty would make the NEXT non-overwrite retry fail its own
+	// emptiness gate forever (the dump can't be re-pushed from the unreachable
+	// source). This mirrors the restore-failure cleanup above. A PRE-EXISTING target
+	// is never dropped — the operator declined a destructive overwrite.
+	verifyFail := func(cause error) error {
+		if createdTarget {
+			if derr := o.engine.DropDatabase(ctx, job.Target, job.TargetDatabase); derr != nil {
+				o.log.Warn("could not drop drop-off target created by this job after a verification failure; a retry may need a manual drop",
+					"database", job.TargetDatabase, "code", spec.Code, "error", derr)
+			}
+		}
+		return o.fail(ctx, rec, cause)
+	}
+
 	o.stage(ctx, rec, StatusImporting, PhaseVerifying)
 	srcCounts := meta.SourceRowCounts()
 	tgtCounts, err := o.engine.RowCounts(ctx, job.Target, job.TargetDatabase)
 	if err != nil {
-		return o.fail(ctx, rec, err)
+		return verifyFail(err)
 	}
 	if diffs := CompareRowCounts(srcCounts, tgtCounts); len(diffs) > 0 {
-		return o.fail(ctx, rec, rowMismatchError(diffs))
+		return verifyFail(rowMismatchError(diffs))
 	}
 
-	// --- success: remove the full DB at rest, then record completion ----
-	// Best-effort: if a delete fails here (transient S3 error, rotated creds) the
-	// object is NOT orphaned — the expiry sweep also reclaims completed sessions
-	// past their TTL (ListExpiredDropoffs no longer excludes 'completed'), so the
-	// lingering dump is deleted as a backstop and never outlives its TTL.
+	// --- success: record completion FIRST, then reclaim the DB at rest ---
+	// Persist success BEFORE deleting the S3 objects: a transient recorder error
+	// after the objects were already gone would record a FAILURE with no artifact
+	// left for the offered retry. With completion recorded first, a later delete
+	// failure (transient S3 error, rotated creds) merely leaves the object at rest —
+	// NOT orphaned, because the expiry sweep also reclaims completed sessions past
+	// their TTL (ListExpiredDropoffs no longer excludes 'completed') as a backstop,
+	// so the lingering dump is deleted and never outlives its TTL.
+	if err := o.succeed(ctx, rec, srcCounts, tgtCounts); err != nil {
+		return o.fail(ctx, rec, err)
+	}
 	if derr := tr.DeleteObject(ctx, spec.DumpKey); derr != nil {
 		o.log.Warn("could not delete drop-off dump after import; the expiry sweep will reclaim it", "code", spec.Code, "error", derr)
 	}
 	if derr := tr.DeleteObject(ctx, spec.MetaKey); derr != nil {
 		o.log.Warn("could not delete drop-off metadata after import; the expiry sweep will reclaim it", "code", spec.Code, "error", derr)
-	}
-	if err := o.succeed(ctx, rec, srcCounts, tgtCounts); err != nil {
-		return o.fail(ctx, rec, err)
 	}
 	return nil
 }
