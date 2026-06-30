@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/venkatesh-sekar/indiepg/internal/config"
 	"github.com/venkatesh-sekar/indiepg/internal/core"
 	"github.com/venkatesh-sekar/indiepg/internal/migrate"
 	"github.com/venkatesh-sekar/indiepg/internal/store"
@@ -580,6 +582,64 @@ func TestSweepExpiredDropoffsLeavesUnreclaimedOnDeleteFailure(t *testing.T) {
 	require.Equal(t, string(migrate.DropFailed), got.Status,
 		"a delete failure must NOT mark the session expired; it stays eligible for the next sweep")
 	require.Contains(t, got.Error, "row mismatch")
+}
+
+// TestUpdateConfigBlocksS3ChangeWhileUncleanedDropoffExists pins finding #2: an
+// S3-target change must be REFUSED while ANY drop-off session may still own objects
+// in the current bucket — including a 'failed' session whose dump is kept for retry —
+// because re-pointing the panel at a new bucket would orphan that dump and break its
+// retry/cleanup. Only a terminally-'expired' session (objects provably reclaimed)
+// stops blocking the change.
+func TestUpdateConfigBlocksS3ChangeWhileUncleanedDropoffExists(t *testing.T) {
+	srv, _, token := withDrops(t)
+	ctx := context.Background()
+
+	// Persist an initial S3 target so a later bucket change counts as a re-point.
+	cfg := config.Default()
+	cfg.Backup.Endpoint = "s3.example.com"
+	cfg.Backup.Bucket = "old-bucket"
+	cfg.Backup.AccessKey = "AK"
+	cfg.Backup.SecretKey = "SK"
+	require.NoError(t, config.Save(ctx, srv.store, cfg))
+
+	// A 'failed' session retains its dump in the OLD bucket for retry: uncleaned.
+	d := store.DropoffRecord{
+		Code: "FAILUN", DumpKey: migrate.DropDumpKey("FAILUN"), MetaKey: migrate.DropMetaKey("FAILUN"),
+		TargetDatabase: "appdb", Status: string(migrate.DropFailed), Error: "verification failed",
+		ExpiresAt: time.Now().Add(time.Hour).UTC(),
+	}
+	_, err := srv.store.InsertDropoff(ctx, d)
+	require.NoError(t, err)
+
+	changeBucket := func() *httptest.ResponseRecorder {
+		return authedRequest(t, srv, http.MethodPut, "/api/config", token, map[string]any{
+			"backup": map[string]any{"bucket": "new-bucket"},
+		})
+	}
+
+	rec := changeBucket()
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+	var ae apiError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ae))
+	require.Equal(t, core.CodeConflict, ae.Code)
+	require.Contains(t, strings.ToLower(ae.Message), "s3 target")
+
+	// The change must NOT have been applied while it was blocked.
+	saved, err := config.Load(ctx, srv.store)
+	require.NoError(t, err)
+	require.Equal(t, "old-bucket", saved.Backup.Bucket, "a blocked S3 change must not persist")
+
+	// Draining the session to terminal 'expired' (objects reclaimed) lifts the gate.
+	exp, err := srv.store.GetDropoffByCode(ctx, "FAILUN")
+	require.NoError(t, err)
+	exp.Status = string(migrate.DropExpired)
+	require.NoError(t, srv.store.UpdateDropoff(ctx, *exp))
+
+	rec = changeBucket()
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	saved, err = config.Load(ctx, srv.store)
+	require.NoError(t, err)
+	require.Equal(t, "new-bucket", saved.Backup.Bucket, "the change applies once no uncleaned session remains")
 }
 
 // TestGetDropoffExpiredInMemoryNotPersisted verifies the expiry-on-read fix: a

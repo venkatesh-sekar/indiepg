@@ -126,10 +126,11 @@ func TestListExpiredDropoffs(t *testing.T) {
 		"past-TTL waiting/uploaded/failed/completed/canceled are swept; never importing/expired")
 }
 
-// TestListActiveDropoffs pins the recovery-list set: only non-terminal,
-// not-yet-expired sessions (waiting/uploaded/importing) are returned, newest
-// first. A 'failed' (incl. cancelled), 'completed', 'expired' or past-TTL session
-// must never resurface as resumable.
+// TestListActiveDropoffs pins the recovery-list set: the resumable, not-yet-expired
+// sessions (waiting/uploaded/importing/failed) are returned, newest first. A 'failed'
+// session is INCLUDED (finding #5) because its dump lingers in S3 for retry, so after
+// a reload the UI must still offer a Retry/Cancel path. A 'canceled'/'completed'/
+// 'expired' or past-TTL session must never resurface as resumable.
 func TestListActiveDropoffs(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -144,9 +145,10 @@ func TestListActiveDropoffs(t *testing.T) {
 	insert("WAITLV", "waiting_for_upload", now.Add(time.Hour))
 	insert("UPLDLV", "uploaded", now.Add(time.Hour))
 	insert("IMPRLV", "importing", now.Add(time.Hour))
-	insert("FAILLV", "failed", now.Add(time.Hour))     // failed import (shown via its job): excluded
-	insert("CANCLV", "canceled", now.Add(time.Hour))   // cancelled: excluded
-	insert("DONELV", "completed", now.Add(time.Hour))  // terminal: excluded
+	insert("FAILLV", "failed", now.Add(time.Hour))              // failed import: resumable for retry/cancel
+	insert("CANCLV", "canceled", now.Add(time.Hour))            // cancelled: excluded
+	insert("DONELV", "completed", now.Add(time.Hour))           // terminal: excluded
+	insert("FAILEX", "failed", now.Add(-time.Hour))             // failed but past TTL: excluded
 	insert("WAITEX", "waiting_for_upload", now.Add(-time.Hour)) // past TTL: excluded
 
 	active, err := s.ListActiveDropoffs(ctx, now, 100)
@@ -155,10 +157,10 @@ func TestListActiveDropoffs(t *testing.T) {
 	for i, a := range active {
 		codes[i] = a.Code
 	}
-	require.ElementsMatch(t, []string{"WAITLV", "UPLDLV", "IMPRLV"}, codes,
-		"only live non-terminal sessions are resumable")
-	// Newest-first ordering (by id desc): IMPRLV was inserted last.
-	require.Equal(t, "IMPRLV", codes[0], "newest session first")
+	require.ElementsMatch(t, []string{"WAITLV", "UPLDLV", "IMPRLV", "FAILLV"}, codes,
+		"live non-terminal sessions AND unexpired failed (retryable) sessions are resumable")
+	// Newest-first ordering (by id desc): FAILLV was inserted last among the live set.
+	require.Equal(t, "FAILLV", codes[0], "newest session first")
 }
 
 // TestListExpiredDropoffs_subSecondBoundary pins the fixed-width expires_at
@@ -239,6 +241,81 @@ func TestClaimDropoffForImport(t *testing.T) {
 	won, err = s.ClaimDropoffForImport(ctx, "NOPENO")
 	require.NoError(t, err)
 	require.False(t, won)
+}
+
+// TestClaimDropoffForImport_refusesExpired pins finding #4: the claim must require
+// expires_at > now ATOMICALLY, so a row whose TTL has passed can never be claimed for
+// import even if the caller's earlier expiry check raced the expiry sweep. A row
+// expiring within the current whole second (the fixed-width-comparison boundary) is
+// still refused.
+func TestClaimDropoffForImport_refusesExpired(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	mk := func(code, status string, exp time.Time) {
+		d := sampleDropoff(code, exp)
+		d.Status = status
+		_, err := s.InsertDropoff(ctx, d)
+		require.NoError(t, err)
+	}
+
+	// A startable 'uploaded' row that has already expired must NOT be claimable.
+	mk("EXPCLM", "uploaded", time.Now().Add(-time.Hour).UTC())
+	won, err := s.ClaimDropoffForImport(ctx, "EXPCLM")
+	require.NoError(t, err)
+	require.False(t, won, "a past-TTL row must never be claimed for import")
+	got, err := s.GetDropoffByCode(ctx, "EXPCLM")
+	require.NoError(t, err)
+	require.Equal(t, "uploaded", got.Status, "an expired claim attempt must not flip the row to importing")
+
+	// A row expiring within the current whole second (zero fractional digits) must
+	// also be refused once now is past it, matching the fixed-width comparison.
+	exp := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC) // safely in the past
+	mk("BNDCLM", "failed", exp)
+	won, err = s.ClaimDropoffForImport(ctx, "BNDCLM")
+	require.NoError(t, err)
+	require.False(t, won)
+
+	// Control: an unexpired startable row still claims, proving the predicate didn't
+	// over-reject.
+	mk("LIVCLM", "uploaded", time.Now().Add(time.Hour).UTC())
+	won, err = s.ClaimDropoffForImport(ctx, "LIVCLM")
+	require.NoError(t, err)
+	require.True(t, won, "an unexpired row must still be claimable")
+}
+
+// TestCountUncleanedDropoffs pins finding #2's gate: every session that is NOT
+// terminally 'expired' may still own S3 objects in the current bucket and so counts
+// as uncleaned. Only the sweep's 'expired' (objects provably reclaimed) drops out.
+func TestCountUncleanedDropoffs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	exp := time.Now().Add(time.Hour).UTC()
+
+	mk := func(code, status string) {
+		d := sampleDropoff(code, exp)
+		d.Status = status
+		_, err := s.InsertDropoff(ctx, d)
+		require.NoError(t, err)
+	}
+
+	// Empty: nothing to clean.
+	n, err := s.CountUncleanedDropoffs(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+
+	// One of each non-'expired' status owns (or may own) objects -> all count.
+	mk("WAIT01", "waiting_for_upload")
+	mk("UPLD01", "uploaded")
+	mk("IMPR01", "importing")
+	mk("FAIL01", "failed")     // keeps its dump for retry
+	mk("CANC01", "canceled")   // best-effort delete may have failed
+	mk("DONE01", "completed")  // best-effort delete may have failed
+	mk("EXPR01", "expired")    // sweep proved both deletes succeeded -> NOT counted
+
+	n, err = s.CountUncleanedDropoffs(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 6, n, "only terminally-expired sessions are provably cleaned")
 }
 
 func TestFinalizeDropoffFromImporting(t *testing.T) {

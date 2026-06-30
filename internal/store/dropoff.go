@@ -124,11 +124,20 @@ func (s *Store) UpdateDropoff(ctx context.Context, d DropoffRecord) error {
 // moved on. 'canceled' is terminal here ON PURPOSE: the presigned PUT URLs cannot
 // be revoked, so a cancelled session must never be re-claimable for import even if
 // its dump is re-uploaded.
+//
+// The claim ALSO requires expires_at > now ATOMICALLY: the handler checks expiry
+// before calling, but the expiry sweep can reclaim (and delete the dump of) a row
+// concurrently, so without the predicate Start could win the claim on a row whose
+// objects the sweep is about to remove. The cutoff uses the same fixed-width layout
+// as the stored value so the TEXT comparison matches time order (see
+// dropoffExpiresLayout); a past-TTL row therefore never claims.
 func (s *Store) ClaimDropoffForImport(ctx context.Context, code string) (bool, error) {
+	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE dropoff_sessions SET status = 'importing', error = '', updated_at = ?
-		WHERE code = ? AND status IN ('waiting_for_upload','uploaded','failed')`,
-		nowRFC3339(), code)
+		WHERE code = ? AND status IN ('waiting_for_upload','uploaded','failed')
+		  AND expires_at > ?`,
+		now.Format(time.RFC3339Nano), code, now.Format(dropoffExpiresLayout))
 	if err != nil {
 		return false, core.InternalError("claim dropoff for import").Wrap(err)
 	}
@@ -246,17 +255,21 @@ func (s *Store) ListExpiredDropoffs(ctx context.Context, now time.Time, limit in
 	return out, nil
 }
 
-// ListActiveDropoffs returns the non-terminal, not-yet-expired drop-off sessions
-// (waiting_for_upload / uploaded / importing), newest first, so the panel can
-// re-discover a session whose minted code was lost to a browser reload, tab
-// discard or close BEFORE Start/Cancel — the operator returns to a status list and
-// can resume Start/Cancel instead of being stranded until the expiry sweep.
+// ListActiveDropoffs returns the resumable, not-yet-expired drop-off sessions
+// (waiting_for_upload / uploaded / importing / failed), newest first, so the panel
+// can re-discover a session whose minted code was lost to a browser reload, tab
+// discard or close — the operator returns to a status list and can resume
+// Start/Cancel (or, for a failed import, Retry/Cancel) instead of being stranded
+// until the expiry sweep.
 //
 // It returns only the safe, re-servable columns (the presigned URLs and the push
-// command were NEVER stored, only the keys), so this can never re-leak the
-// upload secret. It deliberately EXCLUDES the terminal states 'failed', 'canceled',
-// 'completed' and 'expired': a failed import is surfaced via its own migration job,
-// and a cancelled/finished/abandoned session must not resurface as resumable.
+// command were NEVER stored, only the keys), so this can never re-leak the upload
+// secret. It INCLUDES unexpired 'failed' sessions: a failed import keeps its dump in
+// S3 for retry (ClaimDropoffForImport re-claims 'failed'), so after a reload the UI
+// must still offer a Retry/Cancel path while the artifact lingers — otherwise the
+// dump sits orphaned until expiry with no way to act on it. It EXCLUDES the truly
+// terminal states 'canceled', 'completed' and 'expired' (their dump is gone or being
+// reclaimed) so a finished/cancelled session never resurfaces as resumable.
 // limit <= 0 defaults to 50.
 func (s *Store) ListActiveDropoffs(ctx context.Context, now time.Time, limit int) ([]DropoffRecord, error) {
 	if limit <= 0 {
@@ -265,7 +278,7 @@ func (s *Store) ListActiveDropoffs(ctx context.Context, now time.Time, limit int
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+dropoffColumns+`
 		FROM dropoff_sessions
-		WHERE status IN ('waiting_for_upload','uploaded','importing') AND expires_at > ?
+		WHERE status IN ('waiting_for_upload','uploaded','importing','failed') AND expires_at > ?
 		ORDER BY id DESC LIMIT ?`,
 		now.UTC().Format(dropoffExpiresLayout), limit)
 	if err != nil {
@@ -304,6 +317,26 @@ func (s *Store) SweepRunningDropoffs(ctx context.Context) (int, error) {
 		return 0, core.InternalError("sweep dropoffs rows affected").Wrap(err)
 	}
 	return int(n), nil
+}
+
+// CountUncleanedDropoffs returns how many drop-off sessions may still own S3 objects
+// in the currently-configured bucket — every session whose status is NOT terminally
+// 'expired'. The expiry sweep flips a row to 'expired' ONLY after both object deletes
+// succeed, so 'expired' is the only status that PROVES the dump+metadata are gone: a
+// 'failed' session keeps its dump for retry, and a 'completed'/'canceled' session may
+// still hold objects whose best-effort cleanup delete failed transiently.
+//
+// It gates an S3-target change (handleUpdateConfig): re-pointing the panel at a new
+// bucket/credentials while any non-'expired' session exists would orphan that
+// session's dump in the OLD bucket and break its import/retry/cleanup, so the change
+// is refused until every session has drained to 'expired'.
+func (s *Store) CountUncleanedDropoffs(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM dropoff_sessions WHERE status <> 'expired'`).Scan(&n); err != nil {
+		return 0, core.InternalError("count uncleaned dropoffs").Wrap(err)
+	}
+	return n, nil
 }
 
 // scanDropoff reads one dropoff_sessions row into a DropoffRecord.

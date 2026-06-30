@@ -89,6 +89,16 @@ type Server struct {
 	dropsMu sync.RWMutex
 	drops   migrate.DropTransport
 
+	// dropLifecycleMu serializes a drop-off MINT (read-transport -> probe -> presign
+	// -> insert, in handleCreateDropoff) against an S3-target CHANGE (the uncleaned-
+	// session check -> config save -> transport swap, in handleUpdateConfig). Without
+	// it, Create could capture the OLD transport, a concurrent config save could
+	// observe no session and swap s.drops, and Create would then insert a session
+	// whose presigned URLs point at the now-inaccessible old bucket. Both paths take
+	// THIS lock, so the check+swap and the read+insert are mutually exclusive. It is
+	// distinct from dropsMu (which only guards the transport pointer read/write).
+	dropLifecycleMu sync.Mutex
+
 	// upgrades persists the version-upgrade feature's durable state (the in-
 	// flight operation + the pending-finalization record), backed by the config
 	// key/value table so it survives a panel restart. upgradeMu is the single

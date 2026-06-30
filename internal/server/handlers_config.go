@@ -244,20 +244,32 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Refuse to re-point the S3 target while a non-terminal drop-off session still
-	// depends on the OLD bucket/credentials. Such a session's uploaded dump and its
-	// presigned PUT URLs live in the old bucket; swapping s.drops to a new target
-	// would orphan that dump and break the import/cleanup it expects. Make the
-	// operator finish or cancel the open session first. (Active = waiting/uploaded/
-	// importing; a one-row probe is enough to know any exist.)
+	// Refuse to re-point the S3 target while ANY drop-off session may still own
+	// objects in the OLD bucket. A non-'expired' session's dump and metadata live in
+	// the old bucket; swapping s.drops to a new target would orphan that dump and
+	// break the import/retry/cleanup it expects. This covers not just the in-flight
+	// states but also 'failed' (its dump is kept for retry) and 'completed'/'canceled'
+	// (whose best-effort cleanup delete may have failed) — only the sweep's terminal
+	// 'expired' proves the objects are gone. Make the operator finish, cancel, or let
+	// the open sessions expire first.
+	//
+	// The whole CHECK -> save -> transport SWAP runs under dropLifecycleMu, which a
+	// concurrent mint also holds for its read-transport -> insert sequence, so a mint
+	// cannot slip a session in between the check and the swap (and so point its URLs at
+	// the old bucket). The lock is taken only on the target-changing path and held for
+	// the rest of the handler — config saves are rare, so briefly serializing mints is
+	// immaterial.
 	if s3TargetChanged(prevBackup, cfg.Backup) {
-		if active, aerr := s.store.ListActiveDropoffs(ctx, nowUTC(), 1); aerr != nil {
-			writeError(w, aerr)
+		s.dropLifecycleMu.Lock()
+		defer s.dropLifecycleMu.Unlock()
+
+		if uncleaned, cerr := s.store.CountUncleanedDropoffs(ctx); cerr != nil {
+			writeError(w, cerr)
 			return
-		} else if len(active) > 0 {
+		} else if uncleaned > 0 {
 			writeError(w, core.ConflictError(
-				"cannot change the S3 target while a drop-off migration is still active").
-				WithHint("finish or cancel the open drop-off session under Migrate first, then change S3"))
+				"cannot change the S3 target while a drop-off migration may still own objects in the current bucket").
+				WithHint("finish, cancel, or let the open drop-off sessions expire under Migrate first, then change S3"))
 			return
 		}
 	}

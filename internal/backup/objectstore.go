@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -33,6 +34,16 @@ const (
 type S3ObjectStore struct {
 	client *minio.Client
 	bucket string
+
+	// versioned caches the bucket's S3 versioning state (nil until first read). On a
+	// VERSIONED bucket a plain RemoveObject only writes a delete marker and leaves
+	// every prior version — including a full database dump — stored indefinitely, so
+	// DeleteObject must purge ALL versions of a key instead. Versioning is a
+	// bucket-level property that does not change under the panel, so the lookup
+	// (GetBucketVersioning) is done once and cached behind verMu; DeleteObject runs on
+	// the cleanup/sweep paths where an extra round trip per call would be wasteful.
+	verMu     sync.Mutex
+	versioned *bool
 }
 
 // compile-time assertion that the adapter satisfies the marker's store surface.
@@ -161,12 +172,125 @@ func (s *S3ObjectStore) PutObjectIfAbsent(ctx context.Context, key string, data 
 	return core.InternalError("backup: conditional-create S3 object %q", key).Wrap(err)
 }
 
-// DeleteObject removes the object. A missing object is not an error.
+// DeleteObject DURABLY removes the object. A missing object is not an error.
+//
+// On a non-versioned bucket this is a plain RemoveObject. On a VERSIONED bucket a
+// plain RemoveObject only writes a delete marker and leaves the object's data
+// versions — a full database dump, in the drop-off case — at rest forever; the sweep
+// would then record the session 'expired' as if the data were reclaimed. So when the
+// bucket has versioning enabled, every version of the key is purged instead (list +
+// RemoveObject per VersionID). If a version cannot be removed (Object Lock /
+// retention), that surfaces as an error so the caller does not falsely believe the
+// data is gone — and the mint-time probe (ProbePutReachable) catches such a bucket up
+// front. If the bucket's versioning state cannot even be read (e.g. a minimal policy
+// without s3:GetBucketVersioning), the common non-versioned case is assumed and a
+// plain delete is used; the probe is the place a truly-versioned bucket is rejected.
 func (s *S3ObjectStore) DeleteObject(ctx context.Context, key string) error {
+	versioned, verr := s.bucketVersioningEnabled(ctx)
+	if verr != nil {
+		versioned = false // could not determine; fall back to a plain delete
+	}
+	if versioned {
+		return s.purgeAllVersions(ctx, key)
+	}
 	if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {
 		return core.InternalError("backup: delete S3 object %q", key).Wrap(err)
 	}
 	return nil
+}
+
+// bucketVersioningEnabled reports whether the bucket has S3 versioning enabled,
+// caching the result (see the S3ObjectStore.versioned doc). A read failure is
+// returned to the caller, which decides how to degrade.
+func (s *S3ObjectStore) bucketVersioningEnabled(ctx context.Context) (bool, error) {
+	s.verMu.Lock()
+	defer s.verMu.Unlock()
+	if s.versioned != nil {
+		return *s.versioned, nil
+	}
+	vc, err := s.client.GetBucketVersioning(ctx, s.bucket)
+	if err != nil {
+		return false, core.InternalError("backup: read S3 bucket versioning for %q", s.bucket).Wrap(err)
+	}
+	v := vc.Enabled()
+	s.versioned = &v
+	return v, nil
+}
+
+// purgeAllVersions removes EVERY version (and delete marker) of key on a versioned
+// bucket, so the object's data is truly erased rather than merely hidden behind a
+// delete marker. It lists the key's versions first (draining the channel fully) and
+// then removes each by VersionID; any removal failure (e.g. an Object-Lock-retained
+// version) is returned so the caller knows the data is NOT gone.
+func (s *S3ObjectStore) purgeAllVersions(ctx context.Context, key string) error {
+	listCtx, cancel := context.WithCancel(ctx)
+	defer cancel() // ensure the minio list goroutine is released even on early return
+
+	var infos []minio.ObjectInfo
+	for info := range s.client.ListObjects(listCtx, s.bucket, minio.ListObjectsOptions{
+		Prefix:       key,
+		WithVersions: true,
+		Recursive:    true,
+	}) {
+		if info.Err != nil {
+			return core.InternalError("backup: list versions of S3 object %q", key).Wrap(info.Err)
+		}
+		infos = append(infos, info)
+	}
+	for _, vid := range selectVersionIDs(key, infos) {
+		// GovernanceBypass lets the panel reclaim its own dump under GOVERNANCE-mode
+		// Object Lock (the only mode that is bypassable); COMPLIANCE-mode retention is
+		// not bypassable and will surface here as an error, failing the cleanup honestly.
+		if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{
+			VersionID:        vid,
+			GovernanceBypass: true,
+		}); err != nil {
+			return core.InternalError("backup: delete version of S3 object %q", key).Wrap(err)
+		}
+	}
+	return nil
+}
+
+// selectVersionIDs returns the VersionID of every listing entry whose Key EXACTLY
+// equals key. A version listing is taken with a Prefix, which also yields keys that
+// merely START with key (e.g. "dump" would match "dump2"), so the exact-key match is
+// required to never touch a neighbouring object; delete markers are INCLUDED (each is
+// itself a removable version) so the key is left with no trace. Extracted as a pure
+// function so this filtering — the part with the subtle bugs — is unit-testable
+// without a live S3.
+func selectVersionIDs(key string, infos []minio.ObjectInfo) []string {
+	var ids []string
+	for _, in := range infos {
+		if in.Key != key {
+			continue
+		}
+		ids = append(ids, in.VersionID)
+	}
+	return ids
+}
+
+// countDataVersions returns how many NON-delete-marker versions of key remain at
+// rest. It is the probe's durability check on a versioned bucket: after a delete,
+// zero means the data is truly gone; non-zero means versioning + Object Lock /
+// retention is keeping a dump alive that the panel could never reclaim.
+func (s *S3ObjectStore) countDataVersions(ctx context.Context, key string) (int, error) {
+	listCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	n := 0
+	for info := range s.client.ListObjects(listCtx, s.bucket, minio.ListObjectsOptions{
+		Prefix:       key,
+		WithVersions: true,
+		Recursive:    true,
+	}) {
+		if info.Err != nil {
+			return 0, info.Err
+		}
+		if info.Key != key || info.IsDeleteMarker {
+			continue
+		}
+		n++
+	}
+	return n, nil
 }
 
 // PresignPut returns a short-lived, single-key, PUT-only presigned URL for key.
@@ -274,12 +398,20 @@ func (s *S3ObjectStore) DownloadToFile(ctx context.Context, key, dest string, ma
 // throwaway (migrate.DropProbeKey); the deferred delete cleans it up on every path.
 func (s *S3ObjectStore) ProbePutReachable(ctx context.Context, key string) error {
 	payload := []byte("indiepg drop-off reachability probe")
+	// Register the cleanup BEFORE the PUT and run it on a DETACHED, re-bounded context:
+	// an ambiguous PUT (a timeout/cancellation where the object may actually have
+	// landed) would otherwise strand an untracked probe object, and reusing the (by
+	// then possibly cancelled) request context for cleanup would make the delete a
+	// silent no-op. The delete is version-aware + idempotent, so cleaning up a
+	// never-created object is harmless.
+	defer func() {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		_ = s.DeleteObject(cctx, key)
+	}()
 	if err := s.PutObject(ctx, key, payload); err != nil {
 		return core.InternalError("backup: S3 is not writable for a presigned PUT to %q (check the bucket, endpoint and credentials)", key).Wrap(err)
 	}
-	// Best-effort cleanup of the probe object no matter which step below fails, so a
-	// probe that aborts after the PUT never strands the throwaway object.
-	defer func() { _ = s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}) }()
 
 	if _, exists, err := s.StatObject(ctx, key); err != nil {
 		return core.InternalError("backup: the configured S3 credentials cannot stat objects (needed to detect the upload and its size); grant s3:GetObject/HeadObject").Wrap(err)
@@ -292,8 +424,26 @@ func (s *S3ObjectStore) ProbePutReachable(ctx context.Context, key string) error
 	// Delete EXPLICITLY (not only via the deferred best-effort cleanup) so a
 	// delete-denied policy fails the mint: without delete the panel could never
 	// reclaim the multi-GiB dump after import, orphaning a full database forever.
+	// On a versioned bucket DeleteObject purges all versions, so an Object-Lock /
+	// retention bucket that cannot be purged also fails here.
 	if err := s.DeleteObject(ctx, key); err != nil {
 		return core.InternalError("backup: the configured S3 credentials cannot delete objects (needed to clean up the dump after import); grant s3:DeleteObject").Wrap(err)
+	}
+
+	// On a VERSIONED bucket, confirm the delete actually ERASED the object rather than
+	// leaving data versions at rest: a full database dump that can never be purged
+	// (versioning + Object Lock / a retention rule) is a real data-retention problem,
+	// so fail the mint NOW instead of silently orphaning it after every import. A
+	// bucket whose versioning state cannot even be read (no s3:GetBucketVersioning) is
+	// assumed non-versioned — the common case — and skips this check.
+	if versioned, verr := s.bucketVersioningEnabled(ctx); verr == nil && versioned {
+		remaining, lerr := s.countDataVersions(ctx, key)
+		if lerr != nil {
+			return core.InternalError("backup: this S3 bucket has versioning enabled but its object versions cannot be listed (needed to purge an imported dump); grant s3:ListBucket / s3:ListBucketVersions, or use a non-versioned bucket for drop-off migrations").Wrap(lerr)
+		}
+		if remaining > 0 {
+			return core.InternalError("backup: this S3 bucket retains object versions after deletion (versioning with Object Lock or a retention rule), so an uploaded database dump would persist indefinitely after cleanup — use a bucket without Object Lock / mandatory retention for drop-off migrations")
+		}
 	}
 	return nil
 }

@@ -127,8 +127,9 @@ func (s *Server) handleListDropoffs(w http.ResponseWriter, r *http.Request) {
 // command. Requires S3. POST /migrate/drops.
 func (s *Server) handleCreateDropoff(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	drops := s.dropTransport()
-	if drops == nil {
+	// Fast pre-check (re-checked under the lifecycle lock below): bail early with the
+	// honest "requires S3" error before doing any request work when S3 is unconfigured.
+	if s.dropTransport() == nil {
 		writeError(w, errDropRequiresS3())
 		return
 	}
@@ -179,6 +180,23 @@ func (s *Server) handleCreateDropoff(w http.ResponseWriter, r *http.Request) {
 			writeError(w, se)
 			return
 		}
+	}
+
+	// Serialize the whole mint (read-transport -> probe -> presign -> insert) against a
+	// config S3-target swap via the shared lifecycle lock: without it, this mint could
+	// capture the OLD transport, a concurrent config save could observe no session and
+	// swap s.drops, and then this mint would insert a session whose presigned URLs
+	// point at the now-inaccessible old bucket. handleUpdateConfig takes the SAME lock
+	// around its uncleaned-session check + transport swap, making the two mutually
+	// exclusive. Re-read the transport UNDER the lock so it is coherent with the insert
+	// (and re-check nil, in case S3 was just unconfigured).
+	s.dropLifecycleMu.Lock()
+	defer s.dropLifecycleMu.Unlock()
+
+	drops := s.dropTransport()
+	if drops == nil {
+		writeError(w, errDropRequiresS3())
+		return
 	}
 
 	code := migrate.GenerateCode()

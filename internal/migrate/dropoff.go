@@ -349,10 +349,7 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 		// confirmation" invariant. Leave it untouched (matching directSingle) and tell
 		// them how to retry. The dump stays in S3 either way.
 		if createdTarget {
-			if derr := o.engine.DropDatabase(ctx, job.Target, job.TargetDatabase); derr != nil {
-				o.log.Warn("could not drop partially-restored drop-off target after a failed restore; a retry may need a manual drop",
-					"database", job.TargetDatabase, "code", spec.Code, "error", derr)
-			}
+			o.dropCreatedTargetForCleanup(ctx, job, spec.Code, "restore failed")
 			return o.fail(ctx, rec, err)
 		}
 		return o.fail(ctx, rec, core.ExecError(
@@ -369,10 +366,7 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 	// is never dropped — the operator declined a destructive overwrite.
 	verifyFail := func(cause error) error {
 		if createdTarget {
-			if derr := o.engine.DropDatabase(ctx, job.Target, job.TargetDatabase); derr != nil {
-				o.log.Warn("could not drop drop-off target created by this job after a verification failure; a retry may need a manual drop",
-					"database", job.TargetDatabase, "code", spec.Code, "error", derr)
-			}
+			o.dropCreatedTargetForCleanup(ctx, job, spec.Code, "verification failed")
 		}
 		return o.fail(ctx, rec, cause)
 	}
@@ -405,4 +399,24 @@ func (o *Orchestrator) ImportFromDrop(ctx context.Context, tr DropTransport, spe
 		o.log.Warn("could not delete drop-off metadata after import; the expiry sweep will reclaim it", "code", spec.Code, "error", derr)
 	}
 	return nil
+}
+
+// dropCleanupTimeout bounds the detached DROP DATABASE cleanup below.
+const dropCleanupTimeout = 30 * time.Second
+
+// dropCreatedTargetForCleanup removes the target database THIS import created, as
+// cleanup after a failed restore or verification. It runs on a context DETACHED from
+// the worker's cancellation/deadline (context.WithoutCancel, then re-bounded): the
+// failure that triggers cleanup is frequently the worker context EXPIRING on a slow
+// or stalled transfer, and the bare (already-cancelled) ctx would make the DROP a
+// guaranteed-failed no-op — leaving a non-empty database that blocks EVERY future
+// non-overwrite retry (the dump cannot be re-pushed from the unreachable source).
+// Best-effort + idempotent: a drop failure only logs and a retry can drop manually.
+func (o *Orchestrator) dropCreatedTargetForCleanup(ctx context.Context, job Job, code, reason string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dropCleanupTimeout)
+	defer cancel()
+	if derr := o.engine.DropDatabase(ctx, job.Target, job.TargetDatabase); derr != nil {
+		o.log.Warn("could not drop drop-off target created by this job; a retry may need a manual drop",
+			"database", job.TargetDatabase, "code", code, "reason", reason, "error", derr)
+	}
 }
