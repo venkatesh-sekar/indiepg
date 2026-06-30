@@ -172,8 +172,9 @@ func (m *Manager) Provision(ctx context.Context, profile WorkloadProfile) (core.
 	}
 	steps = append(steps, repoSteps...)
 
-	// 2. Install the VERSIONED packages (postgresql-<major>, -contrib, pgbackrest)
-	// rather than the generic `postgresql` metapackage.
+	// 2. Install the VERSIONED packages (postgresql-<major>, which bundles the
+	// contrib modules, plus pgbackrest) rather than the generic `postgresql`
+	// metapackage.
 	pkgSteps, err := m.installVersionedPackages(ctx, major)
 	if err != nil {
 		return core.Result{}, err

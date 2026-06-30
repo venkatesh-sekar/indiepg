@@ -224,7 +224,10 @@ func (m *Manager) MajorUpgradePreflight(ctx context.Context, fromMajor, toMajor 
 		out.Checks = append(out.Checks, fail("target_binaries", "Target version installed",
 			"apt-get update failed while preparing the target packages", err.Error()))
 	}
-	corePkgs := []string{fmt.Sprintf("postgresql-%d", toMajor), fmt.Sprintf("postgresql-%d-contrib", toMajor)}
+	// contrib modules ship bundled inside postgresql-<major>; there is no
+	// installable postgresql-<major>-contrib on Debian/PGDG (requesting it makes
+	// apt-get abort), so the server package alone lays down server + contrib.
+	corePkgs := []string{fmt.Sprintf("postgresql-%d", toMajor)}
 	_, coreErr := m.runner.Run(ctx, exec.RunSpec{
 		Name: "apt-get", Args: append([]string{"install", "-y"}, corePkgs...),
 		Env: []string{"DEBIAN_FRONTEND=noninteractive"}, Timeout: commandTimeout,
@@ -260,7 +263,7 @@ func (m *Manager) MajorUpgradePreflight(ctx context.Context, fromMajor, toMajor 
 			msg += " (package install failed: " + coreErr.Error() + ")"
 		}
 		out.Checks = append(out.Checks, fail("target_binaries", "Target version installed", msg,
-			fmt.Sprintf("ensure %s and -contrib install from PGDG for this OS release", corePkgs[0])))
+			fmt.Sprintf("ensure %s installs from PGDG for this OS release", corePkgs[0])))
 	}
 
 	// Check: disk headroom on the PGDATA filesystem (copy + 20%).
@@ -362,8 +365,10 @@ func (m *Manager) MajorUpgradePreflight(ctx context.Context, fromMajor, toMajor 
 // requiredExtensionPackage resolves the Debian/Ubuntu package that ships an
 // extension's files for the target major. Catalog entries with a versioned
 // template (postgresql-%d-…) return their concrete name and templated=true;
-// contrib-family entries resolve to postgresql-<major>-contrib (installed with
-// the server) and templated=false. An unknown extension returns ("", false).
+// contrib-family entries resolve to the bundled server package
+// postgresql-<major> (contrib ships inside it — there is no installable
+// postgresql-<major>-contrib) and templated=false, so the caller does not
+// demand a non-existent package. An unknown extension returns ("", false).
 func requiredExtensionPackage(extName string, major int) (pkg string, templated bool) {
 	e, ok := LookupCatalog(extName)
 	if !ok {
@@ -372,7 +377,7 @@ func requiredExtensionPackage(extName string, major int) (pkg string, templated 
 	if strings.Contains(e.PackageTemplate, "%d") {
 		return e.PackageName(major), true
 	}
-	return fmt.Sprintf("postgresql-%d-contrib", major), false
+	return fmt.Sprintf("postgresql-%d", major), false
 }
 
 // scalarCount runs a SELECT count(*) style query via the peer-auth superuser psql

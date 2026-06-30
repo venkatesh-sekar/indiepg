@@ -209,7 +209,10 @@ func (m *Manager) MinorUpgrade(ctx context.Context) (core.Result, error) {
 	}
 	steps := make([]string, 0, 3)
 
-	pkgs := []string{fmt.Sprintf("postgresql-%d", major), fmt.Sprintf("postgresql-%d-contrib", major)}
+	// contrib modules ship bundled inside postgresql-<major>; there is no
+	// installable postgresql-<major>-contrib on Debian/PGDG (requesting it makes
+	// apt-get abort), so upgrading the server package upgrades contrib too.
+	pkgs := []string{fmt.Sprintf("postgresql-%d", major)}
 	if _, err := m.runner.Run(ctx, exec.RunSpec{
 		Name: "apt-get", Args: []string{"update"},
 		Env: []string{"DEBIAN_FRONTEND=noninteractive"}, Timeout: commandTimeout,
