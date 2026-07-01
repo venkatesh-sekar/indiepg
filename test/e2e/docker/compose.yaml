@@ -1,0 +1,93 @@
+# indiepg e2e compose stack — one project PER SCENARIO (the harness passes a
+# unique `-p <project>` so networks/containers/ports never collide and scenarios
+# run in parallel). Driven by the harness (test/e2e/harness), not by hand.
+#
+# The panel runs systemd as PID 1 with the verified-working privileged flags;
+# MinIO is the S3 target, served over HTTPS with a CA the panel image already
+# trusts (pgBackRest's S3 transport is TLS-only). Every image is pinned by digest.
+#
+# Env knobs (the harness sets these; defaults make `docker compose` work by hand):
+#   PANEL_IMAGE  - indiepg-e2e-base (install-from-scratch) or
+#                  indiepg-e2e-preinstalled (everything else). Default: preinstalled.
+#   MINIO_ROOT_USER / MINIO_ROOT_PASSWORD / MINIO_BUCKET - S3 creds + bucket.
+
+services:
+  panel:
+    image: ${PANEL_IMAGE:-indiepg-e2e-preinstalled:latest}
+    # Verified-working systemd-in-docker posture (design §4 / feasibility probe):
+    # privileged + host cgroup namespace + the tmpfs + cgroup bind mount, booting
+    # /sbin/init. apparmor=unconfined is the belt-and-suspenders for privileged
+    # systemd (harmless when AppArmor is inactive).
+    privileged: true
+    cgroup: host
+    command: /sbin/init
+    stop_signal: SIGRTMIN+3
+    stop_grace_period: 10s
+    security_opt:
+      - apparmor=unconfined
+    tmpfs:
+      - /run
+      - /run/lock
+      - /tmp
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    # Publish the panel (it binds 0.0.0.0:8443 inside via the e2e systemd drop-in)
+    # to an EPHEMERAL host port on loopback only. The harness discovers it with
+    # `docker compose port panel 8443`.
+    ports:
+      - "127.0.0.1::8443"
+    networks:
+      default:
+        aliases:
+          - panel
+
+  minio:
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    # HTTPS on :443 (the default S3 port) with the e2e cert, so the panel can reach
+    # it at plain `minio` with no port option and ordinary cert verification.
+    command: server /data --address :443 --certs-dir /certs
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-e2eaccess}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-e2esecretkey}
+    volumes:
+      - ./certs/public.crt:/certs/public.crt:ro
+      - ./certs/private.key:/certs/private.key:ro
+    ports:
+      - "127.0.0.1::443"
+    networks:
+      default:
+        aliases:
+          - minio
+
+  # One-shot bucket creator. It retries until MinIO answers, makes the bucket, and
+  # exits 0. The harness ALSO ensures the bucket via its own S3 client (EnsureBucket),
+  # so a scenario is never blocked on this container's timing — this is the
+  # declarative "bucket exists" step, the harness call is the belt-and-suspenders.
+  minio-init:
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-e2eaccess}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-e2esecretkey}
+      MINIO_BUCKET: ${MINIO_BUCKET:-indiepg-backups}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        for i in $$(seq 1 90); do
+          if mc alias set m "https://minio:443" "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" --insecure >/dev/null 2>&1; then
+            mc mb -p --insecure "m/$$MINIO_BUCKET" || true
+            mc ls --insecure m
+            echo "minio-init: bucket $$MINIO_BUCKET ready"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "minio-init: MinIO never became ready" >&2
+        exit 1
+    networks:
+      - default
+
+networks:
+  default:

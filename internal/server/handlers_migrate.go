@@ -277,7 +277,8 @@ func (s *Server) handleGetMigration(w http.ResponseWriter, r *http.Request) {
 // none). POST /migrate/sessions.
 func (s *Server) handleCreateMigrationSession(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if s.migrate == nil {
+	svc := s.migrateService()
+	if svc == nil {
 		writeError(w, errSSHLessRequiresS3())
 		return
 	}
@@ -317,7 +318,7 @@ func (s *Server) handleCreateMigrationSession(w http.ResponseWriter, r *http.Req
 		}
 	}()
 
-	sess, err := s.migrate.CreateSession(ctx, req.Database, migrate.DefaultTTL)
+	sess, err := svc.CreateSession(ctx, req.Database, migrate.DefaultTTL)
 	if err != nil {
 		s.audit(ctx, "migrate_session_create", req.Database, "failure", "create session failed", core.CodeOf(err))
 		writeError(w, err)
@@ -329,7 +330,7 @@ func (s *Server) handleCreateMigrationSession(w http.ResponseWriter, r *http.Req
 	defer func() {
 		if sessionCreated {
 			// Use a background context so cleanup runs even if the request ctx is done.
-			if cerr := s.migrate.CleanupSession(context.Background(), sess.Code); cerr != nil {
+			if cerr := svc.CleanupSession(context.Background(), sess.Code); cerr != nil {
 				s.log.Warn("could not clean up orphaned migration session", "code", sess.Code, "err", cerr)
 			}
 		}
@@ -358,12 +359,13 @@ func (s *Server) handleCreateMigrationSession(w http.ResponseWriter, r *http.Req
 // Requires S3. GET /migrate/sessions/{code}.
 func (s *Server) handleGetMigrationSession(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if s.migrate == nil {
+	svc := s.migrateService()
+	if svc == nil {
 		writeError(w, errSSHLessRequiresS3())
 		return
 	}
 	code := chi.URLParam(r, "code")
-	sess, err := s.migrate.GetSession(ctx, code)
+	sess, err := svc.GetSession(ctx, code)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -376,7 +378,8 @@ func (s *Server) handleGetMigrationSession(w http.ResponseWriter, r *http.Reques
 // POST /migrate/sessions/{code}/export.
 func (s *Server) handleExportMigrationSession(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if s.migrate == nil {
+	svc := s.migrateService()
+	if svc == nil {
 		writeError(w, errSSHLessRequiresS3())
 		return
 	}
@@ -398,7 +401,7 @@ func (s *Server) handleExportMigrationSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	sess, err := s.migrate.GetSession(ctx, code)
+	sess, err := svc.GetSession(ctx, code)
 	if err != nil {
 		s.audit(ctx, "migrate_session_export", code, "failure", "session not found", core.CodeOf(err))
 		writeError(w, err)
@@ -427,13 +430,14 @@ func (s *Server) handleExportMigrationSession(w http.ResponseWriter, r *http.Req
 // DELETE /migrate/sessions/{code}.
 func (s *Server) handleCancelMigrationSession(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if s.migrate == nil {
+	svc := s.migrateService()
+	if svc == nil {
 		writeError(w, errSSHLessRequiresS3())
 		return
 	}
 	code := chi.URLParam(r, "code")
 
-	if err := s.migrate.CleanupSession(ctx, code); err != nil {
+	if err := svc.CleanupSession(ctx, code); err != nil {
 		s.audit(ctx, "migrate_session_cancel", code, "failure", "cleanup failed", core.CodeOf(err))
 		writeError(w, err)
 		return

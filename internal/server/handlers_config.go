@@ -203,6 +203,9 @@ type backupTargetUpdate struct {
 	AccessKey *string `json:"access_key,omitempty"`
 	SecretKey *string `json:"secret_key,omitempty"`
 	UseSSL    *bool   `json:"use_ssl,omitempty"`
+	// URIStyle is "host" (default) or "path" (MinIO / self-hosted S3). It is not a
+	// secret and round-trips through the API like the other structural locators.
+	URIStyle *string `json:"uri_style,omitempty"`
 	// CipherPass enables repo encryption; write-only, like SecretKey.
 	CipherPass *string `json:"cipher_pass,omitempty"`
 }
@@ -294,6 +297,12 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// mirroring the backup Manager refresh above. The refusal above guarantees no
 	// active session still depends on the previous transport.
 	s.setDropTransport(dropTransportFor(cfg, s.log))
+	// Rebuild the ssh-less session Service against the saved S3 target as well, so
+	// session migration becomes available the moment S3 is configured — without it,
+	// s.migrate stayed nil (built only at startup) and the ssh-less handshake kept
+	// reporting "requires S3" until a restart, even though backups and drop-off had
+	// already picked up the new target.
+	s.setMigrateService(migrateServiceFor(cfg, s.runner, s.log))
 
 	s.audit(ctx, "update_config", "config", "success", "panel configuration updated", "")
 
@@ -351,6 +360,7 @@ func applyConfigUpdate(cfg *config.Config, req updateConfigRequest) {
 		setIf(&cfg.Backup.Prefix, b.Prefix)
 		setIf(&cfg.Backup.AccessKey, b.AccessKey)
 		setIfBool(&cfg.Backup.UseSSL, b.UseSSL)
+		setIf(&cfg.Backup.URIStyle, b.URIStyle)
 		// Write-only secrets: only overwrite when a non-empty value is given, so a
 		// round-tripped (redacted) form never clears the stored value.
 		if b.SecretKey != nil && *b.SecretKey != "" {
@@ -382,7 +392,8 @@ func s3TargetChanged(a, b config.S3Target) bool {
 		a.Bucket != b.Bucket ||
 		a.AccessKey != b.AccessKey ||
 		a.SecretKey != b.SecretKey ||
-		a.UseSSL != b.UseSSL
+		a.UseSSL != b.UseSSL ||
+		a.PathStyle() != b.PathStyle()
 }
 
 func setIf(dst *string, src *string) {

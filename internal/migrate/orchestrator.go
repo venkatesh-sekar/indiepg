@@ -489,8 +489,11 @@ func (o *Orchestrator) ImportFromSession(ctx context.Context, sess *MigrationSes
 			"dump checksum mismatch for session %s (got %s, expected %s)", sess.Code, got, sess.DumpChecksum).
 			WithHint("the uploaded dump is corrupt or incomplete; re-run the export"))
 	}
+	// World-readable (0644): the LOCAL restore runs pg_restore as the "postgres" OS
+	// user, which must read this staged dump. It lives in a 0711, non-listable
+	// per-job dir and is removed when the job ends.
 	dumpPath := filepath.Join(o.workDir, "import.dump")
-	if err := os.WriteFile(dumpPath, data, 0o600); err != nil {
+	if err := os.WriteFile(dumpPath, data, 0o644); err != nil {
 		return o.failSession(ctx, sess, rec, core.InternalError("cannot stage downloaded dump").Wrap(err))
 	}
 	_ = rec.Progress(ctx, 0, 1, int64(len(data)))

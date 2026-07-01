@@ -113,8 +113,11 @@ func TestRequiredExtensionPackage(t *testing.T) {
 	require.Equal(t, "postgresql-17-pgvector", pkg)
 	require.True(t, templated)
 
+	// contrib modules ship bundled inside postgresql-17; there is no installable
+	// postgresql-17-contrib, so a contrib-family extension resolves to the server
+	// package (and templated=false means the caller skips a redundant install).
 	pkg, templated = requiredExtensionPackage("pg_stat_statements", 17)
-	require.Equal(t, "postgresql-17-contrib", pkg)
+	require.Equal(t, "postgresql-17", pkg)
 	require.False(t, templated)
 
 	pkg, templated = requiredExtensionPackage("some_unknown_ext", 17)

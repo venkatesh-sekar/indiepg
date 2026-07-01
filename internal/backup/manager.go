@@ -64,6 +64,23 @@ type Manager struct {
 	scratchRoot  string
 	diskFree     func(path string) (uint64, error)
 	resolvePGBin func(dataDir string) (string, error)
+
+	// cluster stops/starts the live managed cluster around a destructive restore.
+	// pgBackRest refuses to restore over a running cluster (ERROR [038]), so
+	// Restore stops it first and starts it after (PostgreSQL then replays WAL to
+	// the recovery target and promotes). It is nil only for local-only uses (and
+	// in unit tests that exercise Restore without a cluster), where Restore keeps
+	// its legacy behaviour of running the restore directly.
+	cluster ClusterController
+}
+
+// ClusterController stops and starts the live managed Postgres cluster around a
+// destructive restore. It is satisfied structurally by *pg.Manager
+// (StopCluster/StartCluster), wired in by the server so the backup package does
+// not import internal/pg.
+type ClusterController interface {
+	StopCluster(ctx context.Context) error
+	StartCluster(ctx context.Context) error
 }
 
 // config returns the current configuration snapshot under the read lock.
@@ -110,6 +127,11 @@ type Options struct {
 	// throwaway scratch cluster. Empty uses the OS temp dir. Point it at a volume
 	// with headroom; the deep test never writes anywhere else and always cleans up.
 	ScratchRoot string
+	// Cluster stops/starts the live managed cluster around a destructive restore.
+	// Required for a real restore (pgBackRest refuses to restore over a running
+	// cluster); nil is allowed for local-only/test use, where Restore runs the
+	// pgBackRest restore directly without a stop/start.
+	Cluster ClusterController
 }
 
 // New builds a Manager from Options. A nil logger is replaced with a discard
@@ -137,6 +159,7 @@ func New(opts Options) *Manager {
 		scratchRoot:  scratchRoot,
 		diskFree:     defaultDiskFree,
 		resolvePGBin: defaultResolvePGBin,
+		cluster:      opts.Cluster,
 	}
 }
 
@@ -423,12 +446,64 @@ func (m *Manager) Restore(ctx context.Context, target *RecoveryTarget, delta boo
 		return core.Result{}, serr
 	}
 
-	spec, err := RestoreCmd(stanza, target, delta)
+	// Pin the backup set so the recovery target stays reachable even though the
+	// safety backup we just took is now the NEWEST set (BUG-3). pgBackRest only
+	// auto-selects an older set for --type=time; for xid/lsn/name it picks the
+	// newest (the safety backup), which already contains state PAST the target. So
+	// for any non-zero target, select an appropriate older set and restore --set
+	// from it. A zero target (recover-to-latest) is left untouched: pgBackRest
+	// auto-selects as before. We work on a copy so the caller's target is unchanged.
+	restoreTarget := target
+	if target != nil && !target.IsZero() {
+		sel := *target
+		if label := m.selectRestoreSet(ctx, &sel, safetyLabel); label != "" {
+			sel.Set = label
+		}
+		restoreTarget = &sel
+	}
+
+	spec, err := RestoreCmd(stanza, restoreTarget, delta)
 	if err != nil {
 		return core.Result{}, err
 	}
-	if _, err := m.runner.Run(ctx, spec); err != nil {
-		return core.Result{}, err
+
+	// pgBackRest refuses to restore over a RUNNING cluster (ERROR [038]: unable to
+	// restore while PostgreSQL is running, because postmaster.pid is present). So
+	// stop the managed cluster, run the restore into the now-stopped data dir, then
+	// start it again — on start PostgreSQL replays WAL to the recovery target and
+	// promotes. The safety backup above was taken while the cluster was still up.
+	//
+	// Safety ordering:
+	//   - A failed STOP is a HARD STOP before the restore: the data dir is untouched
+	//     and the cluster is still up, so we surface the error and restore nothing.
+	//   - After the restore (success OR failure) we ALWAYS attempt a START, on a
+	//     context detached from cancellation, so a cancelled request or a failed
+	//     restore can never leave the box with PostgreSQL down.
+	if m.cluster != nil {
+		if serr := m.cluster.StopCluster(ctx); serr != nil {
+			return core.Result{}, core.ExecError(
+				"refusing to restore: could not stop PostgreSQL before the restore; the live cluster was left untouched and is still running").Wrap(serr)
+		}
+	}
+
+	_, runErr := m.runner.Run(ctx, spec)
+
+	if m.cluster != nil {
+		// Detached so a cancelled operation ctx never leaves PostgreSQL down.
+		startCtx := context.WithoutCancel(ctx)
+		if startErr := m.cluster.StartCluster(startCtx); startErr != nil {
+			if runErr != nil {
+				return core.Result{}, core.InternalError(
+					"restore failed AND restarting PostgreSQL afterwards also failed — manual recovery is required").
+					WithDetail("restore_error", runErr.Error()).
+					WithDetail("start_error", startErr.Error())
+			}
+			return core.Result{}, core.ExecError(
+				"restore completed but restarting PostgreSQL (to replay WAL and promote) failed; start the cluster manually").Wrap(startErr)
+		}
+	}
+	if runErr != nil {
+		return core.Result{}, runErr
 	}
 
 	result := core.Ok("restore completed").
@@ -441,6 +516,76 @@ func (m *Manager) Restore(ctx context.Context, target *RecoveryTarget, delta boo
 		result = result.WithData("pitr", true)
 	}
 	return result, nil
+}
+
+// selectRestoreSet enumerates the available backup sets and returns the label
+// the restore should pin via --set so target is reachable (or "" to let
+// pgBackRest auto-select). safetyLabel is the just-taken pre-restore safety
+// backup, which is always the NEWEST set and must never be the base for a target
+// that precedes it (BUG-3).
+//
+// Enumeration is best-effort: a failed `info` must not block the restore. Without
+// an explicit set pgBackRest falls back to its auto-selection — that is the
+// pre-existing behaviour, not a new regression — so we log and proceed.
+func (m *Manager) selectRestoreSet(ctx context.Context, target *RecoveryTarget, safetyLabel string) string {
+	backups, err := m.Info(ctx)
+	if err != nil {
+		m.log.Warn("could not enumerate backups to pin the restore set; pgBackRest will auto-select", "error", err)
+		return ""
+	}
+	return chooseRestoreSet(target, safetyLabel, backups)
+}
+
+// chooseRestoreSet selects the backup-set label to restore from for target.
+// backups must be newest-first (as Info returns). It returns "" for a zero target
+// or when no suitable set exists, leaving pgBackRest to auto-select.
+func chooseRestoreSet(target *RecoveryTarget, safetyLabel string, backups []BackupInfo) string {
+	if target == nil || target.IsZero() {
+		return ""
+	}
+	// TIME target: recovery stops at a known wall-clock, so pick the newest set
+	// whose stop precedes it — exactly the set selection pgBackRest already does
+	// for --type=time, made explicit so it is consistent with the types below.
+	if target.Time != nil {
+		want := *target.Time
+		for _, b := range backups { // newest-first
+			if !b.StopTime.IsZero() && !b.StopTime.After(want) {
+				return b.Label
+			}
+		}
+		return ""
+	}
+	// xid/lsn/name target: there is no wall-clock for the target, so we cannot
+	// compare it to backup stop times directly. But the target was generated BEFORE
+	// this restore, and the pre-restore safety backup (taken moments ago) is the
+	// NEWEST set and already contains state PAST the target — so it can never be the
+	// base. Pin the newest set OLDER than the safety backup; its WAL is replayed
+	// forward to the target.
+	safetyStop := stopTimeOf(safetyLabel, backups)
+	for _, b := range backups { // newest-first
+		if b.Label == safetyLabel {
+			continue
+		}
+		// Defensive: never pick a set at/after the safety backup (it would already be
+		// past the target). The safety backup is normally strictly newest, so this
+		// only guards odd ordering.
+		if !safetyStop.IsZero() && !b.StopTime.IsZero() && !b.StopTime.Before(safetyStop) {
+			continue
+		}
+		return b.Label
+	}
+	return ""
+}
+
+// stopTimeOf returns the stop time of the backup with the given label, or the
+// zero time if no such backup is present.
+func stopTimeOf(label string, backups []BackupInfo) time.Time {
+	for _, b := range backups {
+		if b.Label == label {
+			return b.StopTime
+		}
+	}
+	return time.Time{}
 }
 
 // RestoreTest verifies that the backup repository is intact and recoverable

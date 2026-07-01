@@ -27,6 +27,15 @@ type RecoveryTarget struct {
 	LSN    string     // recover to this log sequence number
 	Name   string     // recover to this named restore point
 	Action string     // promote|pause|shutdown (post-recovery action)
+
+	// Set pins the pgBackRest backup set (label) to restore FROM via --set. It is
+	// NOT a recovery-target selector: it does not count toward the "exactly one"
+	// rule and does not affect IsZero. The Manager fills it in before a restore so
+	// a target that precedes the pre-restore safety backup stays reachable (BUG-3).
+	// pgBackRest auto-selects the NEWEST set for xid/lsn/name targets, which after a
+	// safety backup is the safety backup itself — making any earlier target
+	// unreachable unless an older set is pinned here.
+	Set string
 }
 
 // IsZero reports whether the target selects nothing (recover to latest).
@@ -58,6 +67,9 @@ func (t RecoveryTarget) Validate() error {
 	case "", "promote", "pause", "shutdown":
 	default:
 		return core.ValidationError("invalid recovery action %q (want promote|pause|shutdown)", t.Action)
+	}
+	if t.Set != "" && !isValidBackupLabel(t.Set) {
+		return core.ValidationError("invalid backup set label %q (not a pgBackRest label)", t.Set)
 	}
 	return t.validateContent()
 }
@@ -122,6 +134,24 @@ func isValidLSN(s string) bool {
 	return len(hi) > 0 && len(hi) <= 8 && len(lo) > 0 && len(lo) <= 8 && isHex(hi) && isHex(lo)
 }
 
+// isValidBackupLabel reports whether s looks like a pgBackRest backup-set label
+// (e.g. "20260102-030000F_20260102-040000I"). The label is produced by pgBackRest
+// and parsed from its own `info` output — not operator input — but it is joined
+// into a `--set=<label>` argv token, so this is defense-in-depth: a tight charset
+// [0-9A-Za-z_-], length-capped, that can never reject a genuine label.
+func isValidBackupLabel(s string) bool {
+	if len(s) == 0 || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 // isHex reports whether s is a run of ASCII hex digits.
 func isHex(s string) bool {
 	for i := 0; i < len(s); i++ {
@@ -137,12 +167,21 @@ func isHex(s string) bool {
 // The caller must have validated the target first.
 func (t RecoveryTarget) targetArgs() []string {
 	var args []string
+	// --set pins the backup set to restore FROM. The Manager fills it in (BUG-3)
+	// so a recovery target that precedes the just-taken safety backup stays
+	// reachable; without it pgBackRest auto-selects the NEWEST set for xid/lsn/name.
+	if t.Set != "" {
+		args = append(args, "--set="+t.Set)
+	}
 	switch {
 	case t.Time != nil:
 		args = append(args,
 			"--type=time",
-			// pgBackRest expects "YYYY-MM-DD HH:MM:SS+TZ".
-			"--target="+t.Time.UTC().Format("2006-01-02 15:04:05-07"),
+			// pgBackRest expects "YYYY-MM-DD HH:MM:SS[.ffffff]+TZ". Keep sub-second
+			// precision: ".999999" prints up to 6 fractional digits and drops the
+			// fraction (and the dot) entirely when it is zero, so a whole-second
+			// target still renders exactly "...:SS+TZ".
+			"--target="+t.Time.UTC().Format("2006-01-02 15:04:05.999999-07"),
 		)
 	case t.XID != "":
 		args = append(args, "--type=xid", "--target="+t.XID)

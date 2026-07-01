@@ -75,9 +75,18 @@ type Server struct {
 	// migrateEngine wraps pg_dump/pg_restore/psql for both migration modes; it is
 	// always built (direct pull needs no S3). migrate is the S3-backed session
 	// coordinator and is nil unless an S3 backup target is configured — that nil
-	// is the ONLY honest reason the ssh-less handshake reports "S3 required".
+	// is the ONLY honest reason the ssh-less handshake reports "S3 required". It is
+	// read through migrateService() and swapped through setMigrateService() under
+	// migrateMu so a config save can rebuild it against a freshly-configured S3
+	// target without a restart (mirroring the backup Manager + drop transport), and
+	// without racing the migration handlers/workers that read it.
 	migrateEngine migrate.PgEngine
+	migrateMu     sync.RWMutex
 	migrate       *migrate.Service
+	// runner is the shared OS command runner the feature managers were built with.
+	// It is retained so a config save can rebuild the S3-backed migration Service
+	// (migrateServiceFor needs it) without a restart.
+	runner exec.Runner
 
 	// drops is the S3 transport for the "drop-off link" migration mode (presigned
 	// PUT mint + streaming download + stat + cleanup). Like migrate it is nil
@@ -263,6 +272,7 @@ func (s *Server) ensureBackupConfigured(ctx context.Context, cfg config.Config) 
 		AccessKey:     cfg.Backup.AccessKey,
 		SecretKey:     cfg.Backup.SecretKey,
 		UseSSL:        cfg.Backup.UseSSL,
+		URIStyle:      cfg.Backup.URIStyle,
 		RetentionDays: cfg.RetentionDays,
 		CipherPass:    cfg.Backup.CipherPass,
 		PGDataDir:     dataDir,
@@ -326,6 +336,7 @@ func backupOwnerFor(ctx context.Context, st *store.Store, cfg config.Config, log
 		AccessKey: cfg.Backup.AccessKey,
 		SecretKey: cfg.Backup.SecretKey,
 		UseSSL:    cfg.Backup.UseSSL,
+		PathStyle: cfg.Backup.PathStyle(),
 	})
 	if err != nil {
 		log.Warn("backup ownership guard unavailable: could not build S3 client", "err", err)
@@ -353,6 +364,7 @@ func migrateServiceFor(cfg config.Config, runner exec.Runner, log *core.Logger) 
 		AccessKey: cfg.Backup.AccessKey,
 		SecretKey: cfg.Backup.SecretKey,
 		UseSSL:    cfg.Backup.UseSSL,
+		PathStyle: cfg.Backup.PathStyle(),
 	})
 	if err != nil {
 		log.Warn("ssh-less migration unavailable: could not build S3 client", "err", err)
@@ -380,6 +392,7 @@ func dropTransportFor(cfg config.Config, log *core.Logger) migrate.DropTransport
 		AccessKey: cfg.Backup.AccessKey,
 		SecretKey: cfg.Backup.SecretKey,
 		UseSSL:    cfg.Backup.UseSSL,
+		PathStyle: cfg.Backup.PathStyle(),
 	})
 	if err != nil {
 		log.Warn("drop-off migration unavailable: could not build S3 client", "err", err)
@@ -405,6 +418,25 @@ func (s *Server) setDropTransport(tr migrate.DropTransport) {
 	s.dropsMu.Lock()
 	s.drops = tr
 	s.dropsMu.Unlock()
+}
+
+// migrateService returns the current S3-backed ssh-less migration Service (nil
+// when no S3 target is configured) under a read lock, so a config save can swap
+// it without racing the migration handlers and workers that read it.
+func (s *Server) migrateService() *migrate.Service {
+	s.migrateMu.RLock()
+	defer s.migrateMu.RUnlock()
+	return s.migrate
+}
+
+// setMigrateService swaps the ssh-less migration Service. The server calls it
+// after a config save so a freshly-configured (or removed) S3 target takes effect
+// immediately, without a restart — the same self-heal the backup Manager and the
+// drop transport already do.
+func (s *Server) setMigrateService(svc *migrate.Service) {
+	s.migrateMu.Lock()
+	s.migrate = svc
+	s.migrateMu.Unlock()
 }
 
 // clusterImportTarget is the reserved admission-gate key for a whole-cluster import,
@@ -481,17 +513,22 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 	pgmgr := pg.New(pg.Options{Runner: runner, Config: cfg, Logger: log})
 
 	s := &Server{
-		cfg:   cfg,
-		store: st,
-		log:   log,
-		auth:  authn,
-		pg:    pgmgr,
+		cfg:    cfg,
+		store:  st,
+		log:    log,
+		auth:   authn,
+		pg:     pgmgr,
+		runner: runner,
 		guard: guard.New(guard.Options{ReadOnly: true, AutoLimit: cfg.QueryLimit}),
 		backups: backup.New(backup.Options{
 			Runner: runner, Store: st, Config: cfg, Logger: log,
 			// Wire the single-writer ownership guard when an S3 target is already
 			// configured, so backups are protected immediately on startup.
 			Owner: backupOwnerFor(context.Background(), st, cfg, log),
+			// A destructive restore must stop the live cluster (pgBackRest refuses to
+			// restore over a running one) and start it again afterwards. The pg.Manager
+			// shares this runner and implements StopCluster/StartCluster.
+			Cluster: pgmgr,
 		}),
 		sampler: pg.NewSampler(pgmgr),
 

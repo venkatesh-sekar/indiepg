@@ -4,6 +4,8 @@
 *.test
 *.out
 coverage.txt
+# e2e: the panel binary is staged into the base image build context at build time
+/test/e2e/docker/indiepg
 
 # SQLite panel state
 *.db
