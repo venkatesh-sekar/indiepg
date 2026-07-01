@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -202,6 +203,63 @@ func TestWebhookTransportError(t *testing.T) {
 	err := n.Send(context.Background(), sampleEvent())
 	require.Error(t, err)
 	require.Equal(t, core.CodeExec, core.CodeOf(err))
+}
+
+// requireNoLeak asserts none of secrets appear anywhere the operator can see the
+// error: the message (err.Error()), the Hint, and the Details — because the API
+// layer (server.toAPIError) serializes Message, Hint AND Details onto the wire,
+// while err.Error() renders only Message[+cause]. Checking only err.Error() would
+// miss a leak reintroduced via WithHint/WithDetail, so all three are inspected.
+func requireNoLeak(t *testing.T, err error, secrets ...string) {
+	t.Helper()
+	pe, ok := core.AsError(err)
+	require.True(t, ok, "expected a *core.Error")
+	surface := strings.Join([]string{err.Error(), pe.Hint, fmt.Sprint(pe.Details)}, "\x1f")
+	for _, s := range secrets {
+		require.NotContainsf(t, surface, s,
+			"secret %q must not appear in the error message, hint, or details", s)
+	}
+}
+
+// TestWebhookTransportErrorDoesNotLeakURL proves a transport failure never leaks
+// the webhook URL (which may embed an auth token — Slack/Discord/n8n put the
+// secret in the URL path). The real http.Client returns such failures as a
+// *url.Error whose text embeds the full request URL; this error is logged by the
+// dispatch loop AND returned to the operator's "send test", so the URL/token must
+// never appear in ANY operator-visible field. It must still fail loud with the
+// exec code.
+func TestWebhookTransportErrorDoesNotLeakURL(t *testing.T) {
+	const token = "SUPERSECRETTOKEN"
+	fullURL := "https://hooks.example.com/services/" + token
+	// Mirror exactly what net/http returns from client.Do: a *url.Error carrying
+	// the full request URL alongside the underlying transport reason.
+	fd := &fakeDoer{err: &url.Error{Op: "Post", URL: fullURL, Err: errors.New("connection refused")}}
+	n := &WebhookNotifier{client: fd, url: fullURL}
+
+	err := n.Send(context.Background(), sampleEvent())
+	require.Error(t, err)
+	require.Equal(t, core.CodeExec, core.CodeOf(err))
+	requireNoLeak(t, err, token, fullURL)
+}
+
+// TestWebhookInvalidURLDoesNotLeakURL proves a malformed webhook URL is never
+// echoed back in the error. A control character makes http.NewRequestWithContext
+// fail inside url.Parse, whose error embeds the raw URL; the returned error (which
+// is logged and shown to the operator) must carry neither the URL nor the token
+// in any field.
+func TestWebhookInvalidURLDoesNotLeakURL(t *testing.T) {
+	const token = "SUPERSECRETTOKEN"
+	// A NUL byte is an invalid control character, so url.Parse (via NewRequest)
+	// rejects the URL before any request is sent.
+	badURL := "https://hooks.example.com/services/" + token + "/\x00"
+	fd := &fakeDoer{}
+	n := &WebhookNotifier{client: fd, url: badURL}
+
+	err := n.Send(context.Background(), sampleEvent())
+	require.Error(t, err)
+	require.Equal(t, core.CodeValidation, core.CodeOf(err))
+	requireNoLeak(t, err, token, badURL)
+	require.Equal(t, 0, fd.calls, "a malformed URL must fail before any request is sent")
 }
 
 func TestConstructorsUseDefaultClient(t *testing.T) {

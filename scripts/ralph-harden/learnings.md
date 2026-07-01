@@ -6,6 +6,25 @@ iterations don't rediscover it.
 
 ## Active rules
 
+- Errors that wrap a net/http failure LEAK the request URL: both
+  `http.NewRequestWithContext` (via url.Parse) and `http.Client.Do` return a
+  `*url.Error` whose `.Error()` embeds the full URL. When the URL is secret-bearing
+  (a webhook URL may embed a Slack/Discord/n8n token in its path), never `.Wrap()`
+  that error and never interpolate the URL — return a redaction-safe message + hint
+  instead. Pushover-style URLs that are a fixed public constant with the token in
+  the form body are safe to wrap. (Iter #3)
+- When a test asserts an error does NOT leak a secret, check the FULL
+  operator-visible surface, not just `err.Error()`. `core.Error.Error()` renders
+  only `Code: Message[: cause]`, but `server.toAPIError` (respond.go:122-125)
+  serializes `Message`, `Hint`, AND `Details` onto the API wire — so a leak
+  reintroduced via `WithHint(...)`/`WithDetail(...)` passes an `err.Error()`-only
+  assertion. Assert across message + `.Hint` + `.Details`. (Iter #3, test-skeptic)
+- Before assuming a backlog item is open, GREP for its covering test — much of this
+  tree is already well-tested. Iter #3's audit found auth/session, login-lockout,
+  config atomic-write, config self-heal, migrate verification, and S3 ownership all
+  already covered; writing another test there would be tautology theater. Re-seed
+  (Mode S) when the top items are stale-because-covered, and mark them Done with the
+  covering test names so the next iteration doesn't re-audit them. (Iter #3)
 - SQL-rewriting/classification guards must handle EVERY syntactic form of a
   construct, not just the common keyword. A top-level row bound is `LIMIT` *or*
   `FETCH FIRST/NEXT ... ROWS` (PostgreSQL rejects both in one query), so an
@@ -39,5 +58,10 @@ iterations don't rediscover it.
 
 ## Rejected ideas — do not re-propose
 
-(none yet — when the loop drops a backlog item as not-worth-doing, record it
-here with a one-line reason so it never comes back.)
+- restore preflight "free disk + inodes" (for the LIVE PITR restore) — the live
+  restore replaces the existing data dir in place (pgBackRest --delta / full over
+  the current PGDATA), so it needs no extra headroom beyond what the cluster already
+  occupies. The deep restore-TEST, which writes into a fresh scratch dir, already
+  gates on `deepHeadroomFactor × db size` free (`restore_deep.go`, tested via the
+  injectable `diskFree`). A disk precheck on the live restore adds a false-negative
+  risk to the most data-critical op for no real benefit. (Iter #3)

@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "track": "hardening",
-  "iteration": 2,
-  "commits_total": 3,
+  "iteration": 3,
+  "commits_total": 4,
   "current_band": "1-correctness",
   "last_mode": "A",
-  "last_item": "pg/guard auto-LIMIT — prove the query box's auto-LIMIT does what it claims on real reads (band-1 pg/guard correctness item, auto-LIMIT half)",
-  "last_result": "SHIPPED: fixed a real bug where auto-LIMIT appended ` LIMIT n` after a top-level FETCH FIRST clause (PostgreSQL rejects LIMIT+FETCH together), breaking a valid bounded read with a confusing syntax error. Added hasTopLevelFetch/hasTopLevelRowBound gating both Check and EnsureLimit; broadened HasLimit->Limited to include FETCH. Test-first (tests fail pre-fix), covers subquery-scoping, OFFSET-still-limited, quoted-fetch-column, and lower/mixed-case (test-skeptic gap). code-reviewer + test-skeptic both passed. Gates green; web untouched; Docker N/A so the DB-level+timeout half of the item stays open.",
+  "last_item": "alert webhook notifier secret leak (band-1 security) — the webhook URL, which may embed an auth token, leaked into error text; + Mode-S re-seed of a stale backlog via a 6-agent audit panel",
+  "last_result": "SHIPPED: (*WebhookNotifier).post no longer leaks the webhook URL into error text at either failure site — the NewRequestWithContext path (was `invalid webhook url %q` + wrapped url.Parse error) and the client.Do path (was a wrapped *url.Error whose .Error() carries the full request URL). Both errors are logged (background.go:285) and returned to the send-test API, so a token-bearing webhook URL leaked to logs + API. Now redaction-safe message + hint, no URL, no wrapped cause; codes preserved (CodeValidation/CodeExec); no caller depends on the wrapped cause. Test-first: two tests drive real stdlib failure shapes (a *url.Error from a stubbed Do; a NUL-byte url.Parse rejection), FAIL pre-fix. Per test-skeptic, requireNoLeak asserts the token is absent from message+Hint+Details (respond.go serializes all three), and I verified a URL-in-hint mutation turns the test red. code-reviewer clean. Mode S folded in: a 6-agent audit confirmed the top band-1 items (auth/session, login-lockout, config atomic-write, config self-heal, migrate verification, S3 ownership) are already covered -> moved to Done; ~22 fresh evidence-grounded unit-testable gaps added across bands 1-5. Gates green; web untouched; Docker N/A.",
   "notes": "Never-ending hardening loop. Bias: (A) prove vibe-coded code actually does what it claims with tests that fail if behavior breaks; (P) preflight every risky/destructive/external op and fail loud+actionable BEFORE acting; (D) tighten defaults + self-heal so a bad config can't wedge Postgres. Re-seed the backlog via a parallel audit panel (Mode S) when it runs thin — this loop does NOT self-complete. Shared defaults live in scripts/ralph/DEFAULTS.md; real sm behavior at /primary01/git/server-management/src/sm/. Run go/make outside the sandbox if snap-confine blocks it.",
   "north_star": "An indie hacker runs a rock-solid Postgres entirely from the indiepg UI on best defaults — never loses data, never gets wedged, never confused. Every risky path is preflighted, every failure is loud and actionable, every claim is covered by a test that would fail if the behavior broke."
 }

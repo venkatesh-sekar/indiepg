@@ -200,13 +200,23 @@ func (n *WebhookNotifier) post(ctx context.Context, payload webhookPayload) erro
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, bytes.NewReader(body))
 	if err != nil {
-		return core.ValidationError("invalid webhook url %q", n.url).Wrap(err)
+		// The webhook URL may embed an auth token (Slack/Discord/n8n put the secret
+		// in the URL path/query). This error is logged by the dispatch loop AND
+		// returned to the operator's "send test", so it must never carry the URL —
+		// neither interpolated (%q) nor via the wrapped url.Parse error, whose text
+		// re-embeds the raw URL. Fail loud with a redaction-safe, actionable message.
+		return core.ValidationError("the configured webhook URL is not a valid request target").
+			WithHint("re-check the webhook URL for this channel")
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := n.client.Do(req)
 	if err != nil {
-		return core.ExecError("webhook request failed").Wrap(err)
+		// Do NOT wrap err: a transport failure from http.Client is a *url.Error
+		// whose text embeds the full request URL (token and all). Surface a
+		// redaction-safe message instead of leaking it to the logs / API response.
+		return core.ExecError("webhook request failed").
+			WithHint("the webhook endpoint could not be reached; verify the URL and that the endpoint is up")
 	}
 	defer drainClose(resp.Body)
 

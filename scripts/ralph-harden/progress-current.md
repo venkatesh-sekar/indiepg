@@ -6,6 +6,42 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #3 — 2026-07-01 — A/alert (band 1 security) — SHIPPED
+
+Mode A on the alert webhook notifier (`internal/alert/notifier.go`). Fixed a real
+secret leak: `(*WebhookNotifier).post` embedded the webhook URL in error text at
+two sites — the `NewRequestWithContext` path (`invalid webhook url %q` + wrapped
+`url.Parse` error) and the `client.Do` path (wrapped `*url.Error`, whose text
+carries the full request URL). Both errors are logged by the dispatch loop
+(`background.go:285`) AND returned to the operator's "send test" API, so a webhook
+URL that embeds an auth token (Slack/Discord/n8n put the secret in the path) leaked
+into logs and the API. Now both return a redaction-safe message + actionable hint,
+no URL, no wrapped cause — honoring "secrets never logged" and the security
+tie-break. Codes preserved (CodeValidation vs CodeExec); no caller depends on the
+wrapped cause (grepped — nothing does errors.Is/As on `*url.Error`/`net.Error`).
+
+Test-first: two tests drive the real paths (a real `*url.Error` from a stubbed
+`Do`, a real NUL-byte `url.Parse` rejection) and FAIL pre-fix. Per the test-skeptic,
+strengthened `requireNoLeak` to assert the token is absent from ALL operator-visible
+channels — message, Hint, AND Details — because `toAPIError` (respond.go:122-125)
+serializes Hint+Details to the wire while `err.Error()` renders only the message;
+a URL-in-hint mutation is now caught (verified: injecting the URL into the hint
+turns the test red).
+
+Reviewers: code-reviewer (solid, no changes) + test-skeptic (found the Hint/Details
+channel gap → closed; flagged the non-2xx `body` detail + pushover paths as
+lower-risk follow-ups → backlogged).
+
+Mode S (folded in): the top band-1 items were stale — a 6-agent parallel audit
+(scheduler, store, alert, pgbouncer, install/upgrade, web) confirmed auth/session,
+login-lockout, config atomic-write, config self-heal, migrate verification, and S3
+ownership are ALL already covered by strong tests (moved to Done), and surfaced
+~20 fresh, evidence-grounded, unit-testable gaps (added to backlog).
+
+Gates: fmt ✓ vet ✓ `go test ./...` ✓ static build ✓. Web untouched. Docker N/A.
+
+---
+
 ## Iter #2 — 2026-07-01 — A/pg-guard (band 1 correctness) — SHIPPED
 
 Mode A on the query-box auto-LIMIT path (`internal/pg/guard`). Found & fixed a
