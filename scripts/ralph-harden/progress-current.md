@@ -6,6 +6,44 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #11 — 2026-07-01 — A/web-extensions (band 1 correctness) — SHIPPED (test only; no bug)
+
+Mode A on the Tier-3 ("needs_restart") extension-install gate in
+`web/src/views/Extensions.tsx`. Installing such an extension runs a **server-wide
+`systemctl restart postgresql`** (every database briefly down); the "Install for me"
+button is gated behind a typed-name confirm (`confirmOk = !needsRestart || typed ===
+ext.name`, `disabled={busy || !confirmOk}`), and there was NO `Extensions.test.tsx` —
+the confirm-on-restart invariant was entirely unproven.
+
+Added `web/src/views/Extensions.test.tsx` (2 tests) driving the real `<Extensions />`
+(mocks only `sonner` + the `api.*` loads). Test 1 opens the Tier-3 Add dialog and pins
+the gate: DISABLED on open, and for a DIFFERENT name (`postgis`), a prefix/substring
+(`pg`), a SUPERSTRING (`pg_cron2` — kills `.includes`/`.startsWith` loosening), and a
+whitespace-padded value (` pg_cron ` — locks the exact `===`, no `.trim()` here unlike
+Version); only the exact `pg_cron` ENABLES it, and the restart-triggering
+`installExtension` fires only after, with `confirm: "pg_cron"`. It also asserts the
+server-wide-restart consequence copy is on screen before the operator can act. Test 2
+pins the safe path: a Tier-1 ("ready") add opens NO dialog and posts `confirm: ""` —
+never a restart token. No bug — both paths correct; tests lock the contract.
+
+Mutation-proven over 7 one-line source mutations (each reds the suite, tree clean each
+time): loosen `===` to `.startsWith(name)`/`name.startsWith(typed)`/`!== ""`; drop
+`!confirmOk` from disabled; swap the confirm token to `"" : typed`; invert the
+`ext.tier === "ready"` routing; `needsRestart = false`.
+
+Review: `feature-dev:code-reviewer` clean (faithful real-path test, correct API-arg
+expectations, matches Version/RolesDatabases conventions). The **test-skeptic** flagged
+`confirm: needsRestart ? typed : ""`→`? ext.name : ""` as a passing mutation. I verified
+it and REJECTED it as behavior-preserving: the button only enables when `typed ===
+ext.name`, so the two emit the identical wire value on every reachable path, AND the
+server independently re-checks (`core.RequireConfirmation` → exact `Typed == name`,
+`extensions.go:292`) — so it's a client-side refactor, not a safety break, and no
+UI-driven test can distinguish them without pinning implementation detail. Recorded as
+an active rule. Web gate green: typecheck clean, build OK, **169/169** vitest (+2).
+Backend untouched (no Go changed). e2e N/A (pure RTL).
+
+---
+
 ## Iter #10 — 2026-07-01 — A/web-version (band 1 correctness) — SHIPPED (test only; no bug)
 
 Mode A on the two irreversible confirm gates in `web/src/views/Version.tsx`:

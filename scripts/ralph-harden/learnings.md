@@ -6,6 +6,18 @@ iterations don't rediscover it.
 
 ## Active rules
 
+- A typed-confirm gate makes `send(typed)` and `send(expected)` OBSERVABLY IDENTICAL
+  on every reachable path — don't chase a mutation that swaps one for the other. When
+  the confirm button is `disabled` unless `typed === name`, `install()` can only fire
+  with `typed === name`, so `confirm: typed` vs `confirm: name` emit the same wire
+  value 100% of the time. A test-skeptic will flag `confirm: typed`→`confirm: name` as
+  a "passing mutation," but it's a behavior-preserving REFACTOR from the client's view,
+  not a defect, and no UI-driven test can distinguish them without pinning implementation
+  detail. Verify the real backstop instead: the SERVER re-validates (`core.RequireConfirmation`
+  → `Confirmation.OK()` is exact `Typed == Expected`, `extensions.go:292`), so the wire
+  token is independently enforced server-side — the client gate is dumb-proofing, not the
+  security boundary. Reject the finding after verifying (don't blindly implement); cover
+  the server re-check with a Go test if you want that invariant pinned. (Iter #11, test-skeptic)
 - An equality gate — a DB `CHECK (col = K)` OR a UI typed-confirm (`typed.trim() ===
   expected`) — is under-tested by exact-wrong + exact-right values alone. A one-line
   weakening to a LOOSER predicate (`>= 1`, `id*id=1`, `.includes`/`.startsWith`,
