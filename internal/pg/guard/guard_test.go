@@ -327,6 +327,70 @@ func TestCheckAutoLimitOnlyReads(t *testing.T) {
 	require.Equal(t, "DELETE FROM t", out)
 }
 
+// A top-level SQL-standard FETCH FIRST/NEXT ... ROWS clause already bounds the
+// row count, so auto-LIMIT must NOT append a second bound. LIMIT and FETCH
+// cannot both appear in one PostgreSQL query, so appending " LIMIT n" after a
+// FETCH clause turns a valid read into a syntax error — a valid, bounded query
+// the operator submitted would fail with a confusing error it never wrote.
+// A FETCH-bounded read must therefore run verbatim and report as bounded.
+func TestCheckAutoLimit_FetchClauseIsAlreadyBounded(t *testing.T) {
+	g := New(Options{ReadOnly: true, AutoLimit: 1000})
+	tests := []struct {
+		name    string
+		sql     string
+		wantSQL string
+	}{
+		{"fetch first rows only", "SELECT * FROM t FETCH FIRST 10 ROWS ONLY", "SELECT * FROM t FETCH FIRST 10 ROWS ONLY"},
+		{"fetch next row only", "SELECT * FROM t FETCH NEXT 5 ROWS ONLY", "SELECT * FROM t FETCH NEXT 5 ROWS ONLY"},
+		{"fetch first single row", "SELECT * FROM t FETCH FIRST ROW ONLY", "SELECT * FROM t FETCH FIRST ROW ONLY"},
+		{"offset then fetch", "SELECT * FROM t OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY", "SELECT * FROM t OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY"},
+		{"trailing semicolon trimmed, not limited", "SELECT * FROM t FETCH FIRST 10 ROWS ONLY;", "SELECT * FROM t FETCH FIRST 10 ROWS ONLY"},
+		// Casing: operators type SQL in any case. Detection must be case-insensitive
+		// (it is: t.isWord uses EqualFold), so lower/mixed-case FETCH is equally a
+		// bound. These would catch a regression to a case-sensitive comparison.
+		{"lowercase fetch", "select * from t fetch first 10 rows only", "select * from t fetch first 10 rows only"},
+		{"mixed-case fetch", "SELECT * FROM t Fetch First 10 Rows Only", "SELECT * FROM t Fetch First 10 Rows Only"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, cls, err := g.Check(tc.sql)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantSQL, out, "a FETCH-bounded read must not get an appended LIMIT")
+			require.True(t, cls.HasLimit, "a FETCH clause bounds the row count, so the result is reported as limited")
+		})
+	}
+}
+
+// A FETCH deep inside a subquery does NOT bound the OUTER result, so a top-level
+// LIMIT must still be injected — mirroring the existing subquery-LIMIT case. And
+// OFFSET alone (no FETCH) does not bound the row count, so it must still be
+// limited (LIMIT after OFFSET is valid PostgreSQL). These lock in that the FETCH
+// guard is scoped to the top level and never swallows OFFSET.
+func TestCheckAutoLimit_SubqueryFetchAndBareOffsetStillLimited(t *testing.T) {
+	g := New(Options{ReadOnly: true, AutoLimit: 1000})
+	tests := []struct {
+		name    string
+		sql     string
+		wantSQL string
+	}{
+		{"subquery fetch does not block top limit", "SELECT * FROM (SELECT 1 FETCH FIRST 1 ROW ONLY) q", "SELECT * FROM (SELECT 1 FETCH FIRST 1 ROW ONLY) q LIMIT 1000"},
+		{"bare offset still limited", "SELECT * FROM t OFFSET 10", "SELECT * FROM t OFFSET 10 LIMIT 1000"},
+		// FETCH is a reserved word, so a column literally named fetch must be
+		// double-quoted; a quoted identifier tokenizes as tokQuoted (not tokWord)
+		// and must NOT be mistaken for a FETCH clause — the query is still unbounded
+		// and must be limited. Guards against over-suppressing a legit "fetch" column.
+		{"quoted fetch identifier still limited", `SELECT "fetch" FROM t`, `SELECT "fetch" FROM t LIMIT 1000`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, cls, err := g.Check(tc.sql)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantSQL, out)
+			require.True(t, cls.HasLimit)
+		})
+	}
+}
+
 func TestEnsureLimit(t *testing.T) {
 	g := New(Options{AutoLimit: 500})
 	tests := []struct {
@@ -341,6 +405,10 @@ func TestEnsureLimit(t *testing.T) {
 		{"non-read unchanged", "DELETE FROM t", "DELETE FROM t"},
 		{"ddl unchanged", "DROP TABLE t", "DROP TABLE t"},
 		{"subquery-limit gets top limit", "SELECT * FROM (SELECT 1 LIMIT 1) q", "SELECT * FROM (SELECT 1 LIMIT 1) q LIMIT 500"},
+		{"top-level fetch left untouched", "SELECT * FROM t FETCH FIRST 10 ROWS ONLY", "SELECT * FROM t FETCH FIRST 10 ROWS ONLY"},
+		{"lowercase fetch untouched", "select 1 fetch first 1 row only", "select 1 fetch first 1 row only"},
+		{"subquery fetch gets top limit", "SELECT * FROM (SELECT 1 FETCH FIRST 1 ROW ONLY) q", "SELECT * FROM (SELECT 1 FETCH FIRST 1 ROW ONLY) q LIMIT 500"},
+		{"bare offset still limited", "SELECT * FROM t OFFSET 10", "SELECT * FROM t OFFSET 10 LIMIT 500"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

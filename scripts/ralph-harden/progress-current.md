@@ -6,6 +6,38 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #2 — 2026-07-01 — A/pg-guard (band 1 correctness) — SHIPPED
+
+Mode A on the query-box auto-LIMIT path (`internal/pg/guard`). Found & fixed a
+real bug: the injection gate keyed only on a top-level `LIMIT` keyword
+(`hasTopLevelLimit`), so a valid read using the SQL-standard `FETCH FIRST ... ROWS
+ONLY` clause got ` LIMIT n` appended after it — and PostgreSQL rejects a query
+carrying both LIMIT and FETCH, so a valid, already-bounded read the operator
+submitted failed with a confusing syntax error it never wrote (violates "never
+gets confused"). Fix: added `hasTopLevelFetch` + `hasTopLevelRowBound = LIMIT ||
+FETCH`, and gate injection (in `Check` via `cls.HasLimit`, and in `EnsureLimit`)
+on the broader bound. `HasLimit`→`Limited` now honestly reports a FETCH-bounded
+result as limited. Corrected `injectLimit`'s stale doc that claimed FETCH handling
+it never did.
+
+Test-first: 3 new/extended tables drive the real `Check`/`EnsureLimit` paths and
+FAIL against the pre-fix code. Depth-scoped (subquery FETCH still gets a top
+LIMIT), OFFSET-without-FETCH still limited, quoted `"fetch"` column still limited
+(FETCH is reserved → bare `fetch` can't be an identifier), and lower/mixed-case
+FETCH covered (per test-skeptic: catches a case-sensitivity regression the
+uppercase-only cases would miss).
+
+Reviewers: code-reviewer (no ≥80 findings; the "identifier named fetch" concern is
+moot — FETCH is reserved, quoted → tokQuoted → ignored; documented + tested) and a
+test-skeptic (confirmed the bug real vs the PG grammar, tests non-tautological;
+surfaced the casing gap, now closed).
+
+Gates: fmt ✓ vet ✓ `go test ./...` ✓ static build ✓. Web untouched. Docker N/A →
+the DB-level read-only-role + statement-timeout half of the pg/guard item stays
+open (needs the integration cluster).
+
+---
+
 ## Iter #1 — 2026-07-01 — P/backup (band 1 PITR) — SHIPPED
 
 Restore now preflights the recovery target *before* any destructive step: a TIME

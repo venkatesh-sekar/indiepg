@@ -18,7 +18,7 @@ over these once they exist.
 - [ ] (1 · A/e2e) backup PITR (future/xid half) — with a live cluster, assert a TIME target in the future and an xid target beyond the latest committed xid are **rejected** (or handled loudly), not silently promoted-to-latest. Needs Docker/e2e — can't be range-checked at unit level (a future TIME target may be valid PITR into live WAL). See Iter #1: the before-earliest-backup half shipped.
 - [ ] (1 · A) auth/session — assert logout invalidates the session **server-side** (a captured cookie is dead after logout), and that session fixation is impossible (new session id on login).
 - [ ] (1 · A) auth — assert login brute-force lockout actually triggers and resets correctly; wrong-password does not leak whether the user exists.
-- [ ] (1 · A) pg/guard — assert the read-only role truly cannot write at the **DB level** (INSERT/UPDATE/DELETE/DDL all rejected), not just hidden in the UI; and the query box enforces auto-LIMIT + statement timeout on real queries.
+- [ ] (1 · A) pg/guard (DB-level + timeout half) — assert the read-only role truly cannot write at the **DB level** (INSERT/UPDATE/DELETE/DDL all rejected), not just hidden in the UI, and that the read pool's statement_timeout actually cancels a long query. Needs the integration cluster (`//go:build integration`, `readonly_integration_test.go`); Docker/socket required. See Iter #2: the auto-LIMIT half shipped.
 - [ ] (1 · A) config — assert atomic config writes preserve ownership/mode (0600 where required) and that the pre-change backup is created before the write.
 - [ ] (1 · A) migrate — assert the direct-pull and S3-handshake paths verify the migrated data (row counts / checksums) and surface a mismatch loudly rather than reporting success.
 
@@ -46,6 +46,15 @@ over these once they exist.
 
 ## Done
 
+- [x] (1 · A) pg/guard auto-LIMIT (query box) — the guard no longer appends
+  ` LIMIT n` to a read that already carries a top-level `FETCH FIRST ... ROWS
+  ONLY` clause (which PostgreSQL rejects alongside LIMIT), so a valid bounded
+  read runs verbatim instead of failing with a confusing syntax error.
+  `hasTopLevelFetch`/`hasTopLevelRowBound` gate both `Check` and `EnsureLimit`;
+  `HasLimit`→`Limited` now reports a FETCH-bounded result as limited.
+  `internal/pg/guard/guard.go` + `guard_test.go` (FETCH first/next/single,
+  offset+fetch, subquery-scoping, bare-OFFSET-still-limited, quoted-`"fetch"`-
+  column-still-limited, lower/mixed-case). Iter #2.
 - [x] (1 · P) backup PITR (before-base half) — restore preflights the recovery
   target and rejects a TIME target earlier than the earliest available backup
   with a clear `CodeValidation` error, BEFORE the destructive safety-backup/

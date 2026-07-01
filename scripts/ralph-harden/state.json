@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "track": "hardening",
-  "iteration": 1,
-  "commits_total": 2,
+  "iteration": 2,
+  "commits_total": 3,
   "current_band": "1-correctness",
-  "last_mode": "P",
-  "last_item": "backup PITR — reject a recovery target before the earliest backup, loud + before any destructive step (band-1 PITR item, delivered as a preflight)",
-  "last_result": "SHIPPED: preflightTargetReachable rejects a TIME target earlier than the earliest backup with CodeValidation before safety-backup/stop/restore; fail-open on uncertainty. 4 new tests drive the real Restore path. Both reviewers passed. Also fixed a pre-existing red fmt gate (3 files, separate commit). Gates green; Docker unavailable so e2e skipped.",
+  "last_mode": "A",
+  "last_item": "pg/guard auto-LIMIT — prove the query box's auto-LIMIT does what it claims on real reads (band-1 pg/guard correctness item, auto-LIMIT half)",
+  "last_result": "SHIPPED: fixed a real bug where auto-LIMIT appended ` LIMIT n` after a top-level FETCH FIRST clause (PostgreSQL rejects LIMIT+FETCH together), breaking a valid bounded read with a confusing syntax error. Added hasTopLevelFetch/hasTopLevelRowBound gating both Check and EnsureLimit; broadened HasLimit->Limited to include FETCH. Test-first (tests fail pre-fix), covers subquery-scoping, OFFSET-still-limited, quoted-fetch-column, and lower/mixed-case (test-skeptic gap). code-reviewer + test-skeptic both passed. Gates green; web untouched; Docker N/A so the DB-level+timeout half of the item stays open.",
   "notes": "Never-ending hardening loop. Bias: (A) prove vibe-coded code actually does what it claims with tests that fail if behavior breaks; (P) preflight every risky/destructive/external op and fail loud+actionable BEFORE acting; (D) tighten defaults + self-heal so a bad config can't wedge Postgres. Re-seed the backlog via a parallel audit panel (Mode S) when it runs thin — this loop does NOT self-complete. Shared defaults live in scripts/ralph/DEFAULTS.md; real sm behavior at /primary01/git/server-management/src/sm/. Run go/make outside the sandbox if snap-confine blocks it.",
   "north_star": "An indie hacker runs a rock-solid Postgres entirely from the indiepg UI on best defaults — never loses data, never gets wedged, never confused. Every risky path is preflighted, every failure is loud and actionable, every claim is covered by a test that would fail if the behavior broke."
 }

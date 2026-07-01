@@ -6,6 +6,13 @@ iterations don't rediscover it.
 
 ## Active rules
 
+- SQL-rewriting/classification guards must handle EVERY syntactic form of a
+  construct, not just the common keyword. A top-level row bound is `LIMIT` *or*
+  `FETCH FIRST/NEXT ... ROWS` (PostgreSQL rejects both in one query), so an
+  auto-LIMIT gate keyed on LIMIT alone breaks a valid FETCH read. When testing
+  such a guard, cover lower/mixed-case and quoted-identifier variants: a
+  case-sensitive or keyword-only match is a plausible one-line regression the
+  uppercase-only test won't catch (the test-skeptic found exactly this). (Iter #2)
 - Run `gofmt -l $(git ls-files '*.go')` FIRST, before picking work. The committed
   tree can carry gofmt drift independent of your change (doc-comment list reflow,
   struct-field alignment under gofmt ≥1.19) that reds the fmt gate. It's a

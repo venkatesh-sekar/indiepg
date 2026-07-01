@@ -73,7 +73,7 @@ func (c Class) IsReadOnly() bool { return c == ClassRead }
 type Classification struct {
 	Class         Class
 	Statement     string // the (trimmed) statement that was analyzed
-	HasLimit      bool   // a top-level LIMIT clause is present
+	HasLimit      bool   // a top-level row-count bound (LIMIT or FETCH FIRST) is present
 	IsDestructive bool   // DROP / TRUNCATE / DELETE-or-UPDATE-without-WHERE / data ALTER
 	Target        string // object the destructive op acts on, for typed-name confirm
 }
@@ -89,7 +89,7 @@ func Classify(sql string) Classification {
 	}
 
 	toks := tokenize(stmt)
-	cls.HasLimit = hasTopLevelLimit(toks)
+	cls.HasLimit = hasTopLevelRowBound(toks)
 
 	lead := firstWords(toks, 3)
 	if len(lead) == 0 {
@@ -358,8 +358,11 @@ func (g *Guard) EnsureLimit(sql string) string {
 	stmt := trimStatement(sql)
 	toks := tokenize(stmt)
 	// Never rewrite a multi-statement string: appending LIMIT would land it on
-	// the trailing statement, producing invalid or surprising SQL.
-	if countStatements(toks) > 1 || !limitInjectable(toks) || hasTopLevelLimit(toks) {
+	// the trailing statement, producing invalid or surprising SQL. Skip a query
+	// that already carries a top-level row bound (LIMIT or FETCH) — appending a
+	// LIMIT after a FETCH clause is a PostgreSQL syntax error (the two cannot
+	// coexist), and a LIMIT beside an existing LIMIT would be redundant.
+	if countStatements(toks) > 1 || !limitInjectable(toks) || hasTopLevelRowBound(toks) {
 		return sql
 	}
 	return injectLimit(stmt, g.opts.AutoLimit)
@@ -508,6 +511,16 @@ func limitInjectable(toks []token) bool {
 	}
 }
 
+// hasTopLevelRowBound reports whether the statement already bounds its row count
+// at parenthesis depth 0, via either a LIMIT clause or the SQL-standard
+// FETCH FIRST/NEXT ... ROWS clause. This — not hasTopLevelLimit alone — is what
+// gates auto-LIMIT injection: injecting is redundant when a LIMIT is present, and
+// actively breaks the query when a FETCH is present (PostgreSQL rejects a query
+// carrying both LIMIT and FETCH), so a valid FETCH-bounded read must run verbatim.
+func hasTopLevelRowBound(toks []token) bool {
+	return hasTopLevelLimit(toks) || hasTopLevelFetch(toks)
+}
+
 // hasTopLevelLimit reports whether a LIMIT clause appears at parenthesis depth 0.
 // Top-level matters: LIMIT inside a subquery does not bound the outer result.
 func hasTopLevelLimit(toks []token) bool {
@@ -519,10 +532,30 @@ func hasTopLevelLimit(toks []token) bool {
 	return false
 }
 
-// injectLimit appends a top-level LIMIT n to a statement known to lack one. The
-// limit is placed before a trailing top-level FETCH if present (Postgres allows
-// FETCH but injectLimit only runs when no LIMIT/FETCH bound exists). It returns
-// the statement with the LIMIT appended.
+// hasTopLevelFetch reports whether a FETCH clause appears at parenthesis depth 0.
+// Within a query expression FETCH only ever appears as the FETCH FIRST/NEXT ...
+// ROWS row-limit clause (a cursor FETCH is a standalone utility statement, never
+// part of a SELECT), so any depth-0 FETCH word is the outer result's bound. A
+// FETCH inside a subquery stays at depth > 0 and correctly does not count.
+//
+// FETCH is a reserved word in PostgreSQL, so a column/table/alias literally named
+// "fetch" must be double-quoted — which tokenizes as tokQuoted, not tokWord, and
+// isWord ignores it. So an unquoted depth-0 FETCH word is unambiguously the clause
+// and this never mis-suppresses the LIMIT for a legitimately-named identifier.
+func hasTopLevelFetch(toks []token) bool {
+	for _, t := range toks {
+		if t.depth == 0 && t.isWord("FETCH") {
+			return true
+		}
+	}
+	return false
+}
+
+// injectLimit appends a top-level LIMIT n to a statement. Callers must only call
+// it for a statement with no existing top-level row bound (they gate on
+// hasTopLevelRowBound), so the appended LIMIT can neither duplicate an existing
+// LIMIT nor collide with a FETCH clause (which PostgreSQL forbids alongside
+// LIMIT). It returns the statement with the LIMIT appended.
 func injectLimit(stmt string, n int) string {
 	s := strings.TrimRight(stmt, " \t\n\r\f\v")
 	return s + " LIMIT " + strconv.Itoa(n)
