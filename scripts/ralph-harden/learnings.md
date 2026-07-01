@@ -6,6 +6,18 @@ iterations don't rediscover it.
 
 ## Active rules
 
+- For a mutation target that is DUPLICATED across sibling handlers (Iter #13 saw it in two pg
+  helpers; Iter #15 in `handlers_alerts.go` — the alert-kind validation line appears at :250 SAVE
+  and :300 TEST, the channel-selection line at :263 SAVE and :313 TEST), the cleanest aim is a
+  LINE-RANGE-restricted substitution over the target function: `perl -pi -e 's/OLD/NEW/ if
+  <start>..<end>' file` (flip-flop on `$.`). NOTE: `$.` only works WITHOUT `-0` — the `-0pi` slurp
+  mode used elsewhere makes `$.` meaningless, so a range guard silently no-ops. A non-`/g`,
+  non-ranged `perl -0pi` hits only the FIRST copy (the wrong handler) → false green that looks like
+  a weak test but is a mis-aimed mutation. ALSO: after any mutate→`git checkout` loop, re-run `git
+  status` AND a clean `go test ./... -count=1` before trusting green — a single missed/failed
+  `git checkout` leaves the mutation in the tree, reds the WHOLE suite on the next run, and reads
+  like a flaky test (Iter #15: a stray `if true` did exactly this; `go test` exit 1 + `git diff`
+  found it). Trust the exit code, not `tail -3`. (Iter #15, recurrence of Iter #13)
 - A gate that branches on BOTH an error and a boolean — `v, err := probe(); if err != nil
   { return err }; if !v { return <other error> }` (e.g. pgbouncer `Enable`'s final `IsRunning`
   gate, enable.go:208-216) — needs a fixture for EACH arm. A single test that drives the probe to a

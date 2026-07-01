@@ -6,6 +6,37 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #15 — 2026-07-01 — A/alert (band 2, prove-it) — SHIPPED (test only; no bug)
+
+Converted the standing Band-2 backlog item on `handleTestAlertChannel`
+(`internal/server/handlers_alerts.go:291-342`) — flagged in Iter #12 as a suspected but
+"unreachable" nil-deref — into a Mode-A test that **pins the two guards** which keep it
+unreachable, so a future refactor can't reintroduce it. The switch at :327 has no `default`,
+so if it ever saw a `ch.Kind` outside {pushover,webhook} `notifier` would stay nil and
+`SendTest` would panic. Two guards prevent that: (1) `req.Kind` validated to pushover|webhook
+before anything (:300), and (2) `ch` selected only when `channels[i].Kind == req.Kind` (:313).
+
+New `internal/server/handlers_alerts_test.go` (3 tests, all driving the REAL router
+`POST /api/alerts/channels/test` via `authedRequest`, real store load path):
+- `..._RejectsUnknownKind` — `kind:"slack"` → 400/`CodeValidation`, message names both kinds,
+  BEFORE any channel load. Pins guard (1): `req.Kind ∈ {pushover,webhook}`.
+- `..._RequiresChannelOfExactRequestedKind` — only a webhook configured, request pushover →
+  404/`CodeNotFound`, no dispatch. Pins guard (2): the ONLY NotFound path is `ch==nil`, so any
+  mis-selection (`==`→`!=`, or select-first) picks a real channel and reds as 500 ExecError
+  (unreachable webhook URL) or 400 — never 404. Skeptic verified 3 ways incl. the compound
+  `switch req.Kind` worst case.
+- `..._DispatchesToMatchingChannel` — matching webhook → real httptest server, hit exactly once
+  with `event:"test"` (atomic counter + payload assert, non-tautological).
+
+No bug — both guards correct; tests lock the contract. **Mutation-proven over 4 mutations**
+(drop validation → RED via 400↔404; `==`→`!=` → RED via ExecError; select-first `if true` → RED;
+message-text change → RED via substring). **Trap hit + fixed:** the validation and selection lines
+are DUPLICATED in the save handler (lines 250/263), so my first non-`/g` perl mutated the WRONG
+copy → false green (exactly the Iter #13 learning); re-aimed with `$.`-restricted `291..342`
+mutations, all red. A stray un-reverted `if true` also briefly failed the full suite — caught,
+reverted, re-verified green. code-reviewer clean; test-skeptic found NO escaping mutation.
+Backend gate green (fmt/vet/`go test ./...` exit 0/static build); web untouched; e2e N/A (unit + Docker unavailable).
+
 ## Iter #14 — 2026-07-01 — A/pgbouncer (band 1, prove-it) — SHIPPED (test only; no bug)
 
 Mode A on the pooler enable flow's **final `IsRunning` gate** (`internal/pgbouncer/enable.go:208-216`)
