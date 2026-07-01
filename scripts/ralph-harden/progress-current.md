@@ -6,6 +6,30 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #5 — 2026-07-01 — A/upgrade (band 1 correctness) — SHIPPED
+
+Mode A on `validateUpgradeTarget` (`internal/server/handlers_pgversion.go:858`),
+the sole guard that stops a destructive same-major / downgrade / unsupported-
+target "major upgrade". It gates BOTH endpoints (preflight :240 and start :324)
+yet had ZERO tests. A major upgrade runs `pg_upgradecluster` over the live
+datadir, so accepting a same-major (16→16), downgrade (17→16), or unsupported
+(16→99) target — or proceeding when the current major couldn't be read
+(current≤0) — is a data-loss-class mistake. No bug found (the guard is correct);
+this iteration locks its contract so a future edit can't silently weaken it.
+
+Added `TestValidateUpgradeTarget`: a table test driving the real pure function —
+accept 16→17 and skip-a-major 15→17; reject downgrade 17→16 and same-major 16→16
+(both `CodeValidation`, msg "newer"), unsupported 16→99 (`CodeValidation`, "not a
+supported"), and unknown/negative current 0→17 and -1→17 (`CodeInternal`,
+"current"). Each rejecting case pins a distinct code+message so no branch can
+borrow another's error. Mutation-proven: flipping `target <= current`→`<`,
+`current <= 0`→`<`, and `!IsSupported(target)`→`false` each reds the exact
+matching subtest (verified, then reverted). code-reviewer clean; test-skeptic
+enumerated every one-line mutation class and found no escaping mutation — the
+same-major case sits exactly on the `<=` boundary that a weaker test would omit.
+Gates green (gofmt/vet/`go test ./...`/CGO-static build); web untouched; e2e not
+needed (pure unit).
+
 ## Iter #4 — 2026-07-01 — A/pgbouncer (band 1 correctness) — SHIPPED
 
 Mode A on `(*Manager).Reload` (`internal/pgbouncer/service.go`). Fixed a real

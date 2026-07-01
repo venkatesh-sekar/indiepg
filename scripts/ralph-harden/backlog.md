@@ -22,7 +22,6 @@ Docker-blocked (need the e2e/integration cluster; can't run in this environment)
 
 Unit-testable (audit-grounded, Iter #3 panel; ranked):
 - [ ] (1 · A) pgbouncer — enable's "verify running before recording success" invariant is only proven for the `enable --now` path; the reload→dead-unit path (enable.go:201-216) has no test. → Test: reload OK + is-active "failed" must return an error and NOT persist `enabled=true`. (Iter #4: partially covered — `TestEnable_ServiceNotRunningAfterStartIsNotRecorded` now drives reload-OK + is-active-"failed" and asserts the error + no persist; the failure is caught in `Reload`'s post-apply verify. Keep open only if a dedicated no-config-change reload→dead path is still wanted.)
-- [ ] (1 · A) install/upgrade — `validateUpgradeTarget` (handlers_pgversion.go:858-870) is the sole guard stopping a destructive same-major/downgrade "upgrade" and has ZERO tests. → Table test: reject 17→16, 16→16, 16→99, current=0; accept 16→17.
 - [ ] (1 · A) pg/hba — `injectHBARules` (hba.go:52-61) treats mere PRESENCE of the marker as "already correct" (returns changed=false), so a hand-edited/widened managed block (e.g. `host all all 0.0.0.0/0 trust` between the markers) is never self-healed by `EnsureSocketAuth`. → Test a marker-present-but-widened block is normalized back to loopback+socket-only (never widens access).
 - [ ] (1 · A) store/auth — `InitAuth` claims it overwrites an existing row and its ON CONFLICT resets `failed_attempts=0`/`locked_until=NULL` (auth.go:42-59), but tests only ever hit the INSERT path — the reset-password UPDATE branch is unproven. → Test: init, set a lockout, `InitAuth` again, assert new hash/secret AND lockout cleared.
 - [ ] (1 · A) store/instance — `SaveInstance` ON CONFLICT deliberately omits `created_at` from its UPDATE set (instance.go:45-50) to preserve birth time, but `TestInstanceRoundTrip` only saves once. → Test a re-save with a new CreatedAt/label leaves `created_at` unchanged while other fields update.
@@ -65,6 +64,18 @@ Unit-testable (audit-grounded, Iter #3 panel; ranked):
 - [ ] (0) if any `make verify` / `make verify-web` gate is red, fix it before anything else.
 
 ## Done
+
+- [x] (1 · A) install/upgrade `validateUpgradeTarget` — the sole guard stopping a
+  destructive same-major/downgrade/unsupported-target "major upgrade" (gates both
+  the preflight :240 and start :324 endpoints) now has a mutation-proven table test.
+  `handlers_pgversion_test.go: TestValidateUpgradeTarget` drives the real pure
+  function: accept 16→17 / 15→17; reject downgrade 17→16 + same-major 16→16
+  (`CodeValidation`, "newer"), unsupported 16→99 (`CodeValidation`, "not a
+  supported"), unknown/negative current 0→17 / -1→17 (`CodeInternal`, "current").
+  Each rejecting case pins a distinct code+message. Flipping `target<=current`→`<`,
+  `current<=0`→`<`, and `!IsSupported(target)`→`false` each reds the matching
+  subtest. No bug (guard was correct); the test locks the contract. reviewers
+  clean; test-skeptic found no escaping mutation. Iter #5.
 
 - [x] (1 · A) pgbouncer Reload verifies the pooler is still running after applying
   config — `(*Manager).Reload` (`internal/pgbouncer/service.go`) no longer returns
