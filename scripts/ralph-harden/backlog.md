@@ -22,7 +22,6 @@ Docker-blocked (need the e2e/integration cluster; can't run in this environment)
 
 Unit-testable (audit-grounded, Iter #3 panel; ranked):
 - [ ] (1 · A) pgbouncer — enable's "verify running before recording success" invariant is only proven for the `enable --now` path; the reload→dead-unit path (enable.go:201-216) has no test. → Test: reload OK + is-active "failed" must return an error and NOT persist `enabled=true`. (Iter #4: partially covered — `TestEnable_ServiceNotRunningAfterStartIsNotRecorded` now drives reload-OK + is-active-"failed" and asserts the error + no persist; the failure is caught in `Reload`'s post-apply verify. Keep open only if a dedicated no-config-change reload→dead path is still wanted.)
-- [ ] (1 · A) store/auth — `InitAuth` claims it overwrites an existing row and its ON CONFLICT resets `failed_attempts=0`/`locked_until=NULL` (auth.go:42-59), but tests only ever hit the INSERT path — the reset-password UPDATE branch is unproven. → Test: init, set a lockout, `InitAuth` again, assert new hash/secret AND lockout cleared.
 - [ ] (1 · A) store/instance — `SaveInstance` ON CONFLICT deliberately omits `created_at` from its UPDATE set (instance.go:45-50) to preserve birth time, but `TestInstanceRoundTrip` only saves once. → Test a re-save with a new CreatedAt/label leaves `created_at` unchanged while other fields update.
 - [ ] (1 · A) store/schema — the single-row `CHECK (id = 1)` on auth/instance (schema.go:15,33) is asserted by no test; all accessors hardcode `WHERE id=1`, so a broken CHECK would let two rows silently diverge. → Test a raw `INSERT ... (id=2)` fails the constraint.
 - [ ] (1 · A) web/Extensions — the Tier-3 "needs_restart" install gate (`confirmOk = !needsRestart || typed === ext.name`, Extensions.tsx:452; disabled at :519) triggers a server-wide `systemctl restart postgresql`, and there is NO Extensions.test.tsx. → RTL test: "Install for me" stays disabled until the exact extension name is typed; a Tier-1 add fires with no dialog.
@@ -62,6 +61,20 @@ Unit-testable (audit-grounded, Iter #3 panel; ranked):
 - [ ] (0) if any `make verify` / `make verify-web` gate is red, fix it before anything else.
 
 ## Done
+
+- [x] (1 · A) store/auth `InitAuth` reset-password branch — `store_test.go:
+  TestInitAuthOverwritesExistingRowAndResetsLockout`. The docstring claims InitAuth
+  "overwrites any existing row (used by install and reset-password)" and its
+  `ON CONFLICT` resets `failed_attempts=0`/`locked_until=NULL`, but `TestAuthRoundTrip`
+  only hit the INSERT (one InitAuth call); the reset UPDATE branch was unproven, and
+  the live caller `SetPassword` routes existing accounts to `SetPasswordHash` so
+  nothing else exercised it. New test drives the branch: re-init on a locked-out
+  account must overwrite the hash, ROTATE the session secret (so old-secret tokens
+  can't be replayed post-reset — the security point), clear the lockout, bump
+  `updated_at`, and update the single row in place. No bug (clause correct); test
+  locks the contract. Mutation-proven over all six SET-clause mutations incl.
+  `DO NOTHING` and the test-skeptic's stale-`updated_at` escape (strict-After added
+  before commit). Iter #7.
 
 - [x] (1 · A) migrate worker pure helpers — `internal/server/migrate_helpers_test.go`
   drives the four operator-facing pure helpers in `migrate_worker.go`:

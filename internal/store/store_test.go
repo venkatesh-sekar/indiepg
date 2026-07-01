@@ -192,6 +192,53 @@ func TestAuthRoundTrip(t *testing.T) {
 	require.Nil(t, rec.LockedUntil)
 }
 
+func TestInitAuthOverwritesExistingRowAndResetsLockout(t *testing.T) {
+	// InitAuth documents that it "overwrites any existing row (used by install and
+	// reset-password)" and its ON CONFLICT resets failed_attempts=0 / locked_until
+	// =NULL. TestAuthRoundTrip only exercises the first-time INSERT; this drives the
+	// reset path: a second InitAuth on a locked-out account must (1) overwrite the
+	// hash so the old password stops working, (2) ROTATE the session secret so any
+	// token issued under the old secret can no longer be replayed after a reset —
+	// the security point of a reset-password — and (3) clear the lockout so the
+	// operator isn't locked out of the account they just reset. And it must update
+	// the single row in place, never insert a second.
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	require.NoError(t, s.InitAuth(ctx, "argon2-hash-v1", []byte("secret-v1")))
+
+	// Lock the account, as a burst of failed logins would.
+	until := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	require.NoError(t, s.SetLockout(ctx, 5, &until))
+	rec, err := s.GetAuth(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 5, rec.FailedAttempts)
+	require.NotNil(t, rec.LockedUntil)
+	before := rec.UpdatedAt // the timestamp SetLockout wrote
+
+	// Reset-password: re-init with a new hash AND a new session secret.
+	require.NoError(t, s.InitAuth(ctx, "argon2-hash-v2-reset", []byte("secret-v2-rotated")))
+
+	rec, err = s.GetAuth(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "argon2-hash-v2-reset", rec.PasswordHash, "reset must overwrite the password hash")
+	require.Equal(t, []byte("secret-v2-rotated"), rec.SessionSecret,
+		"reset must rotate the session secret so tokens issued under the old secret cannot be replayed")
+	require.Equal(t, 0, rec.FailedAttempts, "reset must clear the failed-attempt counter")
+	require.Nil(t, rec.LockedUntil, "reset must clear the lockout deadline")
+	// The reset bumps updated_at to now (excluded.updated_at, not the old row
+	// value) so the audit/"last changed" surface reflects the reset. The full
+	// GetAuth round-trip + assertions above run between the two writes, so the
+	// wall clock has advanced and strict After reliably separates a fresh stamp
+	// from a kept one.
+	require.True(t, rec.UpdatedAt.After(before), "reset must bump updated_at to now, not keep the old timestamp")
+
+	// Overwrite in place — the single-row invariant holds, no second row appears.
+	var count int
+	require.NoError(t, s.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM auth").Scan(&count))
+	require.Equal(t, 1, count, "re-init must overwrite the existing row, not insert a second")
+}
+
 func TestRotateSessionSecret(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

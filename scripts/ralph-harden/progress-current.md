@@ -6,6 +6,34 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #7 — 2026-07-01 — A/store (band 1 correctness) — SHIPPED (test only; no bug)
+
+Mode A on `(*Store).InitAuth` (`internal/store/auth.go:44`). Its docstring claims
+it "overwrites any existing row (used by install and reset-password)" and its
+`ON CONFLICT(id) DO UPDATE` resets `failed_attempts=0`/`locked_until=NULL` — but
+the only test (`TestAuthRoundTrip`) calls `InitAuth` once, hitting only the
+INSERT. The reset-password UPDATE branch (and its security-critical session-secret
+rotation) was entirely unproven at the store level. The live caller `SetPassword`
+routes existing accounts to `SetPasswordHash`, so nothing else exercises it either
+— a broken `ON CONFLICT` clause would silently violate the documented contract.
+
+Added `TestInitAuthOverwritesExistingRowAndResetsLockout` to `store_test.go`:
+init → lock the account (`SetLockout 5, +1h`) → re-init with a new hash+secret →
+assert the reset (1) overwrites the hash, (2) **rotates the session secret** (so
+tokens minted under the old secret can't be replayed after a reset), (3) clears
+`failed_attempts`+`locked_until`, (4) bumps `updated_at`, and (5) updates the
+single row in place (`COUNT(*)=1`, no second row). No bug — the code is correct;
+the test locks the contract.
+
+Mutation-proven: keep-old-hash, drop-secret-rotation, keep-old-failed_attempts,
+keep-old-locked_until, `DO NOTHING`, and `updated_at=auth.updated_at` (keep-stale)
+each red the test; baseline green; `auth.go` restored clean each time.
+code-reviewer clean. test-skeptic found ONE escaping mutation (stale `updated_at`)
+on the first draft → added the strict-`After` assertion (flake-safe: a full
+GetAuth round-trip + asserts run between the two writes) → re-verified caught.
+Gates green (gofmt, vet 0, `go test ./...` 0, static build). web untouched; pure
+unit, no e2e.
+
 ## Iter #6 — 2026-07-01 — A/migrate (band 1 correctness) — SHIPPED (bug fixed)
 
 Mode A on the four pure helpers in `internal/server/migrate_worker.go` that sit
