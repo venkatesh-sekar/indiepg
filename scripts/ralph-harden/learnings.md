@@ -6,6 +6,16 @@ iterations don't rediscover it.
 
 ## Active rules
 
+- When testing a value-pinning constraint (`CHECK (col = K)`), a positive-and-zero
+  probe set is NOT enough — probe NEGATIVE / algebraically-equivalent values too. A
+  one-line weakening like `= 1` → `id * id = 1` or `abs(id) = 1` still rejects 0 and
+  2 but ADMITS -1, so an id∈{0,2}-only test stays green while a second, diverging
+  singleton row becomes insertable. Include the boundary values that satisfy the
+  weakened forms (negatives, squares) so such a mutation reds the test. Also assert
+  the SPECIFIC failure (`ErrorContains "CHECK constraint failed"`), not just
+  `require.Error`, so a stray NOT NULL/type failure can't pass for the wrong reason;
+  pair it with a positive control (the pinned value is accepted) to prove the row is
+  otherwise valid. (Iter #9, test-skeptic)
 - Errors that wrap a net/http failure LEAK the request URL: both
   `http.NewRequestWithContext` (via url.Parse) and `http.Client.Do` return a
   `*url.Error` whose `.Error()` embeds the full URL. When the URL is secret-bearing

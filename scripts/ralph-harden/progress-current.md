@@ -6,6 +6,31 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #9 — 2026-07-01 — A/store (band 1 correctness) — SHIPPED (test only; no bug)
+
+Mode A on the single-row `CHECK (id = 1)` guard on the `instance` and `auth`
+singleton tables (`internal/store/schema.go:15,33`). Every accessor hardcodes
+`WHERE id = 1` (`instance.go:17,60`; `auth.go:17,65,86,105`), so a second row would
+silently diverge — `GetInstance`/`GetAuth` keep reading id=1 while an id≠1 row lives
+on unseen. The DB-level CHECK is the only thing making a second row impossible, and
+NOTHING tested it: the existing `COUNT(*)=1` assertions all write through the id=1
+accessors, so they'd still pass with the CHECK dropped.
+
+Added `TestSingleRowCheckRejectsSecondIdentityRow` to `store_test.go` (table-driven
+over both tables): a RAW `INSERT` of a non-1 id must be refused by the DB with
+`CHECK constraint failed`. Positive control (id=1 accepted) proves the row is
+otherwise valid, so the id≠1 rejection can only be the CHECK — not a stray NOT
+NULL/type failure (false green). Probes id=2 (with the id=1 row present, so it's
+the CHECK, not PK uniqueness), id=0, AND id=-1. No bug — the CHECK is correct; the
+test locks the contract.
+
+Mutation-proven: dropping the CHECK on instance, dropping it on auth, weakening
+`= 1` → `>= 1`, and (the test-skeptic's escape) weakening `= 1` → `id * id = 1`
+each red the matching subtest. The `id * id = 1` mutation is the reason id=-1 is
+probed: it admits a negative second identity row while still rejecting 0 and 2, so
+an id=0/id=2-only test stayed green against it — the skeptic caught this on the
+first draft; strengthened before commit and re-verified caught. code-reviewer clean.
+
 ## Iter #8 — 2026-07-01 — A/store (band 1 correctness) — SHIPPED (test only; no bug)
 
 Mode A on `(*Store).SaveInstance` (`internal/store/instance.go:36`). It upserts the

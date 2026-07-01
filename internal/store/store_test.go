@@ -507,6 +507,74 @@ func TestAlerts(t *testing.T) {
 	require.Equal(t, core.CodeNotFound, core.CodeOf(err))
 }
 
+func TestSingleRowCheckRejectsSecondIdentityRow(t *testing.T) {
+	// instance and auth are the panel's two singleton tables: every accessor
+	// hardcodes `WHERE id = 1` (instance.go:17,60; auth.go:17,65,86,105), so a
+	// second row would silently diverge — GetInstance/GetAuth would keep reading
+	// id=1 while an id=2 row lived on unseen. The `CHECK (id = 1)` on the PRIMARY
+	// KEY (schema.go:15,33) is the DB-level guard that makes a second row
+	// impossible. Nothing tested that guard: the existing COUNT(*)=1 assertions
+	// all write through id=1 accessors, so they would still pass with the CHECK
+	// dropped. Drive a RAW insert of a non-1 id and assert the DB itself refuses.
+	ctx := context.Background()
+
+	// Each case supplies an otherwise-fully-valid row (all NOT NULL columns
+	// populated) parameterized only by id, so the ONLY thing that can reject an
+	// id!=1 insert is the CHECK — not an incidental NOT NULL / type failure.
+	cases := []struct {
+		table  string
+		insert string // one ? bind: the id
+	}{
+		{
+			table:  "instance",
+			insert: `INSERT INTO instance (id, instance_id, created_at) VALUES (?, 'uuid-x', '2026-01-01T00:00:00Z')`,
+		},
+		{
+			table:  "auth",
+			insert: `INSERT INTO auth (id, session_secret, updated_at) VALUES (?, x'0011deadbeef', '2026-01-01T00:00:00Z')`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.table, func(t *testing.T) {
+			s := newTestStore(t)
+
+			// Positive control: id=1 is accepted — proves the row is otherwise
+			// valid, so a rejection of id=2/id=0 below can only be the CHECK
+			// firing (guards against a false green from a stray NOT NULL failure).
+			_, err := s.DB().ExecContext(ctx, tc.insert, 1)
+			require.NoError(t, err, "id=1 row must be accepted (row is otherwise valid)")
+
+			// A second identity row (id=2) must be rejected by CHECK (id = 1),
+			// NOT by the PRIMARY KEY (id differs from the existing 1).
+			_, err = s.DB().ExecContext(ctx, tc.insert, 2)
+			require.Error(t, err, "a second identity row (id=2) must be refused")
+			require.ErrorContains(t, err, "CHECK constraint failed",
+				"id=2 must be rejected by the single-row CHECK, not some other error")
+
+			// Any non-1 id is rejected, not merely "not the existing row": id=0
+			// and id=-1, each on a fresh empty table, prove the constraint pins
+			// the value to exactly 1. The negative id is deliberate: a `CHECK
+			// (id = 1)` weakened to `CHECK (id * id = 1)` (or `abs(id) = 1`) still
+			// rejects 0 and 2 but would silently ADMIT id=-1 — a second, diverging
+			// identity row the `WHERE id = 1` accessors never see. Probing -1
+			// closes that blind spot.
+			for _, badID := range []int{0, -1} {
+				s2 := newTestStore(t)
+				_, err = s2.DB().ExecContext(ctx, tc.insert, badID)
+				require.Error(t, err, "id=%d must be refused even on an empty table", badID)
+				require.ErrorContains(t, err, "CHECK constraint failed",
+					"id=%d must be rejected by the single-row CHECK", badID)
+			}
+
+			// The guarded table still holds exactly the one accepted row.
+			var n int
+			require.NoError(t, s.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM "+tc.table).Scan(&n))
+			require.Equal(t, 1, n, "only the id=1 row survives; the id=2 insert never landed")
+		})
+	}
+}
+
 func TestTelemetryBuffer(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
