@@ -58,6 +58,18 @@ iterations don't rediscover it.
 
 ## Rejected ideas — do not re-propose
 
+- pg/hba `injectHBARules` "self-heal a widened managed block" (normalize a
+  marker-present-but-widened block back to loopback+socket-only) — the fix would
+  REVERT a documented operator hardening: `hba.go:26` says an operator sharing the
+  host may replace the managed `trust` lines with `scram-sha-256`, and the current
+  presence-only behavior IS that escape hatch. Blindly re-normalizing turns scram
+  back into trust — a *widening* — violating the security tie-break. A "heal only
+  widenings, keep hardenings" variant needs semantic pg_hba permissiveness parsing
+  (trust vs scram, CIDR ranges): complex, error-prone, YAGNI, and getting it wrong
+  is itself a security risk. And a widened managed block requires root/postgres
+  write to the 0600 hba file — the actor already owns the box, so it's not an
+  escalation. (Iter #6)
+
 - restore preflight "free disk + inodes" (for the LIVE PITR restore) — the live
   restore replaces the existing data dir in place (pgBackRest --delta / full over
   the current PGDATA), so it needs no extra headroom beyond what the cluster already

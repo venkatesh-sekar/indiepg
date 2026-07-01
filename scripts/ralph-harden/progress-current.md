@@ -6,6 +6,42 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #6 — 2026-07-01 — A/migrate (band 1 correctness) — SHIPPED (bug fixed)
+
+Mode A on the four pure helpers in `internal/server/migrate_worker.go` that sit
+on the operator-facing migrate path but were untested in isolation:
+`failErrorText` (:173), `boundDiagnostic` (:192), `unmarshalCounts` (:419),
+`toMigrationResponse` (:393). Every failed migration renders through
+`failErrorText`; every `GET /migrations` renders through
+`toMigrationResponse`→`unmarshalCounts`. They take adversarial input — an
+external pg_restore's stderr and JSON blobs round-tripped through SQLite.
+
+**Bug found + fixed:** `unmarshalCounts("null")` returned `nil`, not the
+documented non-nil `{}`. `json.Unmarshal([]byte("null"), &mapVar)` sets the map
+to nil WITHOUT an error, so a JSON-null blob slips past the `err != nil` branch
+and the function returns the now-nil map — which then serializes back as JSON
+`null` on the API, the exact thing the doc says it prevents ("empty (non-nil)
+map … so the field serializes as {} rather than null"). Added an `if out == nil`
+guard. The new test failed before the fix, passes after.
+
+Added `internal/server/migrate_helpers_test.go` (table/subtests). Mutation-proven
+against the test-skeptic's findings: newline→space separator in `failErrorText`,
+dropped `TrimSpace` in `boundDiagnostic`, `Phase:=Status` and
+`ProgressDone↔Total` cross-wires in `toMigrationResponse`, and dropping the
+nil-guard — each reds the suite (verified in place, then reverted). First test
+draft under-asserted `toMigrationResponse` (6 wire fields unpinned) and the two
+separators; strengthened to distinct-per-field values + a whitespace-boundary
+case before commit. code-reviewer clean. Gates green (gofmt/vet/`go test
+./...`/CGO-static build); web untouched; e2e not needed (pure unit).
+
+Also (rule 3 backlog grooming): rejected the band-1 pg/hba
+`injectHBARules`-self-heal-a-widened-block item — its proposed "normalize back
+to loopback+socket-only" fix would revert a documented operator hardening
+(replacing the trust lines with scram-sha-256, per hba.go:26) and thus *widen*
+access, violating the security tie-break; and a widened managed block requires
+root/postgres write to the 0600 file (not an escalation). Moved to the Rejected
+list.
+
 ## Iter #5 — 2026-07-01 — A/upgrade (band 1 correctness) — SHIPPED
 
 Mode A on `validateUpgradeTarget` (`internal/server/handlers_pgversion.go:858`),

@@ -414,14 +414,20 @@ func toMigrationResponse(m store.MigrationRecord) migrationResponse {
 }
 
 // unmarshalCounts decodes a "schema.table" -> count JSON object, returning an
-// empty (non-nil) map for empty or malformed input so the field serializes as
-// {} rather than null.
+// empty (non-nil) map for empty, malformed, or JSON-null input so the field
+// serializes as {} rather than null.
 func unmarshalCounts(s string) map[string]int64 {
 	out := map[string]int64{}
 	if s == "" {
 		return out
 	}
 	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return map[string]int64{}
+	}
+	// A JSON "null" blob unmarshals a map to nil WITHOUT an error, so it slips
+	// past the branch above; restore the non-nil contract so it never serializes
+	// back as null.
+	if out == nil {
 		return map[string]int64{}
 	}
 	return out

@@ -22,13 +22,11 @@ Docker-blocked (need the e2e/integration cluster; can't run in this environment)
 
 Unit-testable (audit-grounded, Iter #3 panel; ranked):
 - [ ] (1 · A) pgbouncer — enable's "verify running before recording success" invariant is only proven for the `enable --now` path; the reload→dead-unit path (enable.go:201-216) has no test. → Test: reload OK + is-active "failed" must return an error and NOT persist `enabled=true`. (Iter #4: partially covered — `TestEnable_ServiceNotRunningAfterStartIsNotRecorded` now drives reload-OK + is-active-"failed" and asserts the error + no persist; the failure is caught in `Reload`'s post-apply verify. Keep open only if a dedicated no-config-change reload→dead path is still wanted.)
-- [ ] (1 · A) pg/hba — `injectHBARules` (hba.go:52-61) treats mere PRESENCE of the marker as "already correct" (returns changed=false), so a hand-edited/widened managed block (e.g. `host all all 0.0.0.0/0 trust` between the markers) is never self-healed by `EnsureSocketAuth`. → Test a marker-present-but-widened block is normalized back to loopback+socket-only (never widens access).
 - [ ] (1 · A) store/auth — `InitAuth` claims it overwrites an existing row and its ON CONFLICT resets `failed_attempts=0`/`locked_until=NULL` (auth.go:42-59), but tests only ever hit the INSERT path — the reset-password UPDATE branch is unproven. → Test: init, set a lockout, `InitAuth` again, assert new hash/secret AND lockout cleared.
 - [ ] (1 · A) store/instance — `SaveInstance` ON CONFLICT deliberately omits `created_at` from its UPDATE set (instance.go:45-50) to preserve birth time, but `TestInstanceRoundTrip` only saves once. → Test a re-save with a new CreatedAt/label leaves `created_at` unchanged while other fields update.
 - [ ] (1 · A) store/schema — the single-row `CHECK (id = 1)` on auth/instance (schema.go:15,33) is asserted by no test; all accessors hardcode `WHERE id=1`, so a broken CHECK would let two rows silently diverge. → Test a raw `INSERT ... (id=2)` fails the constraint.
 - [ ] (1 · A) web/Extensions — the Tier-3 "needs_restart" install gate (`confirmOk = !needsRestart || typed === ext.name`, Extensions.tsx:452; disabled at :519) triggers a server-wide `systemctl restart postgresql`, and there is NO Extensions.test.tsx. → RTL test: "Install for me" stays disabled until the exact extension name is typed; a Tier-1 add fires with no dialog.
 - [ ] (1 · A) web/Version — `RollbackDialog` (matches gate, Version.tsx:845) is permanent data loss (discards all writes since the upgrade) and `FinalizeDialog` (Version.tsx:752) irreversibly deletes the old cluster; neither has a test (no Version.test.tsx). → RTL tests: each action's button stays disabled until the typed major matches and the copy states the irreversible effect.
-- [ ] (1 · A) migrate worker — pure helpers untested in isolation: `failErrorText` (migrate_worker.go:173-188, actionable-reason extraction + no-double-append guard), `boundDiagnostic` (:192-201, rune-boundary cap), and `unmarshalCounts`/`toMigrationResponse` (:393-428, malformed-blob → empty map, not null). → Table tests for each branch.
 
 ### Band 2 — Preflight & fail-fast (Mode P)
 - [ ] (2 · A) install/provision — `InstallPreflight` + `existingInstallClusters` (pg/preflight.go:83-193) is the guard that refuses to clobber an existing cluster / busy 5432 / unsupported OS, and "fails closed" by scanning `/var/lib/postgresql` when `pg_lsclusters` is absent. ZERO tests. → FakeRunner test driving each CheckFail (port listening, cluster row present, unsupported codename) + the clean happy path; proves the installer won't overwrite an existing datadir.
@@ -64,6 +62,18 @@ Unit-testable (audit-grounded, Iter #3 panel; ranked):
 - [ ] (0) if any `make verify` / `make verify-web` gate is red, fix it before anything else.
 
 ## Done
+
+- [x] (1 · A) migrate worker pure helpers — `internal/server/migrate_helpers_test.go`
+  drives the four operator-facing pure helpers in `migrate_worker.go`:
+  `failErrorText` (:173), `boundDiagnostic` (:192), `unmarshalCounts` (:419),
+  `toMigrationResponse` (:393). Found + fixed a BUG: `unmarshalCounts("null")`
+  returned `nil` (a JSON-null blob unmarshals a map to nil WITHOUT error, slipping
+  past the err-branch), so the field serialized back as JSON `null` — the exact
+  thing its doc says it prevents; added an `if out == nil` guard. Tests pin every
+  branch and are mutation-proven (newline→space, dropped `TrimSpace`, `Phase:=Status`
+  / `ProgressDone↔Total` cross-wires, dropped nil-guard each red the suite). First
+  draft under-asserted (test-skeptic caught 6 unpinned wire fields + 2 separators);
+  strengthened before commit. Iter #6.
 
 - [x] (1 · A) install/upgrade `validateUpgradeTarget` — the sole guard stopping a
   destructive same-major/downgrade/unsupported-target "major upgrade" (gates both
