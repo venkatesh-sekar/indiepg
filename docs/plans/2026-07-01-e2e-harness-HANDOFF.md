@@ -3,6 +3,34 @@
 Resume document for a fresh session. The harness is ~90% done. Read this top to bottom;
 it is self-contained.
 
+## ✅ UPDATE 2026-07-01 — COMPLETE, ALL SCENARIOS GREEN
+
+The remaining work below is DONE. The full suite passes end-to-end, run SEQUENTIALLY
+(`-parallel 1`): all 15 top-level scenarios green in one ~42m run, including
+`TestPGVersionUpgrade` (Minor/Major/Rollback), `TestPITR`, `TestPoolerEnableDisable`,
+and `TestRestoreAfterLoss`. `CGO_ENABLED=0 go test ./...` (unit) is green.
+
+Product bugs fixed and committed: BUG-3 (PITR `--set` selection, `f934e7b`);
+BUG-7/8/10 (pooler enable on a clean Debian box — pristine-conffile reset, owner
+resolution, and a `RuntimeDirectory=pgbouncer` systemd drop-in, `bb1aded`).
+
+Test/harness determinism fixes (`d65aadb`), each root-caused from the PG cluster log:
+- PITR: baseline backup is now taken BEFORE the pre-target rows (so the xid target is
+  always after the base redo — was a checkpoint-redo-vs-xid race → `recovery ended
+  before target reached`), and the row-count read is gated on `pg_is_in_recovery()=false`
+  (hot_standby accepts read-only connections at consistency, before replay reaches the
+  target, so an early read returned 0).
+- RestoreAfterLoss: `pg_switch_wal` after the DROP archives the post-target marker so
+  time-target recovery promotes instead of stalling in `online,recovery`.
+- harness `DumpLogs` now also captures pgbouncer/systemd/pg_lsclusters/socket-dir and the
+  (spam-filtered) postgres cluster + pgbackrest restore logs.
+
+Docs added (`8839b18`): `test/e2e/README.md` and an optional gated CI job
+(`.github/workflows/e2e.yml`, `workflow_dispatch` + `e2e` label; needs a privileged
+systemd-capable runner). PITR files that were uncommitted are now committed (`9fff3b7`).
+
+The section-by-section notes below are retained as the historical record.
+
 ## 0. WHERE IS THE WORK (read this first)
 
 All work is on branch **`feat/e2e-test-harness`** in a separate git worktree at
