@@ -6,6 +6,41 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #8 — 2026-07-01 — A/store (band 1 correctness) — SHIPPED (test only; no bug)
+
+Mode A on `(*Store).SaveInstance` (`internal/store/instance.go:36`). It upserts the
+single (id=1) instance-identity row; its `ON CONFLICT(id) DO UPDATE SET`
+deliberately OMITS `created_at` so the panel's recorded birth time survives every
+later re-save (a `panel_version` bump on upgrade, a label edit, a `pg_system_id`
+capture). `TestInstanceRoundTrip` only ever saved once, so the preserve-on-re-save
+contract — and the fact the rest of the row still updates — was unproven. A one-line
+regression (`created_at = excluded.created_at` in the UPDATE set) would silently
+reset an install's birth time on the next save.
+
+Added `TestSaveInstancePreservesCreatedAtOnResave` to `store_test.go`: save with a
+fixed `birth` → re-save with EVERY field changed AND a different `CreatedAt` →
+assert `created_at` still equals `birth` (and did NOT adopt the re-save's value),
+every other column reflects the re-save, and `COUNT(*)=1` (single-row invariant).
+The birth time is supplied in a **non-UTC zone** (`+05:30`) and the test asserts
+the RAW stored TEXT is canonical UTC (`...Z`), not the parsed instant — because
+`Time.Equal` compares instants and is blind to the zone. Added
+`TestSaveInstanceStampsCreatedAtWhenZero`: a zero `CreatedAt` must be stamped
+`now`, never persisted as `0001-01-01`. No bug — the code is correct; the tests
+lock the contract.
+
+Mutation-proven (4 mutations, each reds the suite; `instance.go` restored clean
+each time): `created_at = excluded.created_at` in the UPDATE set, `ON CONFLICT(id)
+DO NOTHING`, dropping `created.UTC()` on the write path, and dropping the
+`if !created.IsZero()` zero-fallback guard.
+
+Review: code-reviewer clean. test-skeptic found ONE escaping mutation on the first
+draft — dropping `created.UTC()` slipped past a UTC-only `birth` + instant-comparing
+`Time.Equal` (a real canonical-UTC-storage regression); it also flagged the
+untested zero-fallback branch. Addressed both before commit (raw-string
+UTC assertion + the zero-value test), then re-verified both mutations are now
+caught. Gates green (gofmt, vet 0, `go test ./...` 0, static build). web untouched;
+pure unit, no e2e.
+
 ## Iter #7 — 2026-07-01 — A/store (band 1 correctness) — SHIPPED (test only; no bug)
 
 Mode A on `(*Store).InitAuth` (`internal/store/auth.go:44`). Its docstring claims

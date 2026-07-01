@@ -140,6 +140,110 @@ func TestInstanceRoundTrip(t *testing.T) {
 	require.Equal(t, "7300000000000000000", got.PGSystemID)
 }
 
+func TestSaveInstancePreservesCreatedAtOnResave(t *testing.T) {
+	// SaveInstance upserts the single (id=1) identity row. Its ON CONFLICT DO
+	// UPDATE set deliberately OMITS created_at so the panel's recorded birth time
+	// survives every later re-save (a panel_version bump on upgrade, a label edit,
+	// a pg_system_id capture). Every OTHER column must still update. If created_at
+	// ever crept into the UPDATE set, an install's birth time would silently reset
+	// on the next SaveInstance — this test locks that contract, and the "every
+	// other field updated" half also proves the upsert is a real UPDATE, not a
+	// DO NOTHING that would "preserve" created_at for the wrong reason.
+	//
+	// The birth time is supplied in a NON-UTC zone on purpose: SaveInstance is
+	// documented to store canonical UTC (like every other timestamp column, via
+	// nowRFC3339), so the raw stored string must be normalized to a trailing "Z",
+	// not the input's "+05:30" offset. Asserting the raw TEXT (not the parsed
+	// time — Time.Equal compares instants and is blind to the zone) pins the
+	// created.UTC() normalization on the write path.
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	ist := time.FixedZone("IST", 5*60*60+30*60) // +05:30, deliberately not UTC
+	birth := time.Date(2021, 3, 4, 5, 6, 7, 0, ist)
+	wantCanonical := birth.UTC().Format(time.RFC3339Nano) // "2021-03-03T23:36:07Z"
+	require.NoError(t, s.SaveInstance(ctx, Instance{
+		InstanceID:   "uuid-original",
+		Label:        "web-db-01",
+		Hostname:     "host-a",
+		PGSystemID:   "7300000000000000000",
+		PanelVersion: "1.0.0",
+		CreatedAt:    birth,
+	}))
+
+	// The raw stored string must be canonical UTC (trailing Z), not the input
+	// offset — dropping created.UTC() on the write path would store "+05:30".
+	var raw string
+	require.NoError(t, s.DB().QueryRowContext(ctx, "SELECT created_at FROM instance WHERE id = 1").Scan(&raw))
+	require.Equal(t, wantCanonical, raw, "created_at must be stored as canonical UTC")
+	require.True(t, strings.HasSuffix(raw, "Z"), "stored created_at must be normalized to UTC (Z); got %q", raw)
+
+	got, err := s.GetInstance(ctx)
+	require.NoError(t, err)
+	require.True(t, got.CreatedAt.Equal(birth), "birth time must round-trip to the same instant")
+
+	// Re-save the same identity row with EVERY field changed, including a
+	// deliberately different CreatedAt.
+	later := birth.Add(48 * time.Hour)
+	require.NoError(t, s.SaveInstance(ctx, Instance{
+		InstanceID:   "uuid-rotated",
+		Label:        "web-db-01-renamed",
+		Hostname:     "host-b",
+		PGSystemID:   "7400000000000000000",
+		PanelVersion: "2.5.0",
+		CreatedAt:    later,
+	}))
+
+	got, err = s.GetInstance(ctx)
+	require.NoError(t, err)
+
+	// created_at is the birth time — it MUST NOT move even though a different
+	// CreatedAt was supplied on the re-save (the UPDATE set omits it).
+	require.True(t, got.CreatedAt.Equal(birth),
+		"created_at must be preserved across re-save; got %s want %s", got.CreatedAt, birth)
+	require.False(t, got.CreatedAt.Equal(later),
+		"created_at must not adopt the re-save's CreatedAt")
+
+	// The raw stored string is unchanged too (still the original canonical value).
+	require.NoError(t, s.DB().QueryRowContext(ctx, "SELECT created_at FROM instance WHERE id = 1").Scan(&raw))
+	require.Equal(t, wantCanonical, raw, "created_at TEXT must be untouched by the re-save")
+
+	// Every other column MUST reflect the re-save (proves a real UPDATE, not a
+	// no-op/DO NOTHING that would coincidentally leave created_at alone).
+	require.Equal(t, "uuid-rotated", got.InstanceID)
+	require.Equal(t, "web-db-01-renamed", got.Label)
+	require.Equal(t, "host-b", got.Hostname)
+	require.Equal(t, "7400000000000000000", got.PGSystemID)
+	require.Equal(t, "2.5.0", got.PanelVersion)
+
+	// Still exactly one identity row (the CHECK (id = 1) single-row invariant).
+	var n int
+	require.NoError(t, s.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM instance").Scan(&n))
+	require.Equal(t, 1, n)
+}
+
+func TestSaveInstanceStampsCreatedAtWhenZero(t *testing.T) {
+	// When a caller supplies a zero CreatedAt, SaveInstance falls back to
+	// nowRFC3339() so the birth-time column is never persisted as the zero time
+	// (0001-01-01). This guards the `if !created.IsZero()` fallback: dropping it
+	// would let a zero input land 0001-01-01 in created_at (a NOT NULL column that
+	// GetInstance/Dashboard treat as a real timestamp).
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	before := time.Now().UTC().Add(-time.Minute)
+	require.NoError(t, s.SaveInstance(ctx, Instance{InstanceID: "uuid-zero"})) // CreatedAt left zero
+
+	var raw string
+	require.NoError(t, s.DB().QueryRowContext(ctx, "SELECT created_at FROM instance WHERE id = 1").Scan(&raw))
+	require.NotEmpty(t, raw, "created_at must be stamped, never left empty")
+
+	got, err := s.GetInstance(ctx)
+	require.NoError(t, err)
+	require.False(t, got.CreatedAt.IsZero(), "a zero CreatedAt must be stamped ~now, not stored as the zero time")
+	require.True(t, got.CreatedAt.After(before), "stamped created_at must be a recent, real timestamp")
+}
+
 func TestConfigRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
