@@ -6,6 +6,34 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #12 — 2026-07-01 — A/install (band 2, prove-it) — SHIPPED (test only; no bug)
+
+Mode A on the two FakeRunner-driven guards that make `Manager.InstallPreflight`
+(`internal/pg/preflight.go`) **refuse to clobber an existing PostgreSQL install** on a
+fresh `Provision`: `portListening` (something already bound to 5432 → hard fail) and
+`listClusters` (an existing Debian cluster → hard fail). Both were entirely untested;
+both must **fail CLOSED** — a probe that can't run must surface as an error so the
+preflight aborts, never a silent "clean host" that lets Provision overwrite a live
+datadir. (The other InstallPreflight checks — the `/var/lib/postgresql` dir-scan
+fallback, `detectOSCodename`, `freeBytes` — read the real FS and aren't deterministically
+unit-testable here without adding FS seams; deliberately out of scope.)
+
+New `internal/pg/preflight_test.go` (8 tests). `portListening`: detects a `127.0.0.1:5432`
+listener and the IPv6/wildcard forms (`[::]:5432`, `*:5432`, `[::1]:5432`); reads free
+when only near-miss rows exist; **fails closed** (returns an error, not "free") when the
+`ss` probe errors. `listClusters`: parses columns row-for-row incl. a dotted `17.2`→`17`
+Ver token; skips blank/short/non-numeric-Ver lines while keeping the valid one; **fails
+closed** when `pg_lsclusters` errors (never swallowed into "no clusters"). No bug — both
+guards were correct; the tests lock the contract.
+
+Mutation-proven over 8 one-line source mutations (all caught): swallow ss error→`false,nil`;
+`needle := ":"+port`→`port`; `HasSuffix`→`HasPrefix`; **`HasSuffix(token)`→`Contains(line)`**
+(the test-skeptic's gap — closed by adding interior-substring near-miss rows `:54321` and
+`[fe80::5432]:22`, which embed `5432` without being a real `:5432` token); swallow
+pg_lsclusters error→`nil,nil`; drop `major==0` skip; drop `len(fields)<6` skip; cross-wire
+`Port: fields[2]`→`fields[3]`. code-reviewer clean. Backend gate green (fmt/vet/test/build);
+web untouched; e2e N/A (pure unit + Docker unavailable).
+
 ## Iter #11 — 2026-07-01 — A/web-extensions (band 1 correctness) — SHIPPED (test only; no bug)
 
 Mode A on the Tier-3 ("needs_restart") extension-install gate in

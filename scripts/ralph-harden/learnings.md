@@ -6,6 +6,18 @@ iterations don't rediscover it.
 
 ## Active rules
 
+- A match anchored to the END of a whitespace-token (`strings.HasSuffix(field, ":"+port)`
+  over `strings.Fields(line)`) needs TWO kinds of near-miss to be fully pinned, not one.
+  (1) A leading-boundary near-miss — a longer port whose digits *contain but don't equal*
+  the target (`:15432` vs `:5432`) — kills a "dropped the leading colon" mutation
+  (`needle := port`). (2) An INTERIOR-substring near-miss — the target digits appearing
+  mid-token, e.g. a high port that *starts* with them (`:54321`, so the raw line contains
+  `:5432`) or an address literal that embeds them (`[fe80::5432]:22`) — kills a
+  `HasSuffix(token)`→`Contains(whole_line)` rewrite (drops the field anchoring). The first
+  near-miss alone leaves the second mutation GREEN because `:5432` isn't a substring of
+  `:15432` at all. Generalizes the equality-gate rule: probe the values only the *looser*
+  predicate admits, and do it from BOTH the leading and trailing side of the anchor.
+  (Iter #12, test-skeptic found the `Contains(line)` escape.)
 - A typed-confirm gate makes `send(typed)` and `send(expected)` OBSERVABLY IDENTICAL
   on every reachable path — don't chase a mutation that swaps one for the other. When
   the confirm button is `disabled` unless `typed === name`, `install()` can only fire
