@@ -12,11 +12,12 @@ import (
 )
 
 // TestPITR is scenario 5: the deterministic point-in-time-recovery proof. It
-// configures S3, seeds a deterministic PRE-target batch, captures a recovery
-// target as a TRANSACTION ID (xid — NO wall-clock), takes a full backup, then
-// writes a POST-target batch. Restoring the live cluster to that xid must rewind
-// the cluster so the pre-target rows survive and the post-target rows are PROVABLY
-// gone.
+// configures S3, takes a BASELINE full backup, then seeds a deterministic
+// PRE-target batch, captures a recovery target as a TRANSACTION ID (xid — NO
+// wall-clock), then writes a POST-target batch. Restoring the live cluster to that
+// xid must rewind the cluster so the pre-target rows survive and the post-target
+// rows are PROVABLY gone. The backup precedes the target data so the target xid is
+// always reachable by forward WAL replay (see the ordering note below).
 //
 // Why xid and not time: a wall-clock target races the test (and the server clock);
 // a transaction id is exact. pgBackRest recovery is INCLUSIVE by default
@@ -41,8 +42,25 @@ func TestPITR(t *testing.T) {
 		"pgBackRest must be configured (stanza-create succeeded); warning=%q hint=%q detail=%q",
 		cfgResp.BackupWarning, cfgResp.BackupHint, cfgResp.BackupDetail)
 
-	// --- PRE-TARGET batch: 500 rows committed before the recovery target. ---
+	// --- Baseline full backup, taken BEFORE any target data. ---
+	// This ordering is load-bearing: the recovery target's xid MUST fall strictly
+	// AFTER this backup's redo point, or pgBackRest/PostgreSQL replay starts past the
+	// target and recovery ends with "recovery ended before configured recovery target
+	// was reached" (the postmaster then FATAL-exits). Backing up AFTER the pre-target
+	// rows races the backup's start-checkpoint redo LSN against the target xid and
+	// flakes under load. Backing up first makes the target unconditionally reachable
+	// by forward WAL replay.
 	require.NoError(t, env.PG.Exec("DROP TABLE IF EXISTS t"))
+	run, err := env.Panel.RunBackup("full")
+	require.NoError(t, err, "POST /api/backups/run full should be accepted")
+	require.Equal(t, "running", run.Result)
+	rec, err := env.Panel.AwaitBackup(run.ID, 5*time.Minute)
+	require.NoError(t, err)
+	require.Equalf(t, "success", rec.Result, "full backup must succeed; error=%q", rec.Error)
+	require.Equal(t, "full", rec.BackupType)
+
+	// --- PRE-TARGET batch: 500 rows committed AFTER the base backup, so they exist
+	// only in archived WAL and are recovered by forward replay. ---
 	require.NoError(t, env.PG.Exec("CREATE TABLE t(id int)"))
 	require.NoError(t, env.PG.Exec("INSERT INTO t SELECT generate_series(1,500)"))
 	pre, err := env.PG.CountRows("t")
@@ -52,28 +70,19 @@ func TestPITR(t *testing.T) {
 	// Capture the recovery target as a transaction id. pg_current_xact_id() (PG13+)
 	// returns the current xid8; on a fresh cluster the epoch is 0 so it equals the
 	// plain transaction id pgBackRest's --type=xid wants. This SELECT runs in its
-	// own (autocommit) transaction whose committed xid is the target.
+	// own (autocommit) transaction whose committed xid is the target — strictly after
+	// the base backup above.
 	T, err := env.PG.Scalar("SELECT pg_current_xact_id()")
 	require.NoError(t, err, "capture recovery target xid")
 	require.NotEmpty(t, T, "recovery target xid must be non-empty")
 	t.Logf("recovery target xid T = %s (recover to AND including this txn; --type=xid, inclusive default)", T)
 
-	// Force the WAL up to T into an archived segment so the backup's WAL coverage
-	// includes the target (no half-written current segment).
+	// Force the segment holding the pre-target writes + the target txn into the
+	// archive (no half-written current segment) so replay can reach T.
 	require.NoError(t, env.PG.Exec("SELECT pg_switch_wal()"))
 
-	// --- Full backup: a physical snapshot that already contains the 500 pre-target
-	// rows; its archived WAL covers through T. ---
-	run, err := env.Panel.RunBackup("full")
-	require.NoError(t, err, "POST /api/backups/run full should be accepted")
-	require.Equal(t, "running", run.Result)
-	rec, err := env.Panel.AwaitBackup(run.ID, 5*time.Minute)
-	require.NoError(t, err)
-	require.Equalf(t, "success", rec.Result, "full backup must succeed; error=%q", rec.Error)
-	require.Equal(t, "full", rec.BackupType)
-
 	// --- POST-TARGET batch: 200 more rows committed in a txn whose xid is strictly
-	// greater than T. These exist ONLY in WAL archived after the backup; a restore
+	// greater than T. These exist ONLY in WAL archived after the target; a restore
 	// to T must NOT replay them. ---
 	require.NoError(t, env.PG.Exec("INSERT INTO t SELECT generate_series(501,700)"))
 	post, err := env.PG.CountRows("t")
@@ -127,11 +136,29 @@ func TestPITR(t *testing.T) {
 	// and the 200 post-target rows (xid > T) are never replayed — so the FIRST
 	// successful read is the final answer. A genuinely-wrong restore still fails the
 	// Equal assertion (or the deadline) rather than passing on a transient read.
+	// Wait for the cluster to FINISH recovery and PROMOTE before reading — not merely
+	// to accept connections. With hot_standby on, PostgreSQL accepts READ-ONLY
+	// connections the instant it reaches consistency (the base backup's end LSN),
+	// which is BEFORE it has replayed forward to the xid target. The base backup here
+	// is empty (taken before the table), so a read in that window can observe `t`
+	// after its CREATE but before the 500-row INSERT replays and return 0 — a false
+	// "ready". Gate on pg_is_in_recovery()=false so the count is read only once redo
+	// has applied everything through the target (xid=T, inclusive) and the cluster has
+	// promoted to read-write. On a slow host the post-restore data-directory fsync
+	// alone can take minutes, so the bound is generous; the assertion — not the
+	// deadline — proves correctness.
 	var got int
-	harness.Await(t, 6*time.Minute, 2*time.Second, "row count after PITR", func() (bool, error) {
+	harness.Await(t, 12*time.Minute, 2*time.Second, "promoted row count after PITR", func() (bool, error) {
+		inRecovery, err := env.PG.Scalar("SELECT pg_is_in_recovery()")
+		if err != nil {
+			return false, err // "starting up" / socket not up yet — keep polling
+		}
+		if inRecovery != "f" {
+			return false, nil // still replaying toward the target in hot standby — wait for promote
+		}
 		n, err := env.PG.CountRows("t")
 		if err != nil {
-			return false, err // transient "starting up"/"in recovery" — keep polling
+			return false, err
 		}
 		got = n
 		return true, nil

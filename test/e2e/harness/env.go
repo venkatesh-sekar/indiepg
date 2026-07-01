@@ -224,6 +224,17 @@ func (e *Env) DumpLogs() {
 		if out, _, err := dockerExec(ctx, e.panelContainer, "", "systemctl", "status", "pgbouncer", "--no-pager", "-l"); err == nil {
 			e.t.Logf("=== systemctl status pgbouncer [%s] ===\n%s", e.Project, out)
 		}
+		// Postgres cluster state + recovery/restore logs: pinpoints a cluster that
+		// failed to come back up (e.g. after a restore/PITR) when psql just reports a
+		// missing socket.
+		if out, _, err := dockerExec(ctx, e.panelContainer, "", "sh", "-c",
+			"echo '--- pg_lsclusters ---'; pg_lsclusters 2>&1; "+
+				"echo '--- systemctl --failed ---'; systemctl --no-pager --failed 2>&1; "+
+				"echo '--- ls /var/run/postgresql ---'; ls -la /var/run/postgresql /run/postgresql 2>&1; "+
+				"echo '--- postgres cluster log (recovery-relevant tail) ---'; grep -hvF 'the database system is starting up' /var/log/postgresql/*.log 2>/dev/null | tail -n 80; "+
+				"echo '--- pgbackrest restore log (tail) ---'; tail -n 40 /var/log/pgbackrest/*restore*.log 2>&1"); err == nil {
+			e.t.Logf("=== postgres cluster diagnostics [%s] ===\n%s", e.Project, out)
+		}
 	}
 	if out, err := e.compose(ctx, nil, "logs", "--no-color", "--tail", "60"); err == nil {
 		e.t.Logf("=== compose logs [%s] ===\n%s", e.Project, out)

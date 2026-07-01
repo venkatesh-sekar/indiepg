@@ -89,6 +89,15 @@ func TestRestoreAfterLoss(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "t", gone, "probe must be gone before the restore")
 
+	// Force the post-target WAL — including the DROP's commit, whose timestamp is
+	// strictly after the recovery target — into an archived segment. Time-target
+	// recovery stops+promotes only once it replays a record PAST the target; if that
+	// segment is still the un-switched current WAL, recovery can stall in
+	// "online,recovery" waiting for restore_command to fetch a segment that hasn't
+	// been archived yet (observed under heavy host load). Switching here makes the
+	// post-target boundary archived and the stop point deterministic.
+	require.NoError(t, env.PG.Exec("SELECT pg_switch_wal()"))
+
 	fullsBefore := successfulFullLabels(t, env)
 	require.Len(t, fullsBefore, 1, "exactly the explicit full exists before the restore")
 
