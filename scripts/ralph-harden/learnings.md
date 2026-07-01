@@ -6,6 +6,28 @@ iterations don't rediscover it.
 
 ## Active rules
 
+- A FakeRunner that matches on an argv SUBSTRING (`internal/exec/fake.go`) returns
+  canned stdout DECOUPLED from the SQL/query text that follows the matched flag. So a
+  test that pins a helper's OUTPUT (parsed rows) can't catch a mutation to the QUERY
+  itself — dropping/inverting a `WHERE` predicate keeps the same canned stdout and stays
+  GREEN. When the query text IS the contract (e.g. `SELECT extname FROM pg_extension
+  WHERE extname <> 'plpgsql'` — inverting to `= 'plpgsql'` silently hides every real
+  extension from a parity/upgrade blocker), pin the predicate on the recorded argv:
+  iterate `fake.Calls()`, `strings.Join(c.Args, " ")`, and `require.Contains(joined,
+  "<exact predicate>")` — asserting the exact `<>` form catches BOTH drop-WHERE and
+  invert-to-`=`. Counting the matching calls also pins fan-out (one query per database),
+  killing a skip-a-database mutation. This is the SQL analogue of the equality-gate rule:
+  when the FakeRunner can't execute the filter, assert the filter is present in what was
+  sent. (Iter #13, test-skeptic found the SQL-decoupled escape.)
+- When perl-mutating a source line to prove a test, GREP the file for that exact line
+  first — the same idiom often appears in TWO sibling helpers (e.g. the blank-line guard
+  `if line = strings.TrimSpace(line); line != "" {` lives in BOTH `listDatabaseNames` and
+  `installedExtensions`). `perl -0pi -e s///` without `/g` hits only the FIRST occurrence,
+  which may be the copy your test doesn't exercise → a false GREEN that looks like a weak
+  test but is really a mis-aimed mutation. Anchor the substitution on a unique neighbor
+  line (e.g. `seen[line] = true` vs `names = append(...)`) to target the intended copy.
+  (Iter #13)
+
 - A match anchored to the END of a whitespace-token (`strings.HasSuffix(field, ":"+port)`
   over `strings.Fields(line)`) needs TWO kinds of near-miss to be fully pinned, not one.
   (1) A leading-boundary near-miss — a longer port whose digits *contain but don't equal*

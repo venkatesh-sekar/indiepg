@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -150,4 +151,148 @@ func TestListClusters_FailsClosedWhenProbeErrors(t *testing.T) {
 	clusters, err := m.listClusters(context.Background())
 	require.Error(t, err, "a pg_lsclusters failure must not be swallowed into 'no clusters'")
 	require.Nil(t, clusters)
+}
+
+// ---- MajorUpgradePreflight's psql-scraping blocker substrate -------------
+//
+// MajorUpgradePreflight gates a destructive major upgrade on a handful of
+// psql-scraped facts. The full preflight can't be unit-driven here (its
+// target-binary and free-disk checks read hardcoded absolute paths with no
+// injectable FS seam — the same residual documented for InstallPreflight), but
+// the runner-driven substrate it stands on can and must be pinned: scalarCount
+// (the prepared-transaction / logical-slot blockers) and installedExtensions
+// (the extension-parity requirement + upgrade preview). Both feed hard blockers,
+// so both must FAIL LOUD rather than return a clean-looking zero/partial value
+// that would let pg_upgrade run into a state it can't handle.
+
+// scalarCount backs two upgrade blockers:
+//
+//	if n, err := m.scalarCount(ctx, "... pg_prepared_xacts");     err != nil -> fail("could not verify")
+//	                                                              else n > 0  -> fail("N prepared transactions ...")
+//	if n, err := m.scalarCount(ctx, "... pg_replication_slots");  ... (same shape)
+//
+// So an unparseable/empty result MUST surface an error. A silent (0, nil) would
+// read as "no blocker → pass" and let pg_upgrade proceed with open prepared
+// transactions or logical slots it cannot carry.
+
+func TestScalarCount_ParsesInteger(t *testing.T) {
+	for name, tc := range map[string]struct {
+		stdout string
+		want   int
+	}{
+		"zero":              {"0\n", 0},
+		"positive":          {"3\n", 3},
+		"surrounding_space": {"  2 \n", 2}, // pins the TrimSpace before Atoi
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := exec.NewFakeRunner().On("pg_prepared_xacts", exec.FakeResponse{Stdout: tc.stdout})
+			m := &Manager{runner: fake}
+
+			n, err := m.scalarCount(context.Background(), "SELECT count(*) FROM pg_prepared_xacts")
+			require.NoError(t, err)
+			require.Equal(t, tc.want, n)
+		})
+	}
+}
+
+func TestScalarCount_FailsLoudOnUnparseableOutput(t *testing.T) {
+	// The fail-loud invariant. `return 0, nil` on the parse-error branch would
+	// defeat BOTH the prepared-transaction and logical-slot blockers at once.
+	for name, stdout := range map[string]string{
+		"empty":   "",               // query returned no row at all
+		"blank":   "   \n",          // whitespace only -> TrimSpace to ""
+		"garbage": "not-a-number\n", // non-numeric scalar
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := exec.NewFakeRunner().On("pg_prepared_xacts", exec.FakeResponse{Stdout: stdout})
+			m := &Manager{runner: fake}
+
+			n, err := m.scalarCount(context.Background(), "SELECT count(*) FROM pg_prepared_xacts")
+			require.Error(t, err, "unparseable count output must surface an error, not a silent 0")
+			require.Zero(t, n)
+			require.Contains(t, err.Error(), "parsing count", "the error should name what it failed to parse")
+		})
+	}
+}
+
+func TestScalarCount_PropagatesPsqlError(t *testing.T) {
+	// A psql/connection failure must propagate, not read as a clean 0 — same
+	// blocker-defeat hazard as an unparseable count.
+	fake := exec.NewFakeRunner().On("pg_prepared_xacts",
+		exec.FakeResponse{Err: errors.New("psql: could not connect to server")})
+	m := &Manager{runner: fake}
+
+	n, err := m.scalarCount(context.Background(), "SELECT count(*) FROM pg_prepared_xacts")
+	require.Error(t, err)
+	require.Zero(t, n)
+}
+
+// installedExtensions discovers the extensions installed across every database.
+// Its output drives the extension-parity blocker (an extension with no
+// target-major build fails the upgrade) and the preview, so it must union +
+// dedup across databases, drop blank lines, and — critically — FAIL LOUD if any
+// per-database query errors instead of returning a partial set that would
+// silently under-report the parity requirement and miss a missing-build blocker.
+// (The plpgsql exclusion is enforced in the SQL itself: `extname <> 'plpgsql'`.)
+
+func TestInstalledExtensions_DedupsAndSortsAcrossDatabases(t *testing.T) {
+	// pg_trgm is present in both databases (must be counted once) and an interior
+	// blank line must not become an empty extension.
+	fake := exec.NewFakeRunner().
+		On("datname FROM pg_database", exec.FakeResponse{Stdout: "app\nshop\n"}).
+		On("-d app -c", exec.FakeResponse{Stdout: "vector\n\npg_trgm\n"}).
+		On("-d shop -c", exec.FakeResponse{Stdout: "pg_trgm\npostgis\n"})
+	m := &Manager{runner: fake}
+
+	exts, err := m.installedExtensions(context.Background())
+	require.NoError(t, err)
+	require.Len(t, exts, 3, "pg_trgm appears in both databases but must be de-duplicated to one entry")
+	require.NotContains(t, exts, "", "a blank line must not be recorded as an empty extension")
+	require.Equal(t, []string{"pg_trgm", "postgis", "vector"}, exts, "sorted, de-duplicated union across databases")
+
+	// The plpgsql exclusion is enforced in the query text, which the FakeRunner
+	// does not execute — so pin the predicate on the recorded argv. Dropping the
+	// WHERE (reports the always-present plpgsql as an installed extension → a bogus
+	// versioned-package demand + polluted preview) or inverting it to
+	// `= 'plpgsql'` (hides every real extension from the parity blocker, silently
+	// letting a destructive pg_upgrade proceed) must red this. Counting the queries
+	// also pins one-per-database, so a mutation that skips a database is caught.
+	extQueries := 0
+	for _, c := range fake.Calls() {
+		joined := strings.Join(c.Args, " ")
+		if strings.Contains(joined, "FROM pg_extension") {
+			extQueries++
+			require.Contains(t, joined, "extname <> 'plpgsql'",
+				"the extension query must exclude the always-present plpgsql, else parity mis-reports")
+		}
+	}
+	require.Equal(t, 2, extQueries, "one extension query per database (app, shop)")
+}
+
+func TestInstalledExtensions_FailsLoudOnPerDatabaseError(t *testing.T) {
+	// The second database's extension query fails. installedExtensions must return
+	// that error — NOT a partial ["vector"] set that would let the parity check
+	// under-report — and the error must name the failing database.
+	fake := exec.NewFakeRunner().
+		On("datname FROM pg_database", exec.FakeResponse{Stdout: "app\nshop\n"}).
+		On("-d app -c", exec.FakeResponse{Stdout: "vector\n"}).
+		On("-d shop -c", exec.FakeResponse{Err: errors.New(`psql: FATAL: database "shop" does not exist`)})
+	m := &Manager{runner: fake}
+
+	exts, err := m.installedExtensions(context.Background())
+	require.Error(t, err, "a per-database psql failure must not be swallowed into a partial set")
+	require.Nil(t, exts)
+	require.Contains(t, err.Error(), "shop", "the error should name the database whose extension query failed")
+}
+
+func TestInstalledExtensions_FailsLoudWhenDatabaseListErrors(t *testing.T) {
+	// If enumerating the databases itself fails (via listDatabaseNames), the error
+	// must propagate rather than yield an empty "no extensions" set.
+	fake := exec.NewFakeRunner().
+		On("datname FROM pg_database", exec.FakeResponse{Err: errors.New("psql: could not connect to server")})
+	m := &Manager{runner: fake}
+
+	exts, err := m.installedExtensions(context.Background())
+	require.Error(t, err)
+	require.Nil(t, exts)
 }

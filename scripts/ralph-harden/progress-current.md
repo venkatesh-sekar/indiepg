@@ -6,6 +6,39 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #13 — 2026-07-01 — A/upgrade (band 2, prove-it) — SHIPPED (test only; no bug)
+
+Mode A on the untested, runner-driven psql-scraping substrate of
+`Manager.MajorUpgradePreflight` (`internal/pg/preflight.go`) — the gate for a **destructive
+major PostgreSQL upgrade**. The full preflight can't be unit-driven here (its target-binary
+`fileExists` and `freeBytes` checks read hardcoded absolute paths with no FS seam — the same
+residual documented for InstallPreflight in Iter #12), but the substrate it stands on both
+**can** be pinned and **must fail loud**: `scalarCount` (backs the prepared-transaction and
+logical-replication-slot blockers — `n>0` blocks the upgrade) and `installedExtensions` →
+`listDatabaseNames` (backs the extension-parity blocker + the upgrade preview). All three were
+entirely untested. No bug — the code is correct; the tests lock the contract.
+
+Added 6 tests to `internal/pg/preflight_test.go` driving the real `Manager` methods over a
+`FakeRunner`. `scalarCount`: parses `0`/`3`/whitespace-padded counts; **fails loud** (error,
+not a silent `(0,nil)`) on empty/blank/garbage output — a swallowed parse error would defeat
+BOTH upgrade blockers at once by reading a blocker as "0 → pass"; propagates a psql/connection
+error. `installedExtensions`: unions + de-dups across databases, drops blank lines, sorts,
+and **fails loud** (returns the error naming the DB, not a partial set) when a per-database
+query or the database enumeration errors — a partial set would under-report parity and miss a
+missing-build blocker, letting `pg_upgrade` proceed toward a state it can't handle.
+
+Mutation-proven over 8 one-line source mutations (all caught): scalarCount parse-error→`(0,nil)`;
+drop `TrimSpace`; scalarCount runPsql-err→`(0,nil)`; installedExtensions per-db-err→`continue`;
+drop the blank-line `!= ""` guard (anchored on the `seen[line]` copy — the guard line also
+exists in `listDatabaseNames`); drop `sort.Strings` (RED ×5); swallow the `listDatabaseNames`
+error. **test-skeptic found a real escape**: the FakeRunner matches on the `-d app -c` argv
+substring, decoupled from the SQL text, so dropping/inverting the `WHERE extname <> 'plpgsql'`
+exclusion stayed GREEN (inverting to `= 'plpgsql'` silently hides every real extension from the
+parity blocker — the exact failure mode the test claims to guard). **Closed before commit** by
+pinning the exclusion predicate on the recorded argv (`fake.Calls()`) plus a one-query-per-database
+count; re-mutated: drop-WHERE / invert / skip-a-database all now RED. code-reviewer clean.
+Backend gate green (fmt/vet/test/build); web untouched; e2e N/A (pure unit + Docker unavailable).
+
 ## Iter #12 — 2026-07-01 — A/install (band 2, prove-it) — SHIPPED (test only; no bug)
 
 Mode A on the two FakeRunner-driven guards that make `Manager.InstallPreflight`
