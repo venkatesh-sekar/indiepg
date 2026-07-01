@@ -1,0 +1,49 @@
+name: E2E (manual / labeled)
+
+# Optional, GATED end-to-end suite. It NEVER runs on a normal push or PR — only:
+#   - manually, via the Actions "Run workflow" button (workflow_dispatch), or
+#   - on a PR that carries the `e2e` label.
+# It is a SEPARATE workflow from the per-push CI gate (ci.yml) and does not block it.
+#
+# REQUIRES A DOCKER HOST THAT CAN RUN PRIVILEGED SYSTEMD CONTAINERS:
+#   --privileged, --cgroupns=host, cgroup v2, /sbin/init as PID 1, a writable
+#   /sys/fs/cgroup bind. GitHub-hosted `ubuntu-latest` runners may or may not satisfy
+#   this (cgroup namespace / privileged-systemd support is not guaranteed). If the
+#   suite fails to boot systemd in the container, run it on a SELF-HOSTED / privileged
+#   runner instead. That hardware dependency is exactly why this job is manual/gated
+#   rather than part of the per-push gate.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, opened, synchronize, reopened]
+
+jobs:
+  e2e:
+    # Run only on manual dispatch, or when the PR carries the `e2e` label.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: Build e2e images (rebakes the panel binary)
+        run: make e2e-images
+
+      # Run the suite SERIALIZED (-parallel 1): scenarios are t.Parallel-safe, but a
+      # shared single-runner box is I/O-contended under parallel load. Generous bounded
+      # timeout for the heavy upgrade/restore paths.
+      - name: Run e2e suite
+        env:
+          DOCKER_CONTEXT: default
+        run: |
+          go test -tags e2e ./test/e2e/... -count=1 -parallel 1 -v -timeout 90m
