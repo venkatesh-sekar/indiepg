@@ -6,6 +6,24 @@ iterations don't rediscover it.
 
 ## Active rules
 
+- A gate that branches on BOTH an error and a boolean — `v, err := probe(); if err != nil
+  { return err }; if !v { return <other error> }` (e.g. pgbouncer `Enable`'s final `IsRunning`
+  gate, enable.go:208-216) — needs a fixture for EACH arm. A single test that drives the probe to a
+  definitive `(false, nil)` exercises only the `!v` arm; the `err != nil` arm stays untested, so
+  `v, err :=` → `v, _ :=` (swallow the error) SURVIVES — and it compiles, because a stale `err` from
+  an earlier `:=` in the same function stays in scope, turning `if err != nil` into dead code (always
+  the prior nil). Drive the error arm with a SEPARATE fixture whose probe returns `(false, err)` and
+  assert a DISTINCT code+message from the boolean arm (here `CodeExec`/"could not determine service
+  state" vs `CodeInternal`/"did not come up after enable"). For pgbouncer's `IsRunning`, `(false, err)`
+  requires EMPTY stdout + a runner error (`service.go:175-187`); any non-empty stdout is a definitive
+  `(false, nil)`. (Iter #14, test-skeptic found the swallow-error escape.)
+- When a "verify X before recording success" invariant has TWO catch points on different control-flow
+  paths (pgbouncer Enable: `Reload`'s post-apply verify on the config-CHANGED path, and the final
+  `IsRunning` gate on EVERY path incl. the idempotent no-change re-run), a test on the first-run/changed
+  path does NOT cover the second gate — the changed-path catch fires FIRST and masks it. Deleting the
+  no-change gate stays green. Cover the no-change re-run explicitly: run the happy flow once, then flip
+  the FakeRunner (`On` — last responder wins) to the failure state and re-run with identical inputs so
+  nothing changes and the earlier catch is skipped; assert `Reloaded==false` to prove it. (Iter #14)
 - A FakeRunner that matches on an argv SUBSTRING (`internal/exec/fake.go`) returns
   canned stdout DECOUPLED from the SQL/query text that follows the matched flag. So a
   test that pins a helper's OUTPUT (parsed rows) can't catch a mutation to the QUERY

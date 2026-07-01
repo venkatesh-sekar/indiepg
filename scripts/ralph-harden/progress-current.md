@@ -6,6 +6,36 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #14 — 2026-07-01 — A/pgbouncer (band 1, prove-it) — SHIPPED (test only; no bug)
+
+Mode A on the pooler enable flow's **final `IsRunning` gate** (`internal/pgbouncer/enable.go:208-216`)
+— the last guard before `Enable` persists `enabled=true`. It exists so the panel never records a
+pooler as "on" over one that is actually down. On the idempotent **no-config-change re-run** path
+(operator re-runs Enable after the pooler has since died), `Reload` is skipped entirely
+(`config/userlist` unchanged), so this final gate is the ONLY thing that can catch a dead pooler.
+The existing `TestEnable_ServiceNotRunningAfterStartIsNotRecorded` only drives the *first*-run path,
+where `Reload`'s own post-apply verify fires first — so **deleting the final gate left the whole
+suite green**. Proven: mutating `if !running` → `if false` kept every pre-existing test passing.
+
+Added 2 tests to `internal/pgbouncer/enable_test.go`, both driving the real `Enable` twice
+(healthy first run → override `is-active` → identical no-change re-run):
+- `..._OverDeadPoolerFailsAtFinalGate` — `is-active` reports a definitive "inactive" → `IsRunning`
+  returns a clean `(false, nil)` → the `!running` arm fires. Asserts `CodeInternal` + "did not come
+  up after enable" (uniquely pins enable.go:213 — Reload's error is `CodeExec`/"not running
+  afterward"), `Reloaded/ConfigChanged/UserlistChanged==false` (Reload was skipped), `Running==false`,
+  and `setKeys` unchanged (no re-persist over a dead pooler).
+- `..._UndeterminableStateFailsAtFinalGate` — the **error arm**: `is-active` empty stdout + runner
+  error → `IsRunning` returns `(false, err)` → the `if err != nil` arm propagates it. Asserts
+  `CodeExec` + "could not determine service state" and NOT "did not come up".
+
+No bug — both arms of the gate are correct; the tests lock the contract. Mutation-proven: `if !running`
+→`if false`/`if running`, `InternalError`→`ExecError`, gate-message change, and `if res.Reloaded &&
+!running` all RED. **test-skeptic found a real escape**: the first test only ever drives `IsRunning`'s
+`(false,nil)` branch, so `running, err :=` → `running, _ :=` (swallow the transport error — it
+compiles, `err` stays in scope as dead code) survived. **Closed before commit** by adding the
+error-arm companion test; re-mutated → RED at the `CodeExec` assert. code-reviewer clean. Backend gate
+green (fmt/vet/test/build); web untouched; e2e N/A (pure unit + Docker unavailable).
+
 ## Iter #13 — 2026-07-01 — A/upgrade (band 2, prove-it) — SHIPPED (test only; no bug)
 
 Mode A on the untested, runner-driven psql-scraping substrate of

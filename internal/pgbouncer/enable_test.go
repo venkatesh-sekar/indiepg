@@ -258,6 +258,103 @@ func TestEnable_ServiceNotRunningAfterStartIsNotRecorded(t *testing.T) {
 	require.False(t, res.Running)
 }
 
+// TestEnable_NoConfigChangeReRunOverDeadPoolerFailsAtFinalGate covers the OTHER
+// dead-pooler catch point: the flow's final IsRunning gate (enable.go:213-216).
+// On an idempotent re-run where nothing changed, Reload is skipped entirely, so
+// that final gate is the ONLY thing standing between a pooler that has since
+// died and the code persisting enabled=true — which would make the panel report
+// a live pooler over a dead one. TestEnable_ServiceNotRunningAfterStartIsNotRecorded
+// only exercises the first-run path, where Reload's own post-apply verify fires
+// first; deleting the final gate leaves that test (and the whole suite) green.
+func TestEnable_NoConfigChangeReRunOverDeadPoolerFailsAtFinalGate(t *testing.T) {
+	m, r := newEnableManager(t)
+	state := newFakeState()
+
+	// First enable succeeds on a healthy pooler: both files are written, the unit
+	// reports active, and enabled=true is persisted.
+	res1, err := m.Enable(context.Background(), okSource(), state, okParams())
+	require.NoError(t, err)
+	require.True(t, res1.Running)
+	require.Equal(t, "true", state.kv[EnabledConfigKey])
+	persistsAfterFirst := len(state.setKeys)
+
+	// The pooler then dies out from under us. A definitive "inactive" (no runner
+	// error) makes IsRunning return a clean (false, nil), so the failure can only
+	// be caught by the flow's own gate, not by an IsRunning transport error.
+	r.On("is-active pgbouncer", exec.FakeResponse{Stdout: "inactive\n"})
+
+	// Re-run with identical inputs: nothing changes on disk, so Reload is skipped.
+	// The final IsRunning gate must catch the dead pooler.
+	res2, err := m.Enable(context.Background(), okSource(), state, okParams())
+	require.Error(t, err)
+
+	// Proof it was the FINAL gate (not Reload, not an IsRunning transport error):
+	//   - Reload was skipped, so nothing changed on this run.
+	require.False(t, res2.ConfigChanged, "an unchanged config must not be rewritten")
+	require.False(t, res2.UserlistChanged, "an unchanged auth_file must not be rewritten")
+	require.False(t, res2.Reloaded, "no reload may fire when nothing changed")
+	//   - The final gate reports CodeInternal ("did not come up after enable");
+	//     Reload's dead-pooler error is CodeExec ("not running afterward") and
+	//     IsRunning's transport error is CodeExec ("could not determine state"),
+	//     so this uniquely pins the enable.go:213 gate.
+	require.Equal(t, core.CodeInternal, core.CodeOf(err))
+	require.ErrorContains(t, err, "did not come up after enable")
+	require.False(t, res2.Running, "a dead pooler must be reported down, never up")
+
+	// The gate short-circuits before the persist step, so enabled is NOT
+	// re-written over a dead pooler — SetConfig is not called again.
+	require.Len(t, state.setKeys, persistsAfterFirst,
+		"the final gate must return before persisting when the pooler is down")
+}
+
+// TestEnable_NoConfigChangeReRunUndeterminableStateFailsAtFinalGate is the
+// error-arm counterpart to the test above. The flow's final gate (enable.go:208)
+// has TWO ways to catch a bad pooler on the no-change re-run: `if !running`
+// (definitive dead, covered above) AND `if err != nil` — IsRunning could not even
+// ask systemctl, so the state is genuinely UNKNOWN. That "couldn't ask" arm must
+// surface loudly, never be swallowed. IsRunning returns (false, err) only when
+// stdout is empty AND the runner errored, so this drives exactly that branch.
+// Without this test, dropping IsRunning's error return (`running, _ :=
+// m.IsRunning(ctx)`) would silently downgrade "unknown" to the definitive "did
+// not come up" — a regression the definitive-dead test cannot catch, since it
+// never exercises the error branch.
+func TestEnable_NoConfigChangeReRunUndeterminableStateFailsAtFinalGate(t *testing.T) {
+	m, r := newEnableManager(t)
+	state := newFakeState()
+
+	// First enable succeeds on a healthy pooler.
+	res1, err := m.Enable(context.Background(), okSource(), state, okParams())
+	require.NoError(t, err)
+	require.True(t, res1.Running)
+	persistsAfterFirst := len(state.setKeys)
+
+	// systemctl itself can no longer be reached: an EMPTY stdout paired with a
+	// runner error is the only shape that makes IsRunning return (false, err)
+	// rather than a definitive (false, nil), so this exercises the gate's
+	// error-propagation arm and not its `!running` arm.
+	r.On("is-active pgbouncer", exec.FakeResponse{Err: errors.New("systemctl: command not found")})
+
+	// Re-run with identical inputs: nothing changes on disk, so Reload is skipped
+	// and the final IsRunning gate is the only thing that can react.
+	res2, err := m.Enable(context.Background(), okSource(), state, okParams())
+	require.Error(t, err)
+	require.False(t, res2.Reloaded, "no reload may fire when nothing changed")
+
+	// The gate must propagate IsRunning's "couldn't ask" error verbatim (CodeExec,
+	// "could not determine service state") — NOT downgrade it to the definitive
+	// "did not come up after enable" (CodeInternal). If IsRunning's error return
+	// were dropped, the flow would report the latter instead, failing here.
+	require.Equal(t, core.CodeExec, core.CodeOf(err))
+	require.ErrorContains(t, err, "could not determine service state")
+	require.NotContains(t, err.Error(), "did not come up after enable",
+		"an unknown state must not be reported as a definitive down")
+	require.False(t, res2.Running, "an undeterminable state must never report the pooler up")
+
+	// An unknown state must not persist enabled=true either — no re-persist.
+	require.Len(t, state.setKeys, persistsAfterFirst,
+		"an undeterminable pooler state must not persist enabled=true")
+}
+
 func TestEnable_DoesNotPersistWhenBringUpFails(t *testing.T) {
 	r := exec.NewFakeRunner()
 	r.On("enable --now pgbouncer", exec.FakeResponse{Err: errors.New("unit not found")})
