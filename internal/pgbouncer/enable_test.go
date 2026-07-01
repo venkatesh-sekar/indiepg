@@ -249,7 +249,12 @@ func TestEnable_ServiceNotRunningAfterStartIsNotRecorded(t *testing.T) {
 
 	res, err := m.Enable(context.Background(), okSource(), newFakeState(), okParams())
 	require.Error(t, err)
-	require.Equal(t, core.CodeInternal, core.CodeOf(err))
+	// The first enable always writes both files, so Reload runs and its own
+	// post-apply verification catches the dead pooler first (CodeExec) — before
+	// the flow's later IsRunning gate. Either way the pooler is confirmed down and
+	// nothing is recorded; the contract that matters is that Enable does not
+	// report success over a pooler that never came up.
+	require.Equal(t, core.CodeExec, core.CodeOf(err))
 	require.False(t, res.Running)
 }
 

@@ -6,6 +6,45 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #4 — 2026-07-01 — A/pgbouncer (band 1 correctness) — SHIPPED
+
+Mode A on `(*Manager).Reload` (`internal/pgbouncer/service.go`). Fixed a real
+"reports success over a dead pooler" bug: `Reload` returned nil the instant
+`systemctl reload` (or its `restart` fallback) exited 0 — it never verified
+PgBouncer was still running, contradicting DEFAULTS.md ("reload via SIGHUP,
+restart as fallback; **verify it's still running after**"). A SIGHUP reload can
+exit 0 while PgBouncer then dies re-parsing a bad config, and `systemctl restart`
+can return before a unit that crashes on startup is caught — so a config apply
+that killed the pooler was silently reported as applied.
+
+Fix: after either the reload OR the restart-fallback exits 0, `Reload` now calls
+`IsRunning` and (a) propagates an undeterminable-state error ("couldn't ask
+systemctl"), or (b) returns a loud `core.ExecError` (with a hint to check status
+/logs and restore the previous config) when the pooler is down, or (c) logs
+success. Deliberate call: a reload that exits 0 but leaves the pooler dead means
+the on-disk config is bad, so it errors immediately rather than bouncing into an
+equally-doomed restart that would needlessly drop the connections a SIGHUP was
+chosen to preserve. `CodeExec` matches the codebase convention for "service didn't
+come up after a systemd op" (safeconfig.go:151, upgrade.go:235). Only caller is
+`Enable`, whose own later `IsRunning` gate is preserved (belt-and-suspenders for
+the no-change path).
+
+Test-first + mutation-proven: updated the two existing Reload tests to register a
+healthy is-active and pin the new verify call; added 3 guards —
+`TestReload_ErrorsWhenPoolerDeadAfterReload` (no restart of the same rejected
+config), `_DeadAfterRestart`, `_RunStateUndeterminableAfterApply` (distinguishes
+false,err from false,nil via the "could not determine service state" message).
+Confirmed the guards fail under an inverted-condition mutation (`if running`),
+then reverted. Updated `TestEnable_ServiceNotRunningAfterStartIsNotRecorded`
+(CodeInternal→CodeExec: the dead pooler is now caught one step earlier, in Reload).
+
+Reviewers: code-reviewer (no blocking issues) + test-skeptic (found the two new
+dead-pooler tests asserted call positions but not count → a trailing extra
+systemctl call could escape; closed with `require.Len` bounds).
+
+Gates: gofmt clean, vet clean, `go test ./...` green, static build OK. web
+untouched. e2e (pooler enable) is Docker-heavy and not needed for this unit fix.
+
 ## Iter #3 — 2026-07-01 — A/alert (band 1 security) — SHIPPED
 
 Mode A on the alert webhook notifier (`internal/alert/notifier.go`). Fixed a real

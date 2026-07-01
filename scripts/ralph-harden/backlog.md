@@ -21,8 +21,7 @@ Docker-blocked (need the e2e/integration cluster; can't run in this environment)
 - [ ] (1 · A/integration) pg/guard (DB-level + timeout half) — assert the read-only role truly cannot write at the **DB level** (INSERT/UPDATE/DELETE/DDL all rejected), not just hidden in the UI, and that the read pool's statement_timeout actually cancels a long query. Needs the integration cluster (`//go:build integration`, `readonly_integration_test.go`); Docker/socket required. See Iter #2: the auto-LIMIT half shipped.
 
 Unit-testable (audit-grounded, Iter #3 panel; ranked):
-- [ ] (1 · A) pgbouncer — `Reload` (service.go:105-133) returns nil the instant `systemctl reload`/`restart` exits 0; it never calls `IsRunning`, contradicting DEFAULTS.md ("verify it's still running after"). A SIGHUP reload can exit 0 while PgBouncer then dies parsing a bad config. → Add the post-reload/restart running-check (or a test proving one exists) so `Reload` can't report success over a dead pooler.
-- [ ] (1 · A) pgbouncer — enable's "verify running before recording success" invariant is only proven for the `enable --now` path; the reload→dead-unit path (enable.go:201-216) has no test. → Test: reload OK + is-active "failed" must return an error and NOT persist `enabled=true`.
+- [ ] (1 · A) pgbouncer — enable's "verify running before recording success" invariant is only proven for the `enable --now` path; the reload→dead-unit path (enable.go:201-216) has no test. → Test: reload OK + is-active "failed" must return an error and NOT persist `enabled=true`. (Iter #4: partially covered — `TestEnable_ServiceNotRunningAfterStartIsNotRecorded` now drives reload-OK + is-active-"failed" and asserts the error + no persist; the failure is caught in `Reload`'s post-apply verify. Keep open only if a dedicated no-config-change reload→dead path is still wanted.)
 - [ ] (1 · A) install/upgrade — `validateUpgradeTarget` (handlers_pgversion.go:858-870) is the sole guard stopping a destructive same-major/downgrade "upgrade" and has ZERO tests. → Table test: reject 17→16, 16→16, 16→99, current=0; accept 16→17.
 - [ ] (1 · A) pg/hba — `injectHBARules` (hba.go:52-61) treats mere PRESENCE of the marker as "already correct" (returns changed=false), so a hand-edited/widened managed block (e.g. `host all all 0.0.0.0/0 trust` between the markers) is never self-healed by `EnsureSocketAuth`. → Test a marker-present-but-widened block is normalized back to loopback+socket-only (never widens access).
 - [ ] (1 · A) store/auth — `InitAuth` claims it overwrites an existing row and its ON CONFLICT resets `failed_attempts=0`/`locked_until=NULL` (auth.go:42-59), but tests only ever hit the INSERT path — the reset-password UPDATE branch is unproven. → Test: init, set a lockout, `InitAuth` again, assert new hash/secret AND lockout cleared.
@@ -66,6 +65,18 @@ Unit-testable (audit-grounded, Iter #3 panel; ranked):
 - [ ] (0) if any `make verify` / `make verify-web` gate is red, fix it before anything else.
 
 ## Done
+
+- [x] (1 · A) pgbouncer Reload verifies the pooler is still running after applying
+  config — `(*Manager).Reload` (`internal/pgbouncer/service.go`) no longer returns
+  nil the instant `systemctl reload`/`restart` exits 0. After a 0-exit it calls
+  `IsRunning` and returns a loud `core.ExecError` (+ hint) when the pooler is down,
+  propagates an undeterminable-state error, else logs success — honoring DEFAULTS.md
+  ("verify it's still running after"). A reload that exits 0 but left the pooler dead
+  errors immediately (no restart of the same rejected config). `service_test.go`:
+  `TestReload_ErrorsWhenPoolerDeadAfterReload`, `_DeadAfterRestart`,
+  `_RunStateUndeterminableAfterApply` (+ the two existing Reload tests now pin the
+  verify call); `enable_test.go`: `TestEnable_ServiceNotRunningAfterStartIsNotRecorded`
+  (CodeExec — caught in Reload). Mutation-proven; reviewers clean. Iter #4.
 
 - [x] (1 · A) alert webhook secret leak — `(*WebhookNotifier).post`
   (`internal/alert/notifier.go`) no longer leaks the webhook URL (which may embed

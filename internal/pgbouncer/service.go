@@ -99,6 +99,15 @@ func (m *Manager) DisableNow(ctx context.Context) error {
 // `systemctl restart` (which does drop connections, but is the safe way to apply
 // a change a live reload can't).
 //
+// Applying the config is not complete until the pooler is confirmed still up: a
+// SIGHUP reload can exit 0 while PgBouncer then dies re-parsing a bad config, and
+// `systemctl restart` can return before a unit that crashes on startup is caught.
+// So after the systemctl command exits 0 Reload verifies the service is actually
+// active (DEFAULTS.md: "reload …; verify it's still running after") and returns a
+// loud, actionable error if it is not — it must never report success over a dead
+// pooler. A genuinely undeterminable state ("couldn't ask systemctl") surfaces as
+// the error it is, never as a silent success.
+//
 // The enable flow calls Reload ONLY when the rendered config or auth_file
 // actually changed (EnsureConfig/EnsureUserlist report this), so an unchanged
 // pooler is never needlessly bounced.
@@ -107,28 +116,39 @@ func (m *Manager) Reload(ctx context.Context) error {
 		return core.InternalError("pgbouncer: Reload requires a Runner")
 	}
 
+	how := "reload (SIGHUP)"
 	if _, err := m.runner.Run(ctx, exec.RunSpec{
 		Name:    "systemctl",
 		Args:    []string{"reload", serviceName},
 		Timeout: commandTimeout,
-	}); err == nil {
-		m.log.InfoCtx(ctx, "reloaded PgBouncer config (SIGHUP)", "service", serviceName)
-		return nil
-	} else {
+	}); err != nil {
 		// A reload can legitimately be unsupported or fail mid-transition; restart is
 		// the authoritative way to apply the new config. Log the cause and escalate.
 		m.log.Warn("pgbouncer reload failed; falling back to restart",
 			"service", serviceName, "err", err.Error())
+		if _, err := m.runner.Run(ctx, exec.RunSpec{
+			Name:    "systemctl",
+			Args:    []string{"restart", serviceName},
+			Timeout: commandTimeout,
+		}); err != nil {
+			return core.ExecError("pgbouncer: applying config failed — reload and restart both failed").Wrap(err)
+		}
+		how = "restart (reload fallback)"
 	}
 
-	if _, err := m.runner.Run(ctx, exec.RunSpec{
-		Name:    "systemctl",
-		Args:    []string{"restart", serviceName},
-		Timeout: commandTimeout,
-	}); err != nil {
-		return core.ExecError("pgbouncer: applying config failed — reload and restart both failed").Wrap(err)
+	// systemctl reported success, but that alone does not prove PgBouncer is live
+	// (see the doc comment). Confirm the pooler is actually up before reporting the
+	// config applied — a dead-after-apply pooler is a loud error, not a silent OK.
+	running, err := m.IsRunning(ctx)
+	if err != nil {
+		return err
 	}
-	m.log.InfoCtx(ctx, "restarted PgBouncer to apply config (reload fallback)", "service", serviceName)
+	if !running {
+		return core.ExecError("pgbouncer: applied config via %s but the pooler is not running afterward — the new config was likely rejected", how).
+			WithHint("check `systemctl status pgbouncer` and the pgbouncer log, then restore the previous pgbouncer.ini / auth_file")
+	}
+
+	m.log.InfoCtx(ctx, "applied PgBouncer config", "service", serviceName, "method", how)
 	return nil
 }
 
