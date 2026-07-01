@@ -437,6 +437,15 @@ func (m *Manager) Restore(ctx context.Context, target *RecoveryTarget, delta boo
 		return core.Result{}, err
 	}
 
+	// Preflight the recovery target against the repo BEFORE any destructive step.
+	// A TIME target earlier than every available backup can never be reached, so
+	// refuse it loudly here instead of stopping the cluster, taking a safety
+	// backup, and only then letting pgBackRest fail with an opaque error at the
+	// most data-critical moment.
+	if err := m.preflightTargetReachable(ctx, target); err != nil {
+		return core.Result{}, err
+	}
+
 	// Safety net: snapshot the current cluster before the irreversible overwrite.
 	// A failed safety backup is a HARD STOP — we must never overwrite the live
 	// cluster without a recovery point. Backup also claims/heartbeats ownership,
@@ -534,6 +543,62 @@ func (m *Manager) selectRestoreSet(ctx context.Context, target *RecoveryTarget, 
 		return ""
 	}
 	return chooseRestoreSet(target, safetyLabel, backups)
+}
+
+// preflightTargetReachable rejects a recovery target we can PROVE is unreachable
+// before any destructive step (safety backup, cluster stop, overwrite) runs. Only
+// a TIME target is checkable here — xid/lsn/name have no wall-clock to compare
+// against the repo. A TIME target strictly earlier than the earliest available
+// backup can never be satisfied: recovery restores a base backup and replays WAL
+// FORWARD, and no backup exists that early to start from. Rejecting it here turns
+// an opaque, mid-restore pgBackRest failure (after the live cluster is already
+// down) into a clear, actionable error while the cluster is still untouched.
+//
+// It is fail-open on uncertainty. A nil/zero/non-time target, a repo that can't be
+// enumerated, or backups without a usable start time all return nil so the restore
+// proceeds — wrongly refusing recovery (the most data-critical operation) would be
+// worse than a late pgBackRest error. pgBackRest remains the final arbiter; this
+// only catches the case we can prove is doomed.
+func (m *Manager) preflightTargetReachable(ctx context.Context, target *RecoveryTarget) error {
+	if target == nil || target.Time == nil {
+		return nil
+	}
+	backups, err := m.Info(ctx)
+	if err != nil {
+		m.log.Warn("could not enumerate backups to preflight the recovery target; proceeding", "error", err)
+		return nil
+	}
+	earliest, ok := earliestBackupStart(backups)
+	if !ok {
+		return nil
+	}
+	if target.Time.Before(earliest) {
+		return core.ValidationError(
+			"recovery target time %s is before the earliest available backup (%s); no backup exists that early to recover from — choose a later target, or take an earlier backup",
+			target.Time.UTC().Format(time.RFC3339),
+			earliest.UTC().Format(time.RFC3339),
+		)
+	}
+	return nil
+}
+
+// earliestBackupStart returns the minimum non-zero StartTime across backups and
+// whether one was found. Backups with an unknown (zero) start time are ignored so
+// incomplete pgBackRest metadata makes the preflight fail open rather than
+// reject on a bogus zero boundary.
+func earliestBackupStart(backups []BackupInfo) (time.Time, bool) {
+	var earliest time.Time
+	found := false
+	for _, b := range backups {
+		if b.StartTime.IsZero() {
+			continue
+		}
+		if !found || b.StartTime.Before(earliest) {
+			earliest = b.StartTime
+			found = true
+		}
+	}
+	return earliest, found
 }
 
 // chooseRestoreSet selects the backup-set label to restore from for target.

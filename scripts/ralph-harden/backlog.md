@@ -15,7 +15,7 @@ over these once they exist.
 
 ### Band 1 — Correctness (Mode A: prove it does what it claims)
 - [ ] (1 · A) backup/restore — assert a full backup is actually restorable: seed data → backup → restore into a fresh cluster → row-for-row match. Extend the e2e scenario if unit coverage can't reach it.
-- [ ] (1 · A) backup PITR — assert an xid/time recovery target that is in the future (or before the base backup) is **rejected** with a clear error, not silently clamped.
+- [ ] (1 · A/e2e) backup PITR (future/xid half) — with a live cluster, assert a TIME target in the future and an xid target beyond the latest committed xid are **rejected** (or handled loudly), not silently promoted-to-latest. Needs Docker/e2e — can't be range-checked at unit level (a future TIME target may be valid PITR into live WAL). See Iter #1: the before-earliest-backup half shipped.
 - [ ] (1 · A) auth/session — assert logout invalidates the session **server-side** (a captured cookie is dead after logout), and that session fixation is impossible (new session id on login).
 - [ ] (1 · A) auth — assert login brute-force lockout actually triggers and resets correctly; wrong-password does not leak whether the user exists.
 - [ ] (1 · A) pg/guard — assert the read-only role truly cannot write at the **DB level** (INSERT/UPDATE/DELETE/DDL all rejected), not just hidden in the UI; and the query box enforces auto-LIMIT + statement timeout on real queries.
@@ -46,4 +46,9 @@ over these once they exist.
 
 ## Done
 
-(none yet)
+- [x] (1 · P) backup PITR (before-base half) — restore preflights the recovery
+  target and rejects a TIME target earlier than the earliest available backup
+  with a clear `CodeValidation` error, BEFORE the destructive safety-backup/
+  cluster-stop/overwrite. Fail-open on uncertainty. `internal/backup/manager.go`
+  (`preflightTargetReachable`, `earliestBackupStart`) +
+  `internal/backup/restore_preflight_test.go`. Iter #1.
