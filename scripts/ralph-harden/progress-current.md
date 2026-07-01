@@ -6,6 +6,41 @@ Older entries get archived once this file grows large.
 
 ---
 
+## Iter #10 — 2026-07-01 — A/web-version (band 1 correctness) — SHIPPED (test only; no bug)
+
+Mode A on the two irreversible confirm gates in `web/src/views/Version.tsx`:
+`FinalizeDialog` (permanently deletes the old cluster — "point of no return", no
+rollback after) and `RollbackDialog` (permanent data loss — discards every write
+made against the new major since the upgrade). Both are typed-confirmation gates
+and had NO test (there was no `Version.test.tsx`). These are the two most
+destructive one-click actions in the panel, so the "confirm-on-risky" invariant
+here was entirely unproven.
+
+Added `web/src/views/Version.test.tsx` (2 tests, one per dialog), driving the real
+path via the exported `PendingFinalizationBanner`. The load-bearing detail the
+tests pin: the two dialogs demand DIFFERENT numbers — finalize wants the OLD major
+(`from_major`, the cluster it deletes), rollback wants the NEW major (`to_major`,
+the version it abandons). With `from=16, to=17`, each test types the OTHER dialog's
+number first and asserts the confirm button stays DISABLED, then types its own
+(whitespace-padded, to lock the `.trim()`) and asserts ENABLED, then asserts the
+destructive API fires only after the gate is satisfied and with the correct major.
+Each test also asserts the irreversible-consequence copy is on screen before the
+operator can act. No bug — both gates are correct; the tests lock the contract.
+
+Mutation-proven over 13 one-line source mutations (each reds the matching test,
+baseline 2-passed, tree clean after each revert): finalize from→to cross-wire,
+rollback to→from cross-wire, drop each dialog's `disabled={busy || !matches}` gate,
+drop `.trim()`, cross-wire each dialog's API argument, and — the test-skeptic's
+escapes — loosen `=== expected` to `.includes`/`.startsWith`/`Number(typed) ===`
+on each dialog. The skeptic caught that the first draft only fed the wrong-exact
+and right-exact strings, so a substring/prefix/numeric-coercion gate stayed green
+(a fat-fingered "169"/"16.0" would fire the irreversible delete): added a
+superstring reject ("169"/"179") AND a numeric-equivalent reject ("16.0"/"17.0")
+to each test before commit, and re-verified all three escapes now red on both
+dialogs. code-reviewer clean (faithful real-path test, not hollowed by the
+api/toast mocks; matches `RolesDatabases.test.tsx` conventions). Full web gate
+green: typecheck, build, 167/167 vitest. Backend gate untouched (no Go changed).
+
 ## Iter #9 — 2026-07-01 — A/store (band 1 correctness) — SHIPPED (test only; no bug)
 
 Mode A on the single-row `CHECK (id = 1)` guard on the `instance` and `auth`

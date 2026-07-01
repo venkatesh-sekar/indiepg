@@ -6,6 +6,17 @@ iterations don't rediscover it.
 
 ## Active rules
 
+- An equality gate — a DB `CHECK (col = K)` OR a UI typed-confirm (`typed.trim() ===
+  expected`) — is under-tested by exact-wrong + exact-right values alone. A one-line
+  weakening to a LOOSER predicate (`>= 1`, `id*id=1`, `.includes`/`.startsWith`,
+  `Number(typed) === n`) still rejects the exact-wrong value AND accepts the
+  exact-right one, so it stays green. Probe the values that only the loosened forms
+  admit: negatives/squares for numeric CHECKs; a SUPERSTRING (`"169"` vs `"16"`) and
+  a NUMERIC-EQUIVALENT non-exact spelling (`"16.0"`) for typed-confirm gates — each
+  must keep the gate CLOSED. Also cross-wire test: when two sibling gates expect
+  DIFFERENT tokens (finalize wants the OLD major, rollback the NEW), make the two
+  distinct and assert each rejects the other's token, which kills a from↔to swap.
+  (Iter #9 DB CHECK, Iter #10 UI confirm — test-skeptic found the escape both times.)
 - When testing a value-pinning constraint (`CHECK (col = K)`), a positive-and-zero
   probe set is NOT enough — probe NEGATIVE / algebraically-equivalent values too. A
   one-line weakening like `= 1` → `id * id = 1` or `abs(id) = 1` still rejects 0 and
