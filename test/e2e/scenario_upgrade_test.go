@@ -22,12 +22,12 @@ import (
 // Source/target majors (from versioncatalog.go SupportedMajors {17 default,16,15}
 // and the e2e base image, which caches PG 16 + PG 17 debs):
 //   - Minor:    runs on the preinstalled cluster (PG 17). Pinned packages mean no
-//               newer minor exists, so the panel correctly refuses with a typed
-//               409 "no minor update available" — asserted, with the cluster left
-//               healthy and unchanged.
+//     newer minor exists, so the panel correctly refuses with a typed
+//     409 "no minor update available" — asserted, with the cluster left
+//     healthy and unchanged.
 //   - Major:    PG 16 -> PG 17. A real provision on the OLDER major (the base
-//               image's `indiepg install --pg-version 16`), then preflight + start
-//               + finalize.
+//     image's `indiepg install --pg-version 16`), then preflight + start
+//   - finalize.
 //   - Rollback: PG 16 -> PG 17, then roll back to 16 BEFORE finalize.
 //
 // The two major paths each do a real ~200s install + a copy-mode pg_upgradecluster

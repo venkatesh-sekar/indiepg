@@ -519,7 +519,7 @@ func newServer(cfg config.Config, st *store.Store, log *core.Logger, authn *auth
 		auth:   authn,
 		pg:     pgmgr,
 		runner: runner,
-		guard: guard.New(guard.Options{ReadOnly: true, AutoLimit: cfg.QueryLimit}),
+		guard:  guard.New(guard.Options{ReadOnly: true, AutoLimit: cfg.QueryLimit}),
 		backups: backup.New(backup.Options{
 			Runner: runner, Store: st, Config: cfg, Logger: log,
 			// Wire the single-writer ownership guard when an S3 target is already

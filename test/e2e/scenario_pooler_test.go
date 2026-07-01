@@ -29,14 +29,14 @@ const (
 // /etc/pgbouncer, and a real client connection routed THROUGH the bouncer into
 // Postgres — never just HTTP 200s.
 //
-//	1. pooler initially OFF: GET /api/pooler reports disabled and the pgbouncer
-//	   unit is not active (the package is not even installed yet).
-//	2. enable: POST /api/pooler/enable installs+starts pgbouncer; the unit becomes
-//	   active, pgbouncer.ini + userlist.txt land under /etc/pgbouncer, GET reports
-//	   enabled, and a real SCRAM client connecting to the bouncer's loopback port
-//	   is proxied to the live Postgres (proven by reading Postgres' own port back).
-//	3. disable: POST /api/pooler/disable stops the unit; it is no longer active and
-//	   GET /api/pooler reports disabled again.
+//  1. pooler initially OFF: GET /api/pooler reports disabled and the pgbouncer
+//     unit is not active (the package is not even installed yet).
+//  2. enable: POST /api/pooler/enable installs+starts pgbouncer; the unit becomes
+//     active, pgbouncer.ini + userlist.txt land under /etc/pgbouncer, GET reports
+//     enabled, and a real SCRAM client connecting to the bouncer's loopback port
+//     is proxied to the live Postgres (proven by reading Postgres' own port back).
+//  3. disable: POST /api/pooler/disable stops the unit; it is no longer active and
+//     GET /api/pooler reports disabled again.
 func TestPoolerEnableDisable(t *testing.T) {
 	t.Parallel()
 
